@@ -34,6 +34,12 @@ const BSG_RANGE_FLOOR: f64 = 1.0;  // min BuySellGain spread
 // hold the aligned position through a counter relief-bounce/dip (suppress the sudden-move cover).
 const TRANDM_STRONG: f64 = 50.0;
 const TRANDM_MILD: f64 = 25.0;
+// v0.63: maker micro-scalp — many tight round-trips per candle for VOLUME (user spec:
+// "limit in and out, enter/exit multiple times inside one candle, ≥0.06% to cover 0.04% fee").
+const SCALP_ON: bool = true;
+const SCALP_STEP_PCT: f64 = 0.0006; // 0.06% TP & rung spacing — clears the ~0.04% maker round-trip fee
+const SCALP_RUNGS: i64 = 3;         // maker entry-ladder depth placed each tick
+const SCALP_RUNG_FRAC: f64 = 0.10;  // each rung = 10% of the per-side risk budget (capped to r_side)
 // asset_01 = $ (raw × 100) to move trandm 1% — power-of-trades/depth. Raw < ~50k ($5M) = thin/
 // coiled (sudden move loaded); raw >= ~200k ($20M) = move spent (expect normal vol). Wired to
 // state + debug this version; behavioral gate deferred until calibrated from live observation.
@@ -1465,6 +1471,43 @@ fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<ModulePlaceOr
     // its noise triggers, the SMC flip was its only trigger — so the whole block is gone.
     // Short exits now: sudden-move panic (sweep-held), margin/staged SL, profit TPs, and the
     // opposite-direction best-negative/hedge path. (Future: rebuild on `DirectionSwing`.)
+
+    // ── v0.61-scalp: maker micro-scalp for VOLUME ───────────────────────────────
+    // On the controlling (trandm) side, rest a MAKER entry ladder (sell ABOVE / buy BELOW price
+    // = non-crossing = maker) SCALP_RUNGS deep, each 0.06% apart, plus ONE reduce-only TP 0.06%
+    // inside the avg entry. 0.06% clears the ~0.04% maker round-trip fee (~0.02% net/cycle). The
+    // tight TP turns the position into fast cycles → many round-trips per candle. Inventory ≤ r_side.
+    if SCALP_ON && balance_ok && price > 0.0 {
+        let step = price * SCALP_STEP_PCT;
+        let rung = (r_side * SCALP_RUNG_FRAC).max(2.0);
+        if state.trandm <= -TRANDM_MILD {
+            let room = (r_side - short_n).max(0.0);
+            for j in 1..=SCALP_RUNGS {
+                let amt = rung.min((room - rung * (j - 1) as f64).max(0.0));
+                if amt <= 1.0 { break; }
+                place_orders.push(limit_order(Direction::Short, amt, price + step * j as f64, "sclp-s"));
+            }
+            if let Some(p) = input.positions.short.as_ref() {
+                let tp = p.entry_price - step;
+                if p.notional > 1.0 && tp < price {
+                    place_orders.push(tp_order_with_band(Direction::Short, p.notional, tp, "sclp-s-tp", "sclp-s-tp"));
+                }
+            }
+        } else if state.trandm >= TRANDM_MILD {
+            let room = (r_side - long_n).max(0.0);
+            for j in 1..=SCALP_RUNGS {
+                let amt = rung.min((room - rung * (j - 1) as f64).max(0.0));
+                if amt <= 1.0 { break; }
+                place_orders.push(limit_order(Direction::Long, amt, price - step * j as f64, "sclp-l"));
+            }
+            if let Some(p) = input.positions.long.as_ref() {
+                let tp = p.entry_price + step;
+                if p.notional > 1.0 && tp > price {
+                    place_orders.push(tp_order_with_band(Direction::Long, p.notional, tp, "sclp-l-tp", "sclp-l-tp"));
+                }
+            }
+        }
+    }
 
     place_orders
 }
