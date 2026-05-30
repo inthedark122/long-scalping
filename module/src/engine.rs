@@ -651,7 +651,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.neg_exit_l, state.neg_exit_s, state.invalid_side, state.hedge_side,
         trandm, asset_01,
         state.tm_side, state.short_stair_cross, state.mrc5_break,
-        r_side_dbg, uncertainty_damp(state),
+        r_side_dbg, uncertainty_damp(state, 0),
         state.short_big_tested as u8, state.long_big_tested as u8,
     );
 
@@ -691,12 +691,23 @@ fn risk_sized_notional(max_amount: f64, leverage: f64, risk_pct: f64, stop_pct: 
 // v0.56 (0.D): de-risk multiplier for an UNPREDICTABLE regime. The user keeps risk_pct=0.40
 // (full base budget) but wants size cut when the read is uncertain — so we damp dynamically
 // instead of lowering the base. Multiplicative: each uncertainty stacks. Clamped to [0.40, 1.0].
-//   • market mode still UNKNOWN, • thin order book (asset_01 < $5M → can whip),
+//   • market mode still UNKNOWN, • thin/coiled book (asset_01 < $5M) UNLESS trandm strongly
+//     backs the entry side (then it's a loaded continuation, not whippy — see body),
 //   • weak 5m trend confidence, • 1m and 5m disagree on direction (cross-TF conflict).
-fn uncertainty_damp(state: &State) -> f64 {
+fn uncertainty_damp(state: &State, side: i8) -> f64 {
     let mut d = 1.0_f64;
     if state.mkt_mode == 0 { d *= 0.75; }
-    if state.asset_01 > 0.0 && state.asset_01 < 50_000.0 { d *= 0.80; }
+    // v0.62: asset_01 < $5M = coiled/thin = "a sudden move is loaded". That is only WHIPPY (cut
+    // size) when trandm does NOT back this entry's side. When trandm STRONGLY aligns with the side
+    // (|trandm| ≥ STRONG, same sign), low asset_01 = a loaded CONTINUATION in our direction — our
+    // highest-conviction setup — so we do NOT de-risk it (v0.61 cut size on exactly these). The
+    // hedge enters against trandm but is sized outside budget_size, so it is unaffected.
+    //   side: +1 long, −1 short, 0 = neutral/debug (always damps).
+    if state.asset_01 > 0.0 && state.asset_01 < 50_000.0 {
+        let trandm_backs_side = (side > 0 && state.trandm >= TRANDM_STRONG)
+                             || (side < 0 && state.trandm <= -TRANDM_STRONG);
+        if !trandm_backs_side { d *= 0.80; }
+    }
     if state.tf5.conf < 35 { d *= 0.85; }
     let (t1, t5) = (state.tf1.regime, state.tf5.regime);
     if t1 != 0 && t5 != 0 && t1.signum() != t5.signum() { d *= 0.85; }
@@ -708,10 +719,10 @@ fn uncertainty_damp(state: &State) -> f64 {
 // is tilted by conviction and de-risked by uncertainty + the drawdown ratchet, and finally clamped
 // to `room`. Because every add is a fraction of remaining room, the cumulative notional on a side
 // converges to R_side and never overshoots (memory `feedback_risk_based_sizing`).
-fn budget_size(room: f64, f: f64, tilt: f64, state: &State) -> f64 {
+fn budget_size(room: f64, f: f64, tilt: f64, side: i8, state: &State) -> f64 {
     if room <= 0.0 { return 0.0; }
     (room * f.clamp(0.0, 1.0) * tilt.max(0.0) * state.ntps_mult
-        * uncertainty_damp(state) * state.risk_drawdown)
+        * uncertainty_damp(state, side) * state.risk_drawdown)
         .clamp(0.0, room)
 }
 
@@ -865,7 +876,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
         };
         if trigger {
             // v0.56 (0.D): seed fraction of remaining room × conviction tilt, de-risked + budget-capped.
-            let amt = budget_size(room_l, F_SEED, lbias * lscale * extra, state);
+            let amt = budget_size(room_l, F_SEED, lbias * lscale * extra, 1, state);
             let _ = long_alloc;
             if amt > 1.0 { open_positions.push(market_open(Direction::Long, amt, "auto-l")); }
         }
@@ -879,7 +890,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
         };
         if trigger {
             // v0.56 (0.D): seed fraction of remaining room × conviction tilt, de-risked + budget-capped.
-            let amt = budget_size(room_s, F_SEED, sbias * sscale * extra, state);
+            let amt = budget_size(room_s, F_SEED, sbias * sscale * extra, -1, state);
             let _ = short_alloc;
             if amt > 1.0 { open_positions.push(market_open(Direction::Short, amt, "auto-s")); }
         }
@@ -910,7 +921,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
                 && pzone > 0.35;
             if rejection || breakdown {
                 // v0.56 (0.D): trend size scales with confirmed 5m trend strength.
-                let amt = budget_size(room_s, f_trend, 1.0, state);
+                let amt = budget_size(room_s, f_trend, 1.0, -1, state);
                 if amt > 1.0 { open_positions.push(market_open(Direction::Short, amt, "trend-s")); }
             }
         }
@@ -929,7 +940,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
                 && pzone < 0.65;
             if rejection || breakout {
                 // v0.56 (0.D): trend size scales with confirmed 5m trend strength.
-                let amt = budget_size(room_l, f_trend, 1.0, state);
+                let amt = budget_size(room_l, f_trend, 1.0, 1, state);
                 if amt > 1.0 { open_positions.push(market_open(Direction::Long, amt, "trend-l")); }
             }
         }
@@ -953,7 +964,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
         && pzone > 0.15
     {
         // v0.56 (0.D): seed the trandm-ride sized by |trandm| conviction; stairs build the rest.
-        let amt = budget_size(room_s, f_tm, 1.0, state);
+        let amt = budget_size(room_s, f_tm, 1.0, -1, state);
         if amt > 1.0 { open_positions.push(market_open(Direction::Short, amt, "tm-s")); }
     }
 
@@ -965,7 +976,7 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
         && pzone < 0.85
     {
         // v0.56 (0.D): seed the trandm-ride sized by |trandm| conviction; stairs build the rest.
-        let amt = budget_size(room_l, f_tm, 1.0, state);
+        let amt = budget_size(room_l, f_tm, 1.0, 1, state);
         if amt > 1.0 { open_positions.push(market_open(Direction::Long, amt, "tm-l")); }
     }
 
@@ -978,13 +989,13 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
             && state.trandm <= -TRANDM_STRONG && state.angle < 0.0
         {
             // v0.56 (0.D): re-entry size scales with the 1m-ML angle (steeper drift → bigger).
-            let amt = budget_size(room_s, f_re, 1.0, state);
+            let amt = budget_size(room_s, f_re, 1.0, -1, state);
             if amt > 1.0 { open_positions.push(market_open(Direction::Short, amt, "re-s")); }
         } else if near_ml && !long_on_cd && cas_allows_long
             && state.trandm >= TRANDM_STRONG && state.angle > 0.0
         {
             // v0.56 (0.D): re-entry size scales with the 1m-ML angle (steeper drift → bigger).
-            let amt = budget_size(room_l, f_re, 1.0, state);
+            let amt = budget_size(room_l, f_re, 1.0, 1, state);
             if amt > 1.0 { open_positions.push(market_open(Direction::Long, amt, "re-l")); }
         }
     }
@@ -998,13 +1009,13 @@ fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPositi
             && state.tf5.cross < 0 && state.tf5.cross < state.short_stair_cross
         {
             // v0.56 (0.D): each stair takes half the REMAINING budget room (diminishing → ≤ R_side).
-            let stair = budget_size(room_s, F_STAIR, 1.0, state);
+            let stair = budget_size(room_s, F_STAIR, 1.0, -1, state);
             if stair > 1.0 { open_positions.push(market_open(Direction::Short, stair, "stair-s")); }
         } else if has_long && !has_short && state.trandm >= TRANDM_STRONG
             && state.tf5.cross > 0 && state.tf5.cross > state.long_stair_cross
         {
             // v0.56 (0.D): each stair takes half the REMAINING budget room (diminishing → ≤ R_side).
-            let stair = budget_size(room_l, F_STAIR, 1.0, state);
+            let stair = budget_size(room_l, F_STAIR, 1.0, 1, state);
             if stair > 1.0 { open_positions.push(market_open(Direction::Long, stair, "stair-l")); }
         }
     }
@@ -2418,7 +2429,7 @@ fn debug_builder(state: &State, sel: i64) -> String {
         ));
     }
     if sel & 16 != 0 {
-        parts.push(format!("dmp={:.2} dd={:.2}", uncertainty_damp(state), state.risk_drawdown));
+        parts.push(format!("dmp={:.2} dd={:.2}", uncertainty_damp(state, 0), state.risk_drawdown));
     }
     if parts.is_empty() { String::new() } else { format!(" | sw[{}]", parts.join(" ")) }
 }
