@@ -1,0 +1,16 @@
+# Rust build artifacts (163M+ — never commit)
+target/
+module/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code runtime / machine-local
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# OS cruft
+.DS_Store
+Thumbs.db

@@ -1,0 +1,74 @@
+{
+  "name": "ETH Dynamic Grid Hedge v0.32.0",
+  "exchange": "OKX",
+  "symbols": [],
+  "margin_mode": "Cross",
+  "margin_leverage": 100,
+  "margin": 5.0,
+  "max_active_bots": 20,
+  "settings": {
+    "margin_leverage": 100,
+    "margin_mode": "Cross",
+    "signal": {
+      "code": "start",
+      "min_tf": 60,
+      "name": "Action"
+    },
+    "strategy": {
+      "direction": "BOTH",
+      "max_open_amount": 500,
+      "module_id": "20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e",
+      "module_version": "0.32.0",
+      "name": "DynamicModule",
+      "on_actions": [],
+      "professional": {
+        "dynamic_module": {
+          "module_version": "0.32.0"
+        }
+      }
+    }
+  },
+  "signal_actions": [
+    {
+      "code": "start",
+      "name": "Start",
+      "description": "Start with config (defaults = stairs+trend on, grid off)",
+      "params": [
+        {"code": "breakout_guard", "name": "Breakout Guard", "variant": "Select", "options": ["Off", "On"], "default": 0},
+        {"code": "imbalance_guard", "name": "Imbalance Guard", "variant": "Select", "options": ["Off", "On"], "default": 0},
+        {"code": "margin_sl", "name": "Margin SL", "variant": "Select", "options": ["Off", "On"], "default": 1},
+        {"code": "imbalance_ratio", "name": "Imbalance Ratio", "variant": "Number", "default": 3},
+        {"code": "breakout_ntps", "name": "Breakout NTPS", "variant": "Number", "default": 300},
+        {"code": "sl_margin_pct", "name": "SL Margin %", "variant": "Number", "default": 0.7},
+        {"code": "seed", "name": "Seed Size", "variant": "Number", "default": 0.05},
+        {"code": "cap", "name": "Cap", "variant": "Number", "default": 0.9},
+        {"code": "cooldown_ticks", "name": "Cooldown Ticks", "variant": "Number", "default": 5},
+        {"code": "nearest", "name": "Nearest Orders", "variant": "Number", "default": 2},
+        {"code": "enable_grid", "name": "Enable Grid", "variant": "Select", "options": ["Off", "On"], "default": 0},
+        {"code": "enable_stairs", "name": "Enable Stairs", "variant": "Select", "options": ["Off", "On"], "default": 1},
+        {"code": "enable_trend", "name": "Enable Trend", "variant": "Select", "options": ["Off", "On"], "default": 1},
+        {"code": "debug_info", "name": "Debug Info (0=def 1=V 2=MRC 4=BIG 8=CAS 16=DMP, add to combine)", "variant": "Number", "default": 0}
+      ]
+    }
+  ],
+  "_module": {
+    "id": "20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e",
+    "version": "0.32.0",
+    "defaults": {
+      "breakout_guard": 0,
+      "imbalance_guard": 0,
+      "margin_sl": 1,
+      "imbalance_ratio": 3.0,
+      "breakout_ntps": 300,
+      "sl_margin_pct": 0.7,
+      "seed": 0.05,
+      "cap": 0.90,
+      "cooldown_ticks": 5,
+      "nearest": 2,
+      "enable_grid": 0,
+      "enable_stairs": 1,
+      "enable_trend": 1,
+      "debug_info": 0
+    }
+  }
+}

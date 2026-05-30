@@ -1,0 +1,137 @@
+# ETH Dynamic Grid Hedge — AI Memory
+
+## Module Architecture
+
+- **Type**: DynamicModule (WASM via `lte_strategy_bridge::run_loop`)
+- **Module ID**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e`
+- **Bridge**: `lte_strategy_bridge` (persistent stdin/stdout loop)
+- **Events**: SugInfo (~1s), Indicators (candle close), NewPosition, FinishPosition, OrderUpdate, Action
+
+## Movement Detection System (v0.11.0+)
+
+Debug-only analysis to detect slow up/down price movement. NOT used in trading logic — purely for observation and future development.
+
+### Signals Used
+
+| Signal | Indicator | Field | What it tells us |
+|--------|-----------|-------|------------------|
+| **MRC Angle** | `mrc_200` | computed from MeanLine[1] vs MeanLine[0] | Channel slope direction and speed. Positive = rising, negative = falling. Expressed as % change. |
+| **Supertrend Direction** | `supertrend` | `Direction` | Long/Short trend on the 1m timeframe |
+| **Supertrend Distance** | `supertrend` | `Supertrend` (line price) | How far price is from the supertrend line. Computed as `(price - st_line) / price * 100`. Positive = above line, negative = below. |
+| **Supertrend KLines** | `supertrend` | `KLines` | How many candles since the last supertrend direction change. Higher = more established trend. |
+| **Volume BuySellGain** | `volume_50` | `BuySellGain` | Buy/sell volume spike relative to last 50 candles. `+2.0` = buy volume 200% above normal. `-2.0` = sell volume 200% above normal. |
+
+### Movement Score (`mov`)
+
+Composite score from **-100** (strong down) to **+100** (strong up). Measures **sustained directional movement** — price trending in one direction without breaking opposite MRC bands.
+
+**Key principle:** Movement means price is moving directionally in a controlled way. Volume spikes (high |BuySellGain|) signal the **end** of movement (liquidation cascades), not movement itself.
+
+#### Score Components
+
+| Component | Weight | What it measures |
+|-----------|--------|------------------|
+| **Band depth** | ±40 max | How deep into one side of the MRC channel price sits. `(pzone - 0.5) * 80`. Price above ML in uptrend = positive, below ML in downtrend = negative. |
+| **Angle agreement** | 1.0–1.5× multiplier | MRC angle confirms the band direction. Same direction → boost up to 1.5×. Opposing → halve to 0.5×. |
+| **Supertrend confirmation** | ±30 max | Supertrend direction agrees + duration (KLines). Up to ±30 when confirmed for 30+ candles. No contribution if direction disagrees. |
+| **NATR tightness** | 0.5–1.5× multiplier | Small NATR = tight channel = controlled move = more significant. `(0.2 / natr)` clamped 0.5–1.5. |
+| **Volume spike penalty** | 0.3–1.0× multiplier | High |BuySellGain| > 1.5 dampens score. Signals potential end of movement, not continuation. |
+
+#### Formula
+
+```
+band_score = (pzone - 0.5) * 80                          # ±40 max
+angle_factor = if angle agrees: 1 + min(|angle|*100, 0.5) # 1.0–1.5
+               if opposes: 0.5
+st_score = st_dir * min(klines/30, 1) * 30               # ±30 if confirmed
+natr_factor = clamp(0.2 / natr, 0.5, 1.5)
+bsg_penalty = if |bsg| > 1.5: max(0.3, 1 - (|bsg|-1.5)*0.3)
+
+movement = (band_score * angle_factor + st_score) * natr_factor * bsg_penalty
+           clamped to [-100, +100]
+```
+
+#### Interpretation
+
+| Score | Meaning |
+|-------|---------|
+| +70 to +100 | Strong sustained uptrend — price high in channel, angle up, supertrend Long, low volatility |
+| +30 to +70 | Moderate uptrend — signals mostly agree |
+| -30 to +30 | Sideways / mixed signals |
+| -70 to -30 | Moderate downtrend |
+| -100 to -70 | Strong sustained downtrend |
+
+**Examples:**
+- `mov=+65`: price at UpSmall, angle positive, supertrend Long 20 candles, small NATR, no volume spike
+- `mov=-20`: price slightly below ML, angle slightly negative, supertrend recently flipped Short
+- `mov=+45` dropping to `mov=+15`: BuySellGain spiked to 2.0, dampening the score — possible end of uptrend
+
+### Debug Output Format
+
+**Indicators event:**
+```
+ind t=42 rng=0.85 ang=0.0023 smc=1 st=L(0.12% k=15) bsg=0.45 natr=0.082 mov=55 filled=3
+```
+
+**SugInfo event:**
+```
+sug t=43 p=2520.1234 ntps=85 rng=0.85 pz=0.62 db=2480.12 ml=2520.12 ub=2560.88 ang=0.0023 st=L(0.12% k=15) bsg=0.45 natr=0.082 mov=55 ind_age=1 ln=12.5 sn=11.2 ...
+```
+
+### Key debug fields:
+- `st=L/S/-` — Supertrend direction (Long/Short/unknown)
+- `(0.12%)` — distance from supertrend line as % of price
+- `k=15` — candles in current supertrend direction
+- `bsg=0.45` — BuySellGain (positive=buy pressure, negative=sell pressure)
+- `natr=0.082` — Normalized Average True Range (volatility)
+- `mov=55` — Movement score (-100..+100)
+- `ang=0.0023` — MRC angle (channel slope)
+- `ind_age=1` — ticks since last indicator update (staleness)
+- `pz=0.62` — Price zone (0=DownBig, 1=UpBig)
+- `db`/`ml`/`ub` — MRC band boundaries
+
+### Future Development Ideas
+
+1. **Movement-aware allocation**: When `mov` is strong, increase allocation to trending side and reduce counter-trend entries
+2. **Early exit signal**: When `mov` drops sharply (BuySellGain spike), close the losing side before SL
+3. **Grid spacing**: Widen grid in strong movement (fewer counter-trend fills), tighten in sideways (more mean-reversion profit)
+4. **Movement threshold for re-entry**: Delay re-entry on the losing side when `|mov|` is high
+
+## Config Parameters (v0.11.0)
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `breakout_guard` | **false** | Block counter-trend entries during SMC break + NTPS > threshold |
+| `imbalance_guard` | **false** | Cap one side at N× the other side's notional |
+| `margin_sl` | true | Enable margin-based stop loss |
+| `imbalance_ratio` | 3.0 | Max ratio for imbalance guard |
+| `breakout_ntps` | 200 | NTPS threshold for breakout guard |
+| `sl_margin_pct` | 0.9 | SL triggers at this % of margin lost |
+| `seed` | 0.05 | Seed position size ($ amount) |
+| `cap` | 0.90 | Max fill ratio before stopping entries |
+| `cooldown_ticks` | 5 | Ticks to wait after position close before re-entry |
+| `nearest` | 2 | Number of nearest grid levels to place orders at |
+
+**Default config matches v0.10.0 behavior** (guards off, same constants).
+
+## Grid Mechanics
+
+- 9 bands per side (MRC levels + midpoints) = 17 unique price levels per side
+- 2 nearest candidates selected per tick, placed as limit orders
+- Fill tracking via `mark` field (`slot:band` format, e.g., `l-e1:l-db`)
+- Filled bands skipped until position closes (FinishPosition clears fills for that side)
+- Mark slots: `l-e1`, `l-e2`, `l-ext` (entries), `l-t1`, `l-t2` (TPs), same for `s-*`
+
+## State Persistence
+
+Only critical restore-after-restart fields are serialized:
+- `ticks`, `long_close_tick`, `short_close_tick`
+- `long_needs_reentry`, `short_needs_reentry`
+- `long_entry_idx`, `long_tp_idx`, `short_entry_idx`, `short_tp_idx`
+
+MRC bands, indicators, and fill set are rebuilt from live data on restart.
+
+## Known Issues
+
+- **Imbalance guard `< 1.0` exemption**: When one side is at seed level (~$0.09), the other can grow without limit. Needs rework if guard is enabled.
+- **SL not firing**: Observed on EDEN at -$7.55 past -$6.16 threshold. Root cause unclear — possibly PnL lag, leverage mismatch, or config not applied. Enhanced debug (v0.10.3+) should help trace.

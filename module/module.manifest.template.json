@@ -1,0 +1,11 @@
+{
+  "module_id": "20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e",
+  "name": "ETH Dynamic Grid Hedge",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "target": "wasm32-wasip1",
+  "artifact": {
+    "bucket": "strategy-modules",
+    "object_key": "modules/20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e/0.1.0/module.wasm"
+  }
+}
