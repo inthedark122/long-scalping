@@ -155,16 +155,12 @@ fn handle_action(state: &mut State, name: &str, values: &HashMap<String, serde_j
             ..Default::default()
         };
     }
-    state.cfg.apply(values);
+    // Config loads ONLY via the Start SIGNAL (handle_signal) now — individual bot actions must
+    // never mutate cfg. Re-applying config here would reset/clobber the running config (user
+    // 2026-05-31: "remove cfg.apply from the OnAction because it will reset state"). Unknown
+    // action names are a no-op.
     ModuleOutput {
-        debug: format!(
-            "cfg brk={} imb={} sl={} ratio={} ntps_thr={} sl%={} seed={} cap={} cd={} near={} grid={} stairs={} dbg={} hntps={:.2}",
-            state.cfg.breakout_guard, state.cfg.imbalance_guard, state.cfg.margin_sl,
-            state.cfg.imbalance_ratio, state.cfg.breakout_ntps, state.cfg.sl_margin_pct,
-            state.cfg.seed, state.cfg.cap, state.cfg.cooldown_ticks, state.cfg.nearest,
-            state.cfg.enable_grid as u8, state.cfg.enable_stairs as u8, state.cfg.debug_info,
-            state.cfg.hedge_ntps_mult,
-        ),
+        debug: format!("action {} (ignored — config loads via Start signal only)", name),
         ..Default::default()
     }
 }
