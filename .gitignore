@@ -17,3 +17,6 @@ Thumbs.db
 
 # scratch / downloads (not tracked)
 tmp/
+
+# bug reports for the dev team — kept local, shared out-of-band
+issues/
