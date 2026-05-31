@@ -491,13 +491,22 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // rising NTPS + > 0.5% move). A favorable run never closes the winning side.
     // v0.50.0: sweep-hold suppresses the panic cover when the spike is into a channel
     // extreme against the 5m trend (stop hunt) — don't sell the top / buy the bottom.
+    // v0.61-sudden-fix: a panic-cover only makes sense to CUT A LOSS. Closing a side that is still in
+    // PROFIT on a transient spike abandons a winner at the spike extreme — the 6-month trace showed
+    // sudden-up/sudden-down netted −$11.57 (vs +$13.44 from normal profit-TPs) by doing exactly that.
+    // Gate the panic on the threatened side being UNDERWATER; a winner rides to its TP / the hedge
+    // handles a real reversal. Once a winner actually turns into a loss the gate opens next tick.
     if sudden_move {
+        let short_upnl = upnl(input.positions.short.as_ref(), price, false);
+        let long_upnl  = upnl(input.positions.long.as_ref(),  price, true);
         if state.run_dir > 0 && has_short && short_n > 1.0 && !short_sweep_hold && !trandm_hold_short
+            && short_upnl < 0.0
             && !close_positions.iter().any(|c| matches!(c.direction, Direction::Short))
         {
             close_positions.push(close(Direction::Short, "sudden-up"));
         }
         if state.run_dir < 0 && has_long && long_n > 1.0 && !long_sweep_hold && !trandm_hold_long
+            && long_upnl < 0.0
             && !close_positions.iter().any(|c| matches!(c.direction, Direction::Long))
         {
             close_positions.push(close(Direction::Long, "sudden-down"));
