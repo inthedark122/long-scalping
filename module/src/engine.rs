@@ -54,8 +54,14 @@ const SHORT_TP_BANDS: &[&str] = &[
 
 // ── Public entry ────────────────────────────────────────────────────────────
 
+// v0.61-cfgdebug: a live VERIFICATION build. When true, every event's debug line is replaced with
+// the loaded config (so `last_debug` always shows it, whichever event the snapshot lands on) — lets
+// us start/stop the bot repeatedly and confirm the Start signal delivered the right config values.
+// Trading is unchanged (only the debug string is overridden). NOT for production.
+const CFG_DEBUG: bool = true;
+
 pub fn run(input: &ModuleInput, state: &mut State) -> ModuleOutput {
-    match &input.event {
+    let mut out = match &input.event {
         ModuleEvent::Init => handle_init(input, state),
         ModuleEvent::Indicators { timeframes } => handle_indicators(input, state, timeframes),
         ModuleEvent::SugInfo => { state.ticks += 1; handle_sug_info(input, state) }
@@ -77,7 +83,20 @@ pub fn run(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         } => handle_order_update(state, *direction, role, status, mark),
         ModuleEvent::Action { name, values } => handle_action(state, name, values),
         ModuleEvent::Signal { code, values, .. } => handle_signal(state, code, values),
+    };
+    if CFG_DEBUG {
+        let c = &state.cfg;
+        out.debug = format!(
+            "CFG loaded={} t={} | seed={} cap={} cd={} near={} | grid={} stairs={} trend={} hedge={} | bg={} ig={} msl={} | ir={} bntps={} slm={} | risk={} stop={} hntps={:.2} dbg={}",
+            state.cfg_loaded, state.ticks,
+            c.seed, c.cap, c.cooldown_ticks, c.nearest,
+            c.enable_grid as u8, c.enable_stairs as u8, c.enable_trend as u8, c.enable_hedge as u8,
+            c.breakout_guard as u8, c.imbalance_guard as u8, c.margin_sl as u8,
+            c.imbalance_ratio, c.breakout_ntps, c.sl_margin_pct,
+            c.risk_pct, c.stop_pct, c.hedge_ntps_mult, c.debug_info,
+        );
     }
+    out
 }
 
 // ── Signal: the bot-group "Start" command (ABI b6f8fad2+ carries values) ────
