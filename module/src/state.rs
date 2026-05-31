@@ -323,6 +323,11 @@ pub struct State {
     pub short_entry_idx: i8,
     pub short_tp_idx: i8,
     pub cfg: Config,
+    // v0.61-signal: true once the Start SIGNAL has loaded its params into `cfg`. The Start signal
+    // re-fires (backtest: on every closed position via trigger Infinity; live: re-issue), so config
+    // is applied ONCE — re-applying would reset cfg back to the Start values and clobber any later
+    // live `run_bot_action` config push. Config-only; never touches runtime state.
+    pub cfg_loaded: bool,
 
     // ── Movement cascade tracker ──────────────────────────────────────────────
     // Raw block: consecutive candles with the same vol_bsg sign.
@@ -494,6 +499,7 @@ impl Default for State {
             short_entry_idx: -1,
             short_tp_idx: -1,
             cfg: Config::default(),
+            cfg_loaded: false,
             // Movement cascade
             mv_dir: 0, mv_high: 0.0, mv_low: 0.0, mv_candles: 0,
             mv_cas_dir: 0, mv_cas_high: 0.0, mv_cas_low: 0.0, mv_cas_candles: 0,

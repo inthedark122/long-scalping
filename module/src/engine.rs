@@ -76,7 +76,30 @@ pub fn run(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             ..
         } => handle_order_update(state, *direction, role, status, mark),
         ModuleEvent::Action { name, values } => handle_action(state, name, values),
-        _ => ModuleOutput::default(),
+        ModuleEvent::Signal { code, values, .. } => handle_signal(state, code, values),
+    }
+}
+
+// ── Signal: the bot-group "Start" command (ABI b6f8fad2+ carries values) ────
+// Loads the group's signal params into cfg so they actually reach the module (backtest
+// action_params + live Start). Keyed off `code` and applied ONCE (see State::cfg_loaded):
+// the Start signal re-fires (Infinity / re-issue) and re-applying would reset cfg back to the
+// Start values, clobbering any later live config push. Config-only — never resets runtime state.
+fn handle_signal(state: &mut State, code: &str, values: &HashMap<String, serde_json::Value>) -> ModuleOutput {
+    if code != "start" || state.cfg_loaded {
+        return ModuleOutput::default();
+    }
+    state.cfg.apply(values);
+    state.cfg_loaded = true;
+    ModuleOutput {
+        debug: format!(
+            "signal {} cfg seed={} cap={} cd={} near={} grid={} stairs={} trend={} hedge={} hntps={:.2} dbg={}",
+            code,
+            state.cfg.seed, state.cfg.cap, state.cfg.cooldown_ticks, state.cfg.nearest,
+            state.cfg.enable_grid as u8, state.cfg.enable_stairs as u8, state.cfg.enable_trend as u8,
+            state.cfg.enable_hedge as u8, state.cfg.hedge_ntps_mult, state.cfg.debug_info,
+        ),
+        ..Default::default()
     }
 }
 
