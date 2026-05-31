@@ -85,3 +85,23 @@ pub cfg_loaded: bool,   // NEW: true once the Start signal has loaded its params
   complete and correct; the remaining work is the backtest engine / bridge that builds the Signal.
 - **Open:** once the producer forwards values, re-run the A-vs-B proof (B should collapse to
   hedge-only). The live Start path may already populate values — validate there if needed.
+
+### v0.61-cfgdebug / cfgdebug2 — 2026-05-31 (throwaway live diagnostic → PRODUCER FIXED, signal works)
+- **`0.61-cfgdebug`** (branch `v0.61-cfgdebug` off `v0.61-signal`, `const CFG_DEBUG=true`): replaces
+  every event's debug with the loaded-config line so `last_debug` always shows it. Also removed
+  `cfg.apply` from `handle_action` (user: config loads only via the Start signal now; an Action
+  re-applying config would reset/clobber the running config).
+- **First live test (producer still broken):** deployed live, stopped bot 694, started via
+  `run_bot_group_action(29,'start', values={seed:0.30,…})` → after 167 ticks `CFG loaded=false …`
+  + all defaults. So `handle_signal` never fired — the host wasn't delivering the Signal. Matched
+  the backtest A==B result: the **producer (host)** wasn't emitting `ModuleEvent::Signal` to the module.
+- **`0.61-cfgdebug2`** (commit `0d92818`): added `State.sig_count/sig_code/sig_vals`; `handle_signal`
+  now records **every** signal (count + code + sorted `k=v`) *before* gating, then applies cfg only
+  on `code=="start"` & `!cfg_loaded`. Debug shows `sig#=N code='…' vals=[…]`.
+- **Producer fixed (user "bot updated"):** stop/start with `values={cap:0.95,cooldown_ticks:9,
+  enable_stairs:0,nearest:4}` → `CFG loaded=true … sig#=1 code='start'
+  vals=[cap=0.95,cooldown_ticks=9,enable_stairs=0,nearest=4] … cap=0.95 cd=9 near=4 stairs=0`.
+  **The Signal arrives with the exact values and `cfg.apply` lands them** (un-passed keys stay
+  default = correct partial-apply). End-to-end config-via-Start-signal is now **live-functional**.
+- **Next:** confirm the backtest engine got the same fix (re-run A-vs-B); then retire the cfgdebug
+  builds and run the clean `0.61-signal` (no CFG_DEBUG override) as the live baseline.
