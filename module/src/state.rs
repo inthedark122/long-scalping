@@ -328,6 +328,12 @@ pub struct State {
     // is applied ONCE — re-applying would reset cfg back to the Start values and clobber any later
     // live `run_bot_action` config push. Config-only; never touches runtime state.
     pub cfg_loaded: bool,
+    // v0.61-cfgdebug diagnostic: track EVERY Signal received (count, last code, last values, sorted
+    // "k=v,..") regardless of gating, so the debug can prove whether the host delivers
+    // ModuleEvent::Signal to the module at all and what it carries.
+    pub sig_count: u64,
+    pub sig_code: String,
+    pub sig_vals: String,
 
     // ── Movement cascade tracker ──────────────────────────────────────────────
     // Raw block: consecutive candles with the same vol_bsg sign.
@@ -500,6 +506,9 @@ impl Default for State {
             short_tp_idx: -1,
             cfg: Config::default(),
             cfg_loaded: false,
+            sig_count: 0,
+            sig_code: String::new(),
+            sig_vals: String::new(),
             // Movement cascade
             mv_dir: 0, mv_high: 0.0, mv_low: 0.0, mv_candles: 0,
             mv_cas_dir: 0, mv_cas_high: 0.0, mv_cas_low: 0.0, mv_cas_candles: 0,

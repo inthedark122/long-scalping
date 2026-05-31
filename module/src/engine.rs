@@ -87,8 +87,8 @@ pub fn run(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     if CFG_DEBUG {
         let c = &state.cfg;
         out.debug = format!(
-            "CFG loaded={} t={} | seed={} cap={} cd={} near={} | grid={} stairs={} trend={} hedge={} | bg={} ig={} msl={} | ir={} bntps={} slm={} | risk={} stop={} hntps={:.2} dbg={}",
-            state.cfg_loaded, state.ticks,
+            "CFG loaded={} t={} sig#={} code='{}' vals=[{}] | seed={} cap={} cd={} near={} | grid={} stairs={} trend={} hedge={} | bg={} ig={} msl={} | ir={} bntps={} slm={} | risk={} stop={} hntps={:.2} dbg={}",
+            state.cfg_loaded, state.ticks, state.sig_count, state.sig_code, state.sig_vals,
             c.seed, c.cap, c.cooldown_ticks, c.nearest,
             c.enable_grid as u8, c.enable_stairs as u8, c.enable_trend as u8, c.enable_hedge as u8,
             c.breakout_guard as u8, c.imbalance_guard as u8, c.margin_sl as u8,
@@ -105,21 +105,19 @@ pub fn run(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 // the Start signal re-fires (Infinity / re-issue) and re-applying would reset cfg back to the
 // Start values, clobbering any later live config push. Config-only — never resets runtime state.
 fn handle_signal(state: &mut State, code: &str, values: &HashMap<String, serde_json::Value>) -> ModuleOutput {
-    if code != "start" || state.cfg_loaded {
-        return ModuleOutput::default();
+    // Track EVERY Signal received (count + last code + last values) BEFORE any gating, so the debug
+    // proves whether the host delivers ModuleEvent::Signal to the module at all and what it carries.
+    state.sig_count += 1;
+    state.sig_code = code.to_string();
+    let mut kv: Vec<String> = values.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+    kv.sort();
+    state.sig_vals = kv.join(",");
+    // Config loads ONLY on the Start code, ONCE (config-only, never resets runtime state).
+    if code == "start" && !state.cfg_loaded {
+        state.cfg.apply(values);
+        state.cfg_loaded = true;
     }
-    state.cfg.apply(values);
-    state.cfg_loaded = true;
-    ModuleOutput {
-        debug: format!(
-            "signal {} cfg seed={} cap={} cd={} near={} grid={} stairs={} trend={} hedge={} hntps={:.2} dbg={}",
-            code,
-            state.cfg.seed, state.cfg.cap, state.cfg.cooldown_ticks, state.cfg.nearest,
-            state.cfg.enable_grid as u8, state.cfg.enable_stairs as u8, state.cfg.enable_trend as u8,
-            state.cfg.enable_hedge as u8, state.cfg.hedge_ntps_mult, state.cfg.debug_info,
-        ),
-        ..Default::default()
-    }
+    ModuleOutput::default()
 }
 
 // ── OrderUpdate: track filled levels by mark ───────────────────────────────
