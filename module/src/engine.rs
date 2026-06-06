@@ -300,8 +300,13 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
     // Market auto-open only — one-shot per candle. Limit orders live in handle_sug_info.
     let open_positions = if timeframes.contains(&TF)
         && state.has_mrc
-        && (state.cfg.enable_stairs || state.cfg.enable_trend)
+        && (state.cfg.enable_stairs || state.cfg.enable_trend || state.cfg.enable_fcscalp)
     {
+        // Flat → clear stale owner before this candle's open re-latches (mirror of
+        // the reconciliation in handle_sug_info; the two handlers can each open).
+        if input.positions.long.is_none() {
+            state.pos_owner = OWN_NONE;
+        }
         let ops = compute_auto_open(input, state);
         // Record trend SL cross for freshly emitted trend opens
         for op in &ops {
@@ -313,6 +318,12 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                 // v0.55 (0.C): baseline/advance the stair ladder on long opens & stairs.
                 "tm-l" | "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
                 _ => {}
+            }
+            // Latch ownership here too — opens fire from BOTH this candle handler and
+            // handle_sug_info; without this an FC open on a candle close stays OWN_NONE
+            // and the base TP/DCA logic wrongly manages the FC position.
+            if state.pos_owner == OWN_NONE {
+                state.pos_owner = owner_from_mark(&op.note);
             }
         }
         ops
@@ -407,6 +418,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let long_pnl = upnl(input.positions.long.as_ref(), price, true);
     let has_long = input.positions.long.is_some();
     let total_pnl = long_pnl;
+    // Owner reconciliation: when genuinely flat, clear the owner so a stale latch from an
+    // unfilled/rejected open can't leak onto the next position. The open this tick (emitted
+    // while still flat) re-latches below; once has_long is true the owner is preserved.
+    if !has_long {
+        state.pos_owner = OWN_NONE;
+    }
     // v0.55 (0.C): reset the stair ladder when flat so each new ride builds from scratch.
     // v0.56 (0.E): track the first Big-line interaction (reset flat, set on trade-through).
     if !has_long {
