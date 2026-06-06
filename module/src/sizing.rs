@@ -3,7 +3,7 @@
 
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
-use crate::orders::{limit_order, limit_order_sl, market_open, tp_order_with_band};
+use crate::orders::{limit_open_sl, limit_order, market_open, tp_order_with_band};
 use crate::state::State;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -218,6 +218,34 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
+    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — LIMIT open ───────────
+    // Open via the ModuleOpenPosition path: a maker LIMIT buy resting at DownInner
+    // (the dip level) with a pure-limit stop attached at DownBig. A place-order limit
+    // can't open from flat — only this path opens a position.
+    if state.cfg.enable_fcscalp
+        && !has_long
+        && open_positions.is_empty()
+        && !long_on_cd
+        && state.mrc_di > state.mrc_db
+        && price > state.mrc_di
+    {
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        let amt = (max * state.cfg.seed).max(min_n).max(1.0);
+        if amt <= max {
+            open_positions.push(limit_open_sl(
+                Direction::Long,
+                amt,
+                state.mrc_di,
+                state.mrc_db,
+                "fcs-l",
+            ));
+        }
+    }
+
     // ── Trend entry (zone-rejection / fast-candle breakout) — long only ─────────
     if state.cfg.enable_trend
         && !has_long
@@ -373,42 +401,18 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     // Entry: rest a maker BUY at the candle low after a fast-DOWN flush ("buy the low").
     // Exit:  rest a maker reduce-only SELL at entry × (1 + fcscalp_tp_pct) ("sell the high").
     // The DownBig hard stop is the ONLY market exit (handle_sug_info) — rare, catastrophic.
-    if state.cfg.enable_fcscalp {
-        if !has_long
-            && balance_ok
-            && !long_on_cd
-            && state.mrc_di > state.mrc_db
-            && price > state.mrc_di
-        {
-            // Rest a maker BUY at DownInner so it FILLS when price pulls back to it
-            // (a limit at the moving candle low never fills once price bounces).
-            // Bracket: pure-limit stop attached at DownBig, just below.
-            let min_n = input
-                .symbol_info
-                .min_notional
-                .unwrap_or(0.0)
-                .max(state.cfg.min_order);
-            let amt = (max * state.cfg.seed).max(min_n).max(1.0);
-            if amt <= max {
-                place_orders.push(limit_order_sl(
-                    Direction::Long,
-                    amt,
-                    state.mrc_di,
-                    state.mrc_db,
-                    "fcs-l",
-                ));
-            }
-        } else if has_long && long_n > 1.0 {
-            if let Some(p) = input.positions.long.as_ref() {
-                let tp_px = p.entry_price * (1.0 + state.cfg.fcscalp_tp_pct);
-                place_orders.push(tp_order_with_band(
-                    Direction::Long,
-                    long_n,
-                    tp_px,
-                    "fcs-tp",
-                    "fcs-tp",
-                ));
-            }
+    // Fast-candle scalp TP: maker reduce-only SELL at entry × (1 + fcscalp_tp_pct).
+    // (Entry + DownBig stop are a LIMIT open in compute_auto_open.)
+    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 {
+        if let Some(p) = input.positions.long.as_ref() {
+            let tp_px = p.entry_price * (1.0 + state.cfg.fcscalp_tp_pct);
+            place_orders.push(tp_order_with_band(
+                Direction::Long,
+                long_n,
+                tp_px,
+                "fcs-tp",
+                "fcs-tp",
+            ));
         }
     }
 
