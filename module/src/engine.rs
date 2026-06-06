@@ -535,7 +535,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // rising NTPS + > 0.5% move). A favorable run never closes the winning side.
     // v0.50.0: sweep-hold suppresses the panic cover when the spike is into a channel
     // extreme against the 5m trend (stop hunt) — don't sell the top / buy the bottom.
-    if sudden_move {
+    if sudden_move && !state.cfg.enable_fcscalp {
         if state.run_dir < 0
             && has_long
             && long_n > 1.0
@@ -564,6 +564,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     } else if state.tm_side == 1 && trandm < TRANDM_MILD {
         if has_long
             && long_n > 1.0
+            && !state.cfg.enable_fcscalp
             && !close_positions
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))

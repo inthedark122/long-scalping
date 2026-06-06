@@ -50,7 +50,6 @@ pub(crate) fn limit_order(
 /// Clean LIMIT open ("create position with price"): a maker open resting at
 /// `enter`. NO stop_loss/take_profit bracket on the create — attaching those
 /// gets the order rejected; the stop/TP are handled separately.
-#[allow(dead_code)]
 pub(crate) fn limit_open(
     direction: Direction,
     amount: f64,

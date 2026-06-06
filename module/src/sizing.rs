@@ -3,7 +3,7 @@
 
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
-use crate::orders::{limit_order, market_open, tp_order_with_band};
+use crate::orders::{limit_open, limit_order, market_open, tp_order_with_band};
 use crate::state::State;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -55,6 +55,40 @@ pub(crate) fn budget_size(room: f64, f: f64, tilt: f64, state: &State) -> f64 {
         * uncertainty_damp(state)
         * state.risk_drawdown)
         .clamp(0.0, room)
+}
+
+// ── fcscalp price levels (order-book walls live, MRC fallback for backtest) ──────
+/// Nearest order-book SUPPORT wall below `price` (live). None when there's no order
+/// book (backtest) — caller then falls back to a market open at the MRC dip.
+fn fcscalp_support(input: &ModuleInput, price: f64) -> Option<f64> {
+    let ob = input.sug_info.as_ref().and_then(|s| s.order_book.as_ref())?;
+    let support = ob
+        .short_levels
+        .iter()
+        .map(|l| l.price)
+        .filter(|&p| p > 0.0 && p < price)
+        .fold(0.0_f64, f64::max); // highest wall below price = nearest support
+    if support > 0.0 {
+        Some(support)
+    } else {
+        None
+    }
+}
+
+/// TP: nearest order-book RESISTANCE wall above `price` (live) or entry×(1+tp_pct) (fallback).
+fn fcscalp_tp_px(input: &ModuleInput, state: &State, price: f64, entry: f64) -> f64 {
+    if let Some(ob) = input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
+        let resist = ob
+            .long_levels
+            .iter()
+            .map(|l| l.price)
+            .filter(|&p| p > price)
+            .fold(f64::MAX, f64::min); // lowest wall above price = nearest resistance
+        if resist < f64::MAX && resist > entry {
+            return resist;
+        }
+    }
+    entry * (1.0 + state.cfg.fcscalp_tp_pct)
 }
 
 // ── Auto-open: market entries, called once per 1m candle from handle_indicators ──
@@ -199,6 +233,37 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
 
     let mut open_positions: Vec<ModuleOpenPosition> = Vec::new();
 
+    // ── Fast-candle scalp (opt-in) — SOLE entry when enabled ────────────────────
+    // Pure dip-buyer. Entry = nearest order-book SUPPORT wall below price (live) or the
+    // MRC DownInner band (fallback / backtest). Maker LIMIT create-with-price. Returns
+    // early → skips ALL base entries (auto-l/stair/trend/dca) so the bot never buys tops.
+    if state.cfg.enable_fcscalp {
+        if !has_long && !long_on_cd {
+            let min_n = input
+                .symbol_info
+                .min_notional
+                .unwrap_or(0.0)
+                .max(state.cfg.min_order);
+            let amt = (max * state.cfg.seed).max(min_n).max(1.0);
+            if amt <= max {
+                if let Some(support) = fcscalp_support(input, price) {
+                    // LIVE: maker LIMIT create-with-price at the nearest support wall.
+                    if support < price {
+                        open_positions.push(limit_open(Direction::Long, amt, support, "fcs-l"));
+                    }
+                } else if state.mrc_di > state.mrc_db
+                    && price <= state.mrc_di
+                    && price > state.mrc_db
+                {
+                    // FALLBACK (backtest, no order book): MARKET open at the DownInner dip —
+                    // limit opens don't fill in backtest; the TP is still a maker limit.
+                    open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
+                }
+            }
+        }
+        return open_positions;
+    }
+
     // LONG-ONLY: open only on long setups; the bot never opens a short. (The hedge — which
     // opened the opposite side — is removed entirely along with all short entries.)
     if !has_long && !long_on_cd && cas_allows_long && !trandm_block_long {
@@ -218,28 +283,6 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — MARKET open (test) ────
-    // TEST: clean market open (no bracket) when price dips into [DownBig, DownInner],
-    // to confirm positions open + the TP/stop logic. Revert to limit_open (create-
-    // with-price) once validated. The DownBig stop is a separate close; TP is a limit.
-    if state.cfg.enable_fcscalp
-        && !has_long
-        && open_positions.is_empty()
-        && !long_on_cd
-        && state.mrc_di > state.mrc_db
-        && price <= state.mrc_di
-        && price > state.mrc_db
-    {
-        let min_n = input
-            .symbol_info
-            .min_notional
-            .unwrap_or(0.0)
-            .max(state.cfg.min_order);
-        let amt = (max * state.cfg.seed).max(min_n).max(1.0);
-        if amt <= max {
-            open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
-        }
-    }
 
     // ── Trend entry (zone-rejection / fast-candle breakout) — long only ─────────
     if state.cfg.enable_trend
@@ -396,19 +439,23 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     // Entry: rest a maker BUY at the candle low after a fast-DOWN flush ("buy the low").
     // Exit:  rest a maker reduce-only SELL at entry × (1 + fcscalp_tp_pct) ("sell the high").
     // The DownBig hard stop is the ONLY market exit (handle_sug_info) — rare, catastrophic.
-    // Fast-candle scalp TP: maker reduce-only SELL at entry × (1 + fcscalp_tp_pct).
-    // (Entry + DownBig stop are a LIMIT open in compute_auto_open.)
-    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 {
-        if let Some(p) = input.positions.long.as_ref() {
-            let tp_px = p.entry_price * (1.0 + state.cfg.fcscalp_tp_pct);
-            place_orders.push(tp_order_with_band(
-                Direction::Long,
-                long_n,
-                tp_px,
-                "fcs-tp",
-                "fcs-tp",
-            ));
+    // ── Fast-candle scalp (opt-in) — SOLE exit when enabled ─────────────────────
+    // TP = nearest order-book RESISTANCE wall above price (live) or entry×(1+tp_pct)
+    // (fallback). Maker reduce-only limit. Returns early → skips ALL base TPs/DCA.
+    if state.cfg.enable_fcscalp {
+        if has_long && long_n > 1.0 {
+            if let Some(p) = input.positions.long.as_ref() {
+                let tp_px = fcscalp_tp_px(input, state, price, p.entry_price);
+                place_orders.push(tp_order_with_band(
+                    Direction::Long,
+                    long_n,
+                    tp_px,
+                    "fcs-tp",
+                    "fcs-tp",
+                ));
+            }
         }
+        return place_orders;
     }
 
     // ── Long TPs ─────────────────────────────────────────────────────────────
