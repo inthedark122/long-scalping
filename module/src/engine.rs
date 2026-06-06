@@ -623,7 +623,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // ── Trend mode: gradual transition close for a long caught in a confirmed downtrend ────
     // Stage 0→1: 25% after 2 candles · 1→2: 25% after 5 · 2→3: 50% after 8.
     let mc = state.mkt_mode_candles;
-    if mkt_mode == -2 && has_long && long_n > 1.0 {
+    if base_owner && mkt_mode == -2 && has_long && long_n > 1.0 {
         let (stage, min_can, pct, mark): (u8, u32, f64, &str) = match state.mode_close_l {
             0 => (0, 2, 0.25, "tc-cl1"),
             1 => (1, 5, 0.25, "tc-cl2"),
@@ -650,7 +650,8 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // Only fires when no full SL is already in progress (close_positions is empty).
     let early_sl_threshold = -(margin * state.cfg.sl_margin_pct * 0.50);
     if state.cfg.margin_sl && close_positions.is_empty() && total_pnl < early_sl_threshold {
-        if has_long && long_pnl < 0.0 && long_n > 1.0 {
+        // base owners only — FC holds through the flush on its deep stop, no staged SL.
+        if base_owner && has_long && long_pnl < 0.0 && long_n > 1.0 {
             let amt = long_n * 0.30;
             if amt > 1.0 {
                 place_orders.push(tp_order_with_band(
