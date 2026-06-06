@@ -220,7 +220,11 @@ impl Default for Config {
             debug_info: 0,   // 0 = default per-event logs; see Config::debug_info for preset bits
             enable_stairs: true,
             enable_trend: true,
-            enable_fcscalp: false,
+            // Default ON for the arbitration test branch: enable_fcscalp isn't in the group's
+            // `start` signal_action params, so a live start can't pass it — default it on so the
+            // FC scalp coexists with base live (the order-book edge is live-only). Backtests still
+            // pass it explicitly, so this only affects live/param-absent starts.
+            enable_fcscalp: true,
             fcscalp_tp_pct: 0.004,
             min_order: 0.0,
         }
