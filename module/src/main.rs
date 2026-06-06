@@ -1,9 +1,12 @@
 mod consts;
 mod debug;
 mod engine;
+mod fastcandle;
 mod indicators;
+mod interest;
 mod orders;
 mod state;
+mod vlines;
 
 use lte_strategy_bridge::run_loop;
 
