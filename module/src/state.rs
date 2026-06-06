@@ -123,6 +123,10 @@ pub struct FastCandleStats {
 
     // Sliding window of last 8 completed events (oldest first, newest last)
     pub history: Vec<FcEvent>,
+
+    // Direction + tick of the last COMPLETED event (drives the fast-candle scalp).
+    pub last_end_dir: i8,
+    pub last_end_tick: u64,
 }
 
 impl Default for FastCandleStats {
@@ -145,6 +149,8 @@ impl Default for FastCandleStats {
             prefire_candle: 0,
             momentum: 0.0,
             history: Vec::new(),
+            last_end_dir: 0,
+            last_end_tick: 0,
         }
     }
 }
@@ -189,6 +195,10 @@ pub struct Config {
     // Entry mode switches (v0.29.0)
     pub enable_stairs: bool, // candle-close stair opens, kickstart, trend-DCA (dca-l/s)
     pub enable_trend: bool, // zone-rejection + fast-candle breakdown entries, zone-SL
+    // Fast-candle scalp (opt-in experiment): buy the flush low after a fast-DOWN event,
+    // take profit on a small bounce / fast-up event, hard stop at DownBig.
+    pub enable_fcscalp: bool,
+    pub fcscalp_tp_pct: f64, // TP as fraction of notional (≈ price move %); 0.004 = 0.4%
 }
 
 impl Default for Config {
@@ -209,6 +219,8 @@ impl Default for Config {
             debug_info: 0,   // 0 = default per-event logs; see Config::debug_info for preset bits
             enable_stairs: true,
             enable_trend: true,
+            enable_fcscalp: false,
+            fcscalp_tp_pct: 0.004,
         }
     }
 }
@@ -236,6 +248,8 @@ impl Config {
                 "debug_info" => self.debug_info = n as i64,
                 "enable_stairs" => self.enable_stairs = n != 0.0,
                 "enable_trend" => self.enable_trend = n != 0.0,
+                "enable_fcscalp" => self.enable_fcscalp = n != 0.0,
+                "fcscalp_tp_pct" => self.fcscalp_tp_pct = n,
                 _ => {}
             }
         }

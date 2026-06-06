@@ -86,6 +86,8 @@ pub(crate) fn update_fast_candles(state: &mut State, price: f64) {
             fc.count += 1;
             fc.momentum = (fc.momentum * 0.85 + fc.dir as f64).clamp(-10.0, 10.0);
             fc.active = false;
+            fc.last_end_dir = fc.dir;
+            fc.last_end_tick = tick;
             fc.calm_since = tick;
             // Sliding window — keep last 8
             fc.history.push(crate::state::FcEvent {

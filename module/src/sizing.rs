@@ -218,6 +218,26 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
+    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) ───────────────────────
+    // Buy the LOW right after a fast-DOWN flush completes — the "lowest candle". This
+    // DELIBERATELY bypasses the trandm sell-block (it IS a counter-flush dip-buy) and is
+    // protected by the DownBig hard stop in handle_sug_info. Lower-half of the channel only.
+    if state.cfg.enable_fcscalp
+        && !has_long
+        && open_positions.is_empty()
+        && !long_on_cd
+        && state.fc.last_end_dir == -1
+        && now_tick.saturating_sub(state.fc.last_end_tick) <= 5
+        && price < state.mrc_ml
+        && price > state.mrc_db
+        && room_l > 1.0
+    {
+        let amt = budget_size(room_l, F_SEED, lbias * lscale, state);
+        if amt > 1.0 {
+            open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
+        }
+    }
+
     // ── Trend entry (zone-rejection / fast-candle breakout) — long only ─────────
     if state.cfg.enable_trend
         && !has_long
