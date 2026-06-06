@@ -24,6 +24,10 @@ which feed it market events over the **`lte_strategy_bridge` ABI** and execute t
 - **Deployed on group 29: `v0.61-long`** — the **long-only** build (all short + hedge code removed).
 - Live bot 694 is **stopped**; nothing is trading.
 - Group 29 `api_key_id` is **null** (see gotcha #9) and its symbols are **`ETH` + `HOME`** (HOME added for backtesting), `margin_leverage` 100.
+- **Don't assume bot-group / account setup.** Group 29 is *this* strategy's group, but a fresh
+  tool/developer should **ask the user** which bot-group(s) and account (api_key) to use rather than
+  hardcode it — groups/accounts change (a separate group 31 existed earlier and was removed; api_key 5
+  was deleted, see gotcha #9). Treat the current group/symbol/leverage as *state to confirm*, not gospel.
 
 ### Branch map (the live code is NOT on `main`)
 | branch | what it is |
