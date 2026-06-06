@@ -6,6 +6,7 @@ mod indicators;
 mod interest;
 mod movement;
 mod orders;
+mod sizing;
 mod state;
 mod vlines;
 

@@ -1,7 +1,7 @@
 //! Debug string formatters: compact per-event diagnostic suffixes read back
 //! from `list_bots` last_debug. Read-only over `State`.
 
-use crate::engine::uncertainty_damp;
+use crate::sizing::uncertainty_damp;
 use crate::state::{State, TfMovState};
 
 pub(crate) fn fc_history_debug(history: &[crate::state::FcEvent]) -> String {
