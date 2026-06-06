@@ -200,6 +200,10 @@ pub struct Config {
     pub enable_fcscalp: bool,
     pub fcscalp_tp_pct: f64, // TP as fraction of notional (≈ price move %); 0.004 = 0.4%
     pub min_order: f64,      // floor entry notional (exchange min order size, e.g. $7 HYPE)
+    // FC order-book grid: each rung is `fcscalp_rung_frac` of the budget; the position
+    // grids up to `fcscalp_grid_frac` of the budget across the nearest support walls.
+    pub fcscalp_rung_frac: f64, // 0.075 → $15 rung at a $200 budget
+    pub fcscalp_grid_frac: f64, // 0.375 → $75 max (≈5 rungs)
 }
 
 impl Default for Config {
@@ -227,6 +231,8 @@ impl Default for Config {
             enable_fcscalp: true,
             fcscalp_tp_pct: 0.004,
             min_order: 0.0,
+            fcscalp_rung_frac: 0.075, // ~$15 per rung at a $200 budget
+            fcscalp_grid_frac: 0.375, // ~$75 max grid (≈5 rungs)
         }
     }
 }
@@ -257,6 +263,8 @@ impl Config {
                 "enable_fcscalp" => self.enable_fcscalp = n != 0.0,
                 "fcscalp_tp_pct" => self.fcscalp_tp_pct = n,
                 "min_order" => self.min_order = n,
+                "fcscalp_rung_frac" => self.fcscalp_rung_frac = n,
+                "fcscalp_grid_frac" => self.fcscalp_grid_frac = n,
                 _ => {}
             }
         }

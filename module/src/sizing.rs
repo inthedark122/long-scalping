@@ -91,6 +91,44 @@ fn fcscalp_tp_px(input: &ModuleInput, state: &State, price: f64, entry: f64) -> 
     entry * (1.0 + state.cfg.fcscalp_tp_pct)
 }
 
+/// Up to `n` nearest order-book SUPPORT walls strictly below `ceil`, nearest first
+/// (highest price first). Empty when there's no order book (backtest).
+fn fcscalp_support_walls(input: &ModuleInput, ceil: f64, n: usize) -> Vec<f64> {
+    let ob = match input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
+        Some(ob) => ob,
+        None => return Vec::new(),
+    };
+    let mut v: Vec<f64> = ob
+        .short_levels
+        .iter()
+        .map(|l| l.price)
+        .filter(|&p| p > 0.0 && p < ceil)
+        .collect();
+    v.sort_by(|a, b| b.total_cmp(a)); // descending → nearest-below first
+    v.dedup();
+    v.truncate(n);
+    v
+}
+
+/// Up to `n` nearest order-book RESISTANCE walls strictly above `floor`, nearest first
+/// (lowest price first). Empty when there's no order book (backtest).
+fn fcscalp_resist_walls(input: &ModuleInput, floor: f64, n: usize) -> Vec<f64> {
+    let ob = match input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
+        Some(ob) => ob,
+        None => return Vec::new(),
+    };
+    let mut v: Vec<f64> = ob
+        .long_levels
+        .iter()
+        .map(|l| l.price)
+        .filter(|&p| p > floor)
+        .collect();
+    v.sort_by(|a, b| a.total_cmp(b)); // ascending → nearest-above first
+    v.dedup();
+    v.truncate(n);
+    v
+}
+
 // ── Auto-open: market entries, called once per 1m candle from handle_indicators ──
 
 pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPosition> {
@@ -249,7 +287,9 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
                 .min_notional
                 .unwrap_or(0.0)
                 .max(state.cfg.min_order);
-            let amt = (max * state.cfg.seed).max(min_n).max(1.0);
+            // First grid rung — rung-sized (fcscalp_rung_frac of budget). The remaining
+            // rungs are added as maker buys at lower support walls in compute_limit_orders.
+            let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
             if amt <= max {
                 if let Some(support) = fcscalp_support(input, price) {
                     // LIVE: maker LIMIT create-with-price at the nearest support wall.
@@ -453,14 +493,60 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     if state.pos_owner == OWN_FC {
         if has_long && long_n > 1.0 {
             if let Some(p) = input.positions.long.as_ref() {
-                let tp_px = fcscalp_tp_px(input, state, price, p.entry_price);
-                place_orders.push(tp_order_with_band(
-                    Direction::Long,
-                    long_n,
-                    tp_px,
-                    "fcs-tp",
-                    "fcs-tp",
-                ));
+                let avg = p.entry_price;
+                let rung = (max * state.cfg.fcscalp_rung_frac).max(1.0);
+                let grid_max = max * state.cfg.fcscalp_grid_frac;
+
+                // ── Entry grid: rest maker BUYs at the nearest support walls BELOW the
+                //    avg entry (always a better price → improves avg, no instant re-fill),
+                //    up to the grid budget. Sideways only — never add into a breakdown.
+                if mkt_mode == 1 {
+                    let remaining = (grid_max - long_n).max(0.0);
+                    let n_more = (remaining / rung).floor() as usize;
+                    if n_more > 0 {
+                        for (i, wall) in fcscalp_support_walls(input, avg, n_more)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            place_orders.push(limit_order(
+                                Direction::Long,
+                                rung,
+                                wall,
+                                &format!("fcs-g{}", i + 1),
+                            ));
+                        }
+                    }
+                }
+
+                // ── TP ladder: reduce-only maker SELLs at the nearest resistance walls
+                //    ABOVE the avg entry, splitting the position so every fill banks
+                //    profit. Fallback (no order book / backtest): a single wall/%% TP.
+                let walls = fcscalp_resist_walls(input, avg, 5);
+                let slice = if walls.is_empty() {
+                    0.0
+                } else {
+                    long_n / walls.len() as f64
+                };
+                if walls.is_empty() || slice <= 1.0 {
+                    let tp_px = fcscalp_tp_px(input, state, price, avg);
+                    place_orders.push(tp_order_with_band(
+                        Direction::Long,
+                        long_n,
+                        tp_px,
+                        "fcs-tp",
+                        "fcs-tp",
+                    ));
+                } else {
+                    for (i, wall) in walls.iter().enumerate() {
+                        place_orders.push(tp_order_with_band(
+                            Direction::Long,
+                            slice,
+                            *wall,
+                            "fcs-gtp",
+                            &format!("fcs-gtp{}", i + 1),
+                        ));
+                    }
+                }
             }
         }
         return place_orders;
