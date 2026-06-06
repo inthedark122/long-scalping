@@ -701,6 +701,25 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let ord_count = place_orders.len();
 
+    // ── FC cancel-on-stale ──────────────────────────────────────────────────────
+    // Standing limit orders persist by mark until cancelled (they are NOT auto-pulled
+    // when we stop emitting them). So when we're FLAT and the FC setup is no longer
+    // fresh — price pumped away, the down-flush expired, or a grid was left behind by
+    // a position that just closed into a pump — explicitly cancel the FC entry + grid
+    // buys so they can't fill later on an unrelated dip. While a position is open the
+    // grid is left intact (it's doing its job); this only fires once flat.
+    let mut cancel_orders: Vec<String> = Vec::new();
+    if !has_long {
+        let fc_flush_fresh = state.fc.last_end_dir == -1
+            && state.fc.last_end_tick > 0
+            && state.ticks.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
+        let fc_armable = state.cfg.enable_fcscalp && state.tf5.regime == 1 && fc_flush_fresh;
+        if !fc_armable {
+            cancel_orders.push("fcs-l".to_string());
+            cancel_orders.push("fcs-g".to_string());
+        }
+    }
+
     let run_arrow = if state.run_dir > 0 {
         "^"
     } else if state.run_dir < 0 {
@@ -729,6 +748,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         open_positions,
         close_positions,
         place_orders,
+        cancel_orders,
         debug: format!(
             "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}{} | {} | vt={}{}",
             state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
