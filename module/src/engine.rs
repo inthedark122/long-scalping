@@ -105,13 +105,12 @@ fn handle_signal(
     state.cfg_loaded = true;
     ModuleOutput {
         debug: format!(
-            "signal {} cfg seed={} cap={} cd={} near={} grid={} stairs={} trend={} dbg={}",
+            "signal {} cfg seed={} cap={} cd={} near={} stairs={} trend={} dbg={}",
             code,
             state.cfg.seed,
             state.cfg.cap,
             state.cfg.cooldown_ticks,
             state.cfg.nearest,
-            state.cfg.enable_grid as u8,
             state.cfg.enable_stairs as u8,
             state.cfg.enable_trend as u8,
             state.cfg.debug_info,
@@ -1064,8 +1063,6 @@ fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<ModulePlaceOr
     let leverage = input.leverage.max(1) as f64;
     let r_side = risk_sized_notional(max, leverage, state.cfg.risk_pct, state.cfg.stop_pct);
     let lwm = win_mult(input.positions.long.as_ref(), price, true);
-    // LONG-ONLY: no counter (short) leg, so the imbalance guard never constrains the long.
-    let imbalance_ok_long = true;
     let long_on_cd = state.long_close_tick > 0
         && state.ticks.saturating_sub(state.long_close_tick) < state.cfg.cooldown_ticks;
 
@@ -1089,117 +1086,11 @@ fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<ModulePlaceOr
     // volume confirms the move is continuing down. vol_bsg > 0 = buyers stepping in.
     let bsg_ok_long = !has_long || state.tf1.cross > 0 || state.vol_bsg > 0.0;
 
-    let long_entry_levels: Vec<(f64, &str)> = vec![
-        (state.mrc_db, LONG_ENTRY_BANDS[0]),
-        (mid(state.mrc_db, state.mrc_do), LONG_ENTRY_BANDS[1]),
-        (state.mrc_do, LONG_ENTRY_BANDS[2]),
-        (mid(state.mrc_do, state.mrc_ds), LONG_ENTRY_BANDS[3]),
-        (state.mrc_ds, LONG_ENTRY_BANDS[4]),
-        (mid(state.mrc_ds, state.mrc_di), LONG_ENTRY_BANDS[5]),
-        (state.mrc_di, LONG_ENTRY_BANDS[6]),
-        (mid(state.mrc_di, state.mrc_ml), LONG_ENTRY_BANDS[7]),
-        (state.mrc_ml, LONG_ENTRY_BANDS[8]),
-    ];
-    let long_tp_levels: Vec<(f64, &str)> = vec![
-        (state.mrc_ml, LONG_TP_BANDS[0]),
-        (mid(state.mrc_ml, state.mrc_ui), LONG_TP_BANDS[1]),
-        (state.mrc_ui, LONG_TP_BANDS[2]),
-        (mid(state.mrc_ui, state.mrc_us), LONG_TP_BANDS[3]),
-        (state.mrc_us, LONG_TP_BANDS[4]),
-        (mid(state.mrc_us, state.mrc_uo), LONG_TP_BANDS[5]),
-        (state.mrc_uo, LONG_TP_BANDS[6]),
-        (mid(state.mrc_uo, state.mrc_ub), LONG_TP_BANDS[7]),
-        (state.mrc_ub, LONG_TP_BANDS[8]),
-    ];
-
     let mut place_orders: Vec<ModulePlaceOrder> = Vec::new();
 
-    // Gate entries on cascade direction: only add longs when bullish/neutral.
-    // NTPS is used as a size multiplier (ntps_mult) rather than a gate — more activity = larger fills.
-    let long_entry_ok = state.mv_cas_dir >= 0;
-
-    // ── Long entries ─────────────────────────────────────────────────────────
     // Block long DCA when price is below DownBig (stop hunt down) and not yet exhausted.
     let v_blocks_long_dca =
         state.v_lines[0].was_above == Some(false) && !state.v_lines[0].short_side.exhausted;
-    if state.cfg.enable_grid
-        && balance_ok
-        && drift_ok_long
-        && bsg_ok_long
-        && has_long
-        && long_entry_ok
-        && !long_on_cd
-        && imbalance_ok_long
-        && long_n < long_max * state.cfg.cap
-        && !v_blocks_long_dca
-    {
-        let remaining = (r_side - long_n).max(0.0);
-        let mut candidates: Vec<(f64, &str)> = long_entry_levels
-            .iter()
-            .filter(|(p, band)| *p > 0.0 && *p < price && !state.filled.contains(*band))
-            .copied()
-            .collect();
-        candidates.sort_by(|a, b| {
-            (price - a.0)
-                .partial_cmp(&(price - b.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let marks = ["l-e1", "l-e2"];
-        let weights = [0.35, 0.25];
-        for (i, &(bp, band)) in candidates.iter().take(state.cfg.nearest).enumerate() {
-            let amt = (remaining * weights[i] * lbias * lwm * lscale * drf * state.ntps_mult)
-                .min(remaining);
-            if amt > 1.0 {
-                place_orders.push(limit_order_with_band(
-                    Direction::Long,
-                    amt,
-                    bp,
-                    marks[i],
-                    band,
-                ));
-            }
-        }
-        if candidates.is_empty() && price < state.mrc_db && remaining > 1.0 && state.vol_bsg > 0.0 {
-            let ext_price = price - (state.mrc_range * 0.10).max(4.0 * tick);
-            let amt =
-                (remaining * 0.15 * lbias * lwm * lscale * drf * state.ntps_mult).min(remaining);
-            if amt > 1.0 {
-                place_orders.push(limit_order(Direction::Long, amt, ext_price, "l-ext"));
-            }
-        }
-    }
-
-    // ── Cascade DCA entries: long (TrendLong mode only) ───────────────────────
-    // Break levels are short counter-move lows = support zones ideal for adding long.
-    // Use static marks so framework keeps one order alive per slot without cancel/recreate.
-    if state.cfg.enable_grid
-        && balance_ok
-        && drift_ok_long
-        && bsg_ok_long
-        && mkt_mode == 2
-        && has_long
-        && long_entry_ok
-        && !long_on_cd
-        && state.mv_cas_dir == 1
-        && state.mv_break_n > 0
-        && !v_blocks_long_dca
-    {
-        let remaining = (r_side - long_n).max(0.0);
-        let mut breaks: Vec<f64> = state.mv_breaks[..state.mv_break_n]
-            .iter()
-            .filter(|&&p| p > 0.0 && p < price)
-            .copied()
-            .collect();
-        breaks.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending: nearest first
-        let mv_marks = ["mv-le1", "mv-le2"];
-        for (i, &bp) in breaks.iter().take(2).enumerate() {
-            let amt =
-                (remaining * 0.20 * lbias * lwm * lscale * drf * state.ntps_mult).min(remaining);
-            if amt > 1.0 {
-                place_orders.push(limit_order(Direction::Long, amt, bp, mv_marks[i]));
-            }
-        }
-    }
 
     // ── Long TPs ─────────────────────────────────────────────────────────────
     if has_long && long_n > min_tp_notional {
@@ -1293,48 +1184,6 @@ fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<ModulePlaceOr
                             tp_price,
                             "l-t1",
                             "l-ub",
-                        ));
-                    }
-                }
-            }
-        } else {
-            // Priority 0.1: while the long is still winning (price making new highs / holding
-            // its best zone) HOLD — don't nibble profit at every upward step. Only place band
-            // TPs once price reverses >= 1 zone back toward ML (capture near the turn). All
-            // TPs remain profit-only (exp_pnl > 0) — we never close a long at a loss here.
-            // v0.49.0 #2: the band-TP ladder is GRID behaviour — gate it on enable_grid.
-            // With grid off (trend/stairs-only), a non-trend/non-mode position has no band
-            // ladder; its exit comes from the opposite-direction best-negative path / mode TPs.
-            let long_reversed =
-                state.long_max_cross == -127 || state.tf1.cross <= state.long_max_cross - 1;
-            if state.cfg.enable_grid && long_reversed {
-                let mut candidates: Vec<(f64, &str)> = long_tp_levels
-                    .iter()
-                    .filter(|(tp, band)| {
-                        if *tp <= 0.0 || *tp <= price || state.filled.contains(*band) {
-                            return false;
-                        }
-                        let exp_pnl = long_pnl + (tp - price) * (long_n / price.max(1.0));
-                        exp_pnl > 0.0
-                    })
-                    .copied()
-                    .collect();
-                candidates.sort_by(|a, b| {
-                    (a.0 - price)
-                        .partial_cmp(&(b.0 - price))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                let marks = ["l-t1", "l-t2"];
-                let pcts = [0.30, 0.20];
-                for (i, &(bp, band)) in candidates.iter().take(state.cfg.nearest).enumerate() {
-                    let amt = long_n * pcts[i];
-                    if amt > 1.0 {
-                        place_orders.push(tp_order_with_band(
-                            Direction::Long,
-                            amt,
-                            bp,
-                            marks[i],
-                            band,
                         ));
                     }
                 }
@@ -1739,10 +1588,6 @@ fn win_mult(
     } else {
         1.0
     }
-}
-
-fn mid(a: f64, b: f64) -> f64 {
-    (a + b) / 2.0
 }
 
 // ── MRC / SMC helpers ───────────────────────────────────────────────────────
@@ -2658,30 +2503,6 @@ fn limit_order(direction: Direction, amount: f64, price: f64, mark: &str) -> Mod
         take_profit: None,
         stop_loss: None,
         mark: mark.to_string(),
-        order_side: match direction {
-            Direction::Long => ModuleOrderSide::Buy,
-            Direction::Short => ModuleOrderSide::Sell,
-            _ => ModuleOrderSide::Buy,
-        },
-        reduce_only: false,
-    }
-}
-
-fn limit_order_with_band(
-    direction: Direction,
-    amount: f64,
-    price: f64,
-    mark: &str,
-    band: &str,
-) -> ModulePlaceOrder {
-    ModulePlaceOrder {
-        direction,
-        amount: Some(amount),
-        qty: None,
-        enter_price: price,
-        take_profit: None,
-        stop_loss: None,
-        mark: format!("{}:{}", mark, band),
         order_side: match direction {
             Direction::Long => ModuleOrderSide::Buy,
             Direction::Short => ModuleOrderSide::Sell,

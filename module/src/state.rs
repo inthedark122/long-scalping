@@ -187,7 +187,6 @@ pub struct Config {
     //  31 ALL — everything
     pub debug_info: i64,
     // Entry mode switches (v0.29.0)
-    pub enable_grid: bool, // band-based limit DCA entries (l-e1, l-e2, mv-le, etc.) AND band-TP ladder
     pub enable_stairs: bool, // candle-close stair opens, kickstart, trend-DCA (dca-l/s)
     pub enable_trend: bool, // zone-rejection + fast-candle breakdown entries, zone-SL
 }
@@ -208,7 +207,6 @@ impl Default for Config {
             risk_pct: 0.40,  // risk 40% of the $0.50 allocated margin at the stop
             stop_pct: 0.007, // 0.7% stop distance (≈ margin SL at 100x)
             debug_info: 0,   // 0 = default per-event logs; see Config::debug_info for preset bits
-            enable_grid: false,
             enable_stairs: true,
             enable_trend: true,
         }
@@ -236,7 +234,6 @@ impl Config {
                 "risk_pct" => self.risk_pct = n,
                 "stop_pct" => self.stop_pct = n,
                 "debug_info" => self.debug_info = n as i64,
-                "enable_grid" => self.enable_grid = n != 0.0,
                 "enable_stairs" => self.enable_stairs = n != 0.0,
                 "enable_trend" => self.enable_trend = n != 0.0,
                 _ => {}
