@@ -4,6 +4,7 @@ mod engine;
 mod fastcandle;
 mod indicators;
 mod interest;
+mod movement;
 mod orders;
 mod state;
 mod vlines;
