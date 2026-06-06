@@ -75,22 +75,6 @@ fn fcscalp_support(input: &ModuleInput, price: f64) -> Option<f64> {
     }
 }
 
-/// TP: nearest order-book RESISTANCE wall above `price` (live) or entry×(1+tp_pct) (fallback).
-fn fcscalp_tp_px(input: &ModuleInput, state: &State, price: f64, entry: f64) -> f64 {
-    if let Some(ob) = input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
-        let resist = ob
-            .long_levels
-            .iter()
-            .map(|l| l.price)
-            .filter(|&p| p > price)
-            .fold(f64::MAX, f64::min); // lowest wall above price = nearest resistance
-        if resist < f64::MAX && resist > entry {
-            return resist;
-        }
-    }
-    entry * (1.0 + state.cfg.fcscalp_tp_pct)
-}
-
 /// Up to `n` nearest order-book SUPPORT walls strictly below `ceil`, nearest first
 /// (highest price first). Empty when there's no order book (backtest).
 fn fcscalp_support_walls(input: &ModuleInput, ceil: f64, n: usize) -> Vec<f64> {
@@ -105,25 +89,6 @@ fn fcscalp_support_walls(input: &ModuleInput, ceil: f64, n: usize) -> Vec<f64> {
         .filter(|&p| p > 0.0 && p < ceil)
         .collect();
     v.sort_by(|a, b| b.total_cmp(a)); // descending → nearest-below first
-    v.dedup();
-    v.truncate(n);
-    v
-}
-
-/// Up to `n` nearest order-book RESISTANCE walls strictly above `floor`, nearest first
-/// (lowest price first). Empty when there's no order book (backtest).
-fn fcscalp_resist_walls(input: &ModuleInput, floor: f64, n: usize) -> Vec<f64> {
-    let ob = match input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
-        Some(ob) => ob,
-        None => return Vec::new(),
-    };
-    let mut v: Vec<f64> = ob
-        .long_levels
-        .iter()
-        .map(|l| l.price)
-        .filter(|&p| p > floor)
-        .collect();
-    v.sort_by(|a, b| a.total_cmp(b)); // ascending → nearest-above first
     v.dedup();
     v.truncate(n);
     v
@@ -515,40 +480,21 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     }
                 }
 
-                // ── TP ladder: reduce-only maker SELLs at the nearest resistance walls
-                //    ABOVE the avg entry, splitting the position so every fill banks
-                //    profit. Fallback (no order book / backtest): a single wall/%% TP.
-                let band_top = avg * (1.0 + state.cfg.fcscalp_tp_band);
-                let walls: Vec<f64> = fcscalp_resist_walls(input, avg, 8)
-                    .into_iter()
-                    .filter(|&p| p <= band_top) // skip far walls (e.g. +32%) — unreachable TPs
-                    .take(5)
-                    .collect();
-                let slice = if walls.is_empty() {
-                    0.0
-                } else {
-                    long_n / walls.len() as f64
-                };
-                if walls.is_empty() || slice <= 1.0 {
-                    let tp_px = fcscalp_tp_px(input, state, price, avg);
-                    place_orders.push(tp_order_with_band(
-                        Direction::Long,
-                        long_n,
-                        tp_px,
-                        "fcs-tp",
-                        "fcs-tp",
-                    ));
-                } else {
-                    for (i, wall) in walls.iter().enumerate() {
-                        place_orders.push(tp_order_with_band(
-                            Direction::Long,
-                            slice,
-                            *wall,
-                            "fcs-gtp",
-                            &format!("fcs-gtp{}", i + 1),
-                        ));
-                    }
-                }
+                // ── Exit: ONE reduce-only maker SELL at a FIXED small %% above the avg
+                //    entry — do NOT trail it onto the moving order-book walls. The goal is
+                //    to lock the small scalp reliably and RE-ENTER on the next dip (collect
+                //    many small-%% wins), not to chase a "bigger" move that, on a small
+                //    position, is tiny in $ and often misses the fill. The avg only drops as
+                //    lower grid rungs fill, so this target never trails UP away from price —
+                //    it only moves closer, helping it fill.
+                let tp_px = avg * (1.0 + state.cfg.fcscalp_tp_pct);
+                place_orders.push(tp_order_with_band(
+                    Direction::Long,
+                    long_n,
+                    tp_px,
+                    "fcs-tp",
+                    "fcs-tp",
+                ));
             }
         }
         return place_orders;
