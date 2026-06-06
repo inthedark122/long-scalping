@@ -199,6 +199,7 @@ pub struct Config {
     // take profit on a small bounce / fast-up event, hard stop at DownBig.
     pub enable_fcscalp: bool,
     pub fcscalp_tp_pct: f64, // TP as fraction of notional (≈ price move %); 0.004 = 0.4%
+    pub min_order: f64,      // floor entry notional (exchange min order size, e.g. $7 HYPE)
 }
 
 impl Default for Config {
@@ -221,6 +222,7 @@ impl Default for Config {
             enable_trend: true,
             enable_fcscalp: false,
             fcscalp_tp_pct: 0.004,
+            min_order: 0.0,
         }
     }
 }
@@ -250,6 +252,7 @@ impl Config {
                 "enable_trend" => self.enable_trend = n != 0.0,
                 "enable_fcscalp" => self.enable_fcscalp = n != 0.0,
                 "fcscalp_tp_pct" => self.fcscalp_tp_pct = n,
+                "min_order" => self.min_order = n,
                 _ => {}
             }
         }

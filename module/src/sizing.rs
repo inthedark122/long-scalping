@@ -387,8 +387,15 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
             } else {
                 price - tick
             };
-            let amt = (max * state.cfg.seed).max(1.0).min(r_side.max(1.0));
-            if amt > 1.0 && buy_px > 0.0 {
+            // Size: seed fraction of notional, floored at the exchange min order size
+            // (symbol min_notional or the min_order override), capped at the budget.
+            let min_n = input
+                .symbol_info
+                .min_notional
+                .unwrap_or(0.0)
+                .max(state.cfg.min_order);
+            let amt = (max * state.cfg.seed).max(min_n).max(1.0);
+            if amt <= max && buy_px > 0.0 {
                 // Bracket: maker BUY at the low + attached pure-limit stop at DownBig.
                 place_orders.push(limit_order_sl(
                     Direction::Long,
