@@ -1,4 +1,5 @@
 mod consts;
+mod debug;
 mod engine;
 mod orders;
 mod state;
