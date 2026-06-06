@@ -530,14 +530,6 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
         }
     }
 
-    // ── Spike-exit (s-ts) — REMOVED v0.51.0 ─────────────────────────────────────
-    // Was a reduce-only BUY-to-cover on an SMC flip Short→Long. Removed per user
-    // (2026-05-29): the `smc` Direction is the aggressive BREAKLINE flip, so a flip to
-    // Long is a contrarian SHORT signal, not a reason to cover a short. After v0.48 stripped
-    // its noise triggers, the SMC flip was its only trigger — so the whole block is gone.
-    // Short exits now: sudden-move panic (sweep-held), margin/staged SL, profit TPs, and the
-    // opposite-direction best-negative/hedge path. (Future: rebuild on `DirectionSwing`.)
-
     place_orders
 }
 

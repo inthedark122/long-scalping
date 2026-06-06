@@ -507,14 +507,6 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // panic-cover it; ride the side. (The deep margin SL still backstops a genuine runaway.)
     let trandm_hold_long = trandm >= TRANDM_MILD; // buying side  → hold the long through dips
 
-    // ── NTPS momentum close — REMOVED v0.51.0 ───────────────────────────
-    // Was: `if ntps>600 { close short if smc==Long; close long if smc==Short }`.
-    // Removed per user (2026-05-29): the `smc` Direction is the aggressive BREAKLINE flip
-    // (pullback-prone), so SMC=Long is a contrarian SHORT signal, NOT a reason to cover a
-    // short — this close kept instantly killing valid shorts on the breakline flip. Exits
-    // now come from the sudden-move panic (sweep-held), the margin/staged SL, and profit TPs.
-    // A future SMC rework should use `DirectionSwing` (truer trend) rather than `Direction`.
-
     // ── Trend mode zone-based SL ─────────────────────────────────────────
     // Fires when price reverses one cross zone past the entry zone.
     // Tighter than the margin SL — cuts the loss early while the thesis is wrong.
