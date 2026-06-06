@@ -1,4 +1,4 @@
-# ETH Dynamic Grid Hedge
+# Long Scalping
 
 > **📋 Start with [`HANDOFF.md`](./HANDOFF.md)** — the authoritative project state, architecture,
 > build/deploy/backtest workflow, and critical gotchas (notably the backtest PnL bug). The next-feature

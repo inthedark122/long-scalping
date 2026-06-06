@@ -1,4 +1,4 @@
-# eth-dynamic-grid-hedge — Project Handoff
+# long-scalping — Project Handoff
 
 > Last updated 2026-06-06. Read this first. It captures the full state, the architecture, the
 > build/deploy/backtest workflow, and (most importantly) the **non-obvious gotchas** that took a long

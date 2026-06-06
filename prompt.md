@@ -1,1 +1,1 @@
-can you load settings for " [SIM] ETH Dynamic Grid Hedge" from the lte mcp? we need to create readme.md file to explain about this strategy. also need python file to create json and prepare make diff system to upload change into the server
+can you load settings for " [SIM] Long Scalping" from the lte mcp? we need to create readme.md file to explain about this strategy. also need python file to create json and prepare make diff system to upload change into the server

@@ -1,4 +1,4 @@
-# ETH Dynamic Grid Hedge — Strategy Overview
+# Long Scalping — Strategy Overview
 
 A public-facing summary of the inputs, parameters, and timeframes the strategy
 module consumes. Figures are taken directly from the live module source
@@ -76,5 +76,5 @@ from it is rich.
 
 ---
 
-*Strategy module: `eth-dynamic-grid-hedge`. This document describes inputs and
+*Strategy module: `long-scalping`. This document describes inputs and
 configuration only — it does not disclose entry/exit decision logic.*

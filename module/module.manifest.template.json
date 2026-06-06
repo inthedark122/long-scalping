@@ -1,6 +1,6 @@
 {
   "module_id": "20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e",
-  "name": "ETH Dynamic Grid Hedge",
+  "name": "Long Scalping",
   "version": "0.1.0",
   "runtime": "wasm",
   "target": "wasm32-wasip1",

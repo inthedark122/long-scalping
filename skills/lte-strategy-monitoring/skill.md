@@ -27,7 +27,7 @@ User keywords → action (only act on these, this turn):
 2. `mcp__claude_ai_LTE__list_bot_positions` (bot_id 694, `["InProgress"]`) — side, qty (**signed**), entry_price, fee.
 3. `mcp__claude_ai_LTE__list_bot_orders` (group 29, limit 5) — new entries/TPs/closes + their `note`. **ANY long opened while trandm ≤ −50 = a v0.53+ BUG → flag hard.**
 4. `mcp__claude_ai_LTE__get_account_balances` — inthedark4 (id 5) balance. **See balance caveat.**
-5. **Projection WS feed** — `python3 /home/dev/dev/strategy/eth-dynamic-grid-hedge/sug_ws.py` → price, **trandm**, **asset_01**, NTPS, dir, price_1h/4h/24h, klines (1m/1h/4h), **order-book walls** (resist/support + buy/sell amounts), **OI** + change, **net_flow** (qtym_asset). (`--stream` to follow, `--raw` for full JSON.)
+5. **Projection WS feed** — `python3 /home/dev/dev/strategy/long-scalping/sug_ws.py` → price, **trandm**, **asset_01**, NTPS, dir, price_1h/4h/24h, klines (1m/1h/4h), **order-book walls** (resist/support + buy/sell amounts), **OI** + change, **net_flow** (qtym_asset). (`--stream` to follow, `--raw` for full JSON.)
 6. MRC lines when relevant — `curl -s "https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=60&limit=1"` (and `timeframe=300` for 5m): `mrc_200` ML / DownInner / DownBig / CurrentCross, `candle` Close/High, `zigzagtrend` EndDirection/Fibo.
 
 ## Key gauges & concepts
@@ -70,7 +70,7 @@ Lead with a **one-liner**: `price | mkt_mode | position(side+qty+uPnL vs entry) 
 
 ## Analysis notes
 
-Append **only notable** events (entry/close/TP, bug, new market behavior, design insight) to `/home/dev/dev/strategy/eth-dynamic-grid-hedge/analysis_notes.md` as `[HH:MM] <what + why>`. **Skip no-change ticks.**
+Append **only notable** events (entry/close/TP, bug, new market behavior, design insight) to `/home/dev/dev/strategy/long-scalping/analysis_notes.md` as `[HH:MM] <what + why>`. **Skip no-change ticks.**
 
 ## Cadence (dynamic, via ScheduleWakeup)
 

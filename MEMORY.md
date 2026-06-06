@@ -1,4 +1,4 @@
-# ETH Dynamic Grid Hedge — AI Memory
+# Long Scalping — AI Memory
 
 ## Module Architecture
 

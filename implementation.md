@@ -1,4 +1,4 @@
-# ETH Dynamic Grid Hedge — Implementation Plan
+# Long Scalping — Implementation Plan
 
 Derived from live session analysis (2026-05-26 / 2026-05-27). Issues ranked by severity.
 
