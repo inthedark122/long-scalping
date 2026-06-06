@@ -3,7 +3,7 @@
 
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
-use crate::orders::{limit_open, limit_order, market_open, tp_order_with_band};
+use crate::orders::{limit_order, market_open, tp_order_with_band};
 use crate::state::State;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -218,17 +218,17 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — maker LIMIT open ──────
-    // Create the position at a LIMIT price (DownInner) — the framework's create-
-    // with-price opens via a maker limit that fills when price dips to it. NO
-    // stop_loss bracket on the create (that gets rejected). The DownBig stop is a
-    // separate close in handle_sug_info; the TP is a limit in compute_limit_orders.
+    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — MARKET open (test) ────
+    // TEST: clean market open (no bracket) when price dips into [DownBig, DownInner],
+    // to confirm positions open + the TP/stop logic. Revert to limit_open (create-
+    // with-price) once validated. The DownBig stop is a separate close; TP is a limit.
     if state.cfg.enable_fcscalp
         && !has_long
         && open_positions.is_empty()
         && !long_on_cd
         && state.mrc_di > state.mrc_db
-        && price > state.mrc_di
+        && price <= state.mrc_di
+        && price > state.mrc_db
     {
         let min_n = input
             .symbol_info
@@ -237,7 +237,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
             .max(state.cfg.min_order);
         let amt = (max * state.cfg.seed).max(min_n).max(1.0);
         if amt <= max {
-            open_positions.push(limit_open(Direction::Long, amt, state.mrc_di, "fcs-l"));
+            open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
         }
     }
 
