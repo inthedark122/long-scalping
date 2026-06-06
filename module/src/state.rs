@@ -204,6 +204,7 @@ pub struct Config {
     // grids up to `fcscalp_grid_frac` of the budget across the nearest support walls.
     pub fcscalp_rung_frac: f64, // 0.075 → $15 rung at a $200 budget
     pub fcscalp_grid_frac: f64, // 0.375 → $75 max (≈5 rungs)
+    pub fcscalp_rung_gap: f64,  // 0.003 → next rung ≥0.3% below the last fill (spacing)
 }
 
 impl Default for Config {
@@ -233,6 +234,7 @@ impl Default for Config {
             min_order: 0.0,
             fcscalp_rung_frac: 0.075, // ~$15 per rung at a $200 budget
             fcscalp_grid_frac: 0.375, // ~$75 max grid (≈5 rungs)
+            fcscalp_rung_gap: 0.003,  // next rung ≥0.3% below the last fill
         }
     }
 }
@@ -265,6 +267,7 @@ impl Config {
                 "min_order" => self.min_order = n,
                 "fcscalp_rung_frac" => self.fcscalp_rung_frac = n,
                 "fcscalp_grid_frac" => self.fcscalp_grid_frac = n,
+                "fcscalp_rung_gap" => self.fcscalp_rung_gap = n,
                 _ => {}
             }
         }
@@ -384,6 +387,11 @@ pub struct State {
     // Which entry strategy owns the open position (see docs/strategy-arbitration.md):
     // 0=none 1=auto 2=stair 3=trend 4=trandm 5=reentry 6=fc. Exits route per owner.
     pub pos_owner: u8,
+    // FC grid rung tracking (sequential + spaced): anchor price of the last filled rung,
+    // count of filled rungs, and prev-tick qty for fill detection. Reset when flat.
+    pub fc_last_fill_px: f64,
+    pub fc_rungs: u8,
+    pub fc_prev_qty: f64,
     pub mkt_mode_candles: u32, // consecutive candles in current confirmed mode
     pub mkt_cand: i8,          // pending mode candidate
     pub mkt_cand_candles: u32, // candles confirming candidate (commit at >= 2)
@@ -515,6 +523,9 @@ impl Default for State {
             // Market mode
             mkt_mode: 0,
             pos_owner: 0,
+            fc_last_fill_px: 0.0,
+            fc_rungs: 0,
+            fc_prev_qty: 0.0,
             mkt_mode_candles: 0,
             mkt_cand: 0,
             mkt_cand_candles: 0,

@@ -424,6 +424,23 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     if !has_long {
         state.pos_owner = OWN_NONE;
     }
+
+    // FC grid rung tracking: a buy fill (open or grid rung) increases position qty — qty is
+    // price-independent, so an increase is an unambiguous fill. Advance the spacing anchor
+    // (last fill price) and rung count so compute_limit_orders places the NEXT rung only
+    // after this one fills, and at least fcscalp_rung_gap below it (sequential + spaced).
+    let long_qty = input.positions.long.as_ref().map(|p| p.qty).unwrap_or(0.0);
+    if !has_long {
+        state.fc_rungs = 0;
+        state.fc_last_fill_px = 0.0;
+        state.fc_prev_qty = 0.0;
+    } else {
+        if long_qty > state.fc_prev_qty + 1e-9 {
+            state.fc_rungs = state.fc_rungs.saturating_add(1);
+            state.fc_last_fill_px = price;
+        }
+        state.fc_prev_qty = long_qty; // track adds (up) and TP reductions (down)
+    }
     // v0.55 (0.C): reset the stair ladder when flat so each new ride builds from scratch.
     // v0.56 (0.E): track the first Big-line interaction (reset flat, set on trade-through).
     if !has_long {

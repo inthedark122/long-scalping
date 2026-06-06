@@ -497,24 +497,21 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 let rung = (max * state.cfg.fcscalp_rung_frac).max(1.0);
                 let grid_max = max * state.cfg.fcscalp_grid_frac;
 
-                // ── Entry grid: rest maker BUYs at the nearest support walls BELOW the
-                //    avg entry (always a better price → improves avg, no instant re-fill),
-                //    up to the grid budget. Sideways only — never add into a breakdown.
-                if mkt_mode == 1 {
-                    let remaining = (grid_max - long_n).max(0.0);
-                    let n_more = (remaining / rung).floor() as usize;
-                    if n_more > 0 {
-                        for (i, wall) in fcscalp_support_walls(input, avg, n_more)
-                            .into_iter()
-                            .enumerate()
-                        {
-                            place_orders.push(limit_order(
-                                Direction::Long,
-                                rung,
-                                wall,
-                                &format!("fcs-g{}", i + 1),
-                            ));
-                        }
+                // ── Entry grid: ONE resting maker BUY at a time. The next rung is placed at
+                //    the nearest support wall that sits ≥ fcscalp_rung_gap BELOW the last
+                //    fill — so rungs are sequential (only after the prior fills, tracked via
+                //    qty in handle_sug_info) and spaced out to catch a real dump instead of
+                //    clustering at one price. Sideways only; capped by the grid budget.
+                if mkt_mode == 1 && long_n + rung <= grid_max {
+                    let anchor = if state.fc_last_fill_px > 0.0 {
+                        state.fc_last_fill_px
+                    } else {
+                        avg
+                    };
+                    let ceil = anchor * (1.0 - state.cfg.fcscalp_rung_gap);
+                    if let Some(&wall) = fcscalp_support_walls(input, ceil, 1).first() {
+                        // single rolling mark → one resting order that trails the wall down.
+                        place_orders.push(limit_order(Direction::Long, rung, wall, "fcs-g"));
                     }
                 }
 
