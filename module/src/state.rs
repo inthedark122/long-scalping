@@ -369,6 +369,9 @@ pub struct State {
     // ── Market mode ───────────────────────────────────────────────────────────
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
     pub mkt_mode: i8,
+    // Which entry strategy owns the open position (see docs/strategy-arbitration.md):
+    // 0=none 1=auto 2=stair 3=trend 4=trandm 5=reentry 6=fc. Exits route per owner.
+    pub pos_owner: u8,
     pub mkt_mode_candles: u32, // consecutive candles in current confirmed mode
     pub mkt_cand: i8,          // pending mode candidate
     pub mkt_cand_candles: u32, // candles confirming candidate (commit at >= 2)
@@ -499,6 +502,7 @@ impl Default for State {
             mv_avg_size: 0.0,
             // Market mode
             mkt_mode: 0,
+            pos_owner: 0,
             mkt_mode_candles: 0,
             mkt_cand: 0,
             mkt_cand_candles: 0,

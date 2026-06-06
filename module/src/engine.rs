@@ -485,9 +485,16 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let mut close_positions: Vec<ModuleClosePosition> = Vec::new();
 
+    // ── Exit routing by owner (docs/strategy-arbitration.md §2) ─────────────────
+    // Only the strategy that OPENED the position manages it. fc_owner → FC's deep stop
+    // only; base_owner (AUTO/STAIR/TREND/TRANDM/REENTRY) → the base loss-exits. The
+    // catastrophic margin SL still backstops every owner regardless.
+    let fc_owner = state.pos_owner == OWN_FC;
+    let base_owner = (OWN_AUTO..=OWN_REENTRY).contains(&state.pos_owner);
+
     // ── Fast-candle scalp stop: market close on a DownBig breach ────────────────
     // The entry + TP are maker limits; only this rare protective stop is a market.
-    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 && price <= state.mrc_db {
+    if fc_owner && has_long && long_n > 1.0 && price <= state.mrc_db {
         close_positions.push(close(Direction::Long, "fcs-sl"));
     }
 
@@ -516,7 +523,8 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // ── Trend mode zone-based SL ─────────────────────────────────────────
     // Fires when price reverses one cross zone past the entry zone.
     // Tighter than the margin SL — cuts the loss early while the thesis is wrong.
-    if state.trend_long_sl_cross != 127
+    if base_owner
+        && state.trend_long_sl_cross != 127
         && has_long
         && long_n > 1.0
         && state.tf1.cross <= state.trend_long_sl_cross
@@ -535,7 +543,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // rising NTPS + > 0.5% move). A favorable run never closes the winning side.
     // v0.50.0: sweep-hold suppresses the panic cover when the spike is into a channel
     // extreme against the 5m trend (stop hunt) — don't sell the top / buy the bottom.
-    if sudden_move && !state.cfg.enable_fcscalp {
+    if sudden_move && base_owner {
         if state.run_dir < 0
             && has_long
             && long_n > 1.0
@@ -564,7 +572,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     } else if state.tm_side == 1 && trandm < TRANDM_MILD {
         if has_long
             && long_n > 1.0
-            && !state.cfg.enable_fcscalp
+            && base_owner
             && !close_positions
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
@@ -580,7 +588,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // the next close. Once a position is open its internal has_long guard
     // make this a no-op, so it cannot double-open.
     let open_positions: Vec<ModuleOpenPosition> = if state.has_mrc
-        && (state.cfg.enable_stairs || state.cfg.enable_trend)
+        && (state.cfg.enable_stairs || state.cfg.enable_trend || state.cfg.enable_fcscalp)
     {
         let ops = compute_auto_open(input, state);
         for op in &ops {
@@ -592,6 +600,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 // v0.55 (0.C): baseline/advance the stair ladder on long opens & stairs.
                 "tm-l" | "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
                 _ => {}
+            }
+            // Latch ownership on the flat→open transition: the first opening note this
+            // tick decides which strategy owns the position; exits then route per owner.
+            if state.pos_owner == OWN_NONE {
+                state.pos_owner = owner_from_mark(&op.note);
             }
         }
         ops
@@ -717,6 +730,7 @@ fn handle_finish(input: &ModuleInput, state: &mut State, direction: Direction) -
         state.mode_close_l = 0;
         state.long_pnl_mfe = 0.0;
         state.trend_long_sl_cross = 127;
+        state.pos_owner = OWN_NONE; // position flat → clear owner; next open re-latches.
     }
     ModuleOutput {
         debug: format!(

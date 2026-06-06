@@ -36,3 +36,30 @@ pub(crate) const LONG_ENTRY_BANDS: &[&str] = &[
 pub(crate) const LONG_TP_BANDS: &[&str] = &[
     "l-ml+", "l-ml-ui", "l-ui", "l-ui-us", "l-us", "l-us-uo", "l-uo", "l-uo-ub", "l-ub",
 ];
+
+// Position-owner ids (which entry strategy opened the position). Exits route per owner;
+// see docs/strategy-arbitration.md. Base = AUTO/STAIR/TREND/TRANDM/REENTRY, FC = fast-candle scalp.
+pub(crate) const OWN_NONE: u8 = 0;
+pub(crate) const OWN_AUTO: u8 = 1;
+pub(crate) const OWN_STAIR: u8 = 2;
+pub(crate) const OWN_TREND: u8 = 3;
+pub(crate) const OWN_TRANDM: u8 = 4;
+pub(crate) const OWN_REENTRY: u8 = 5;
+pub(crate) const OWN_FC: u8 = 6;
+
+/// Map an opening order's mark to its owning entry strategy.
+pub(crate) fn owner_from_mark(mark: &str) -> u8 {
+    if mark.starts_with("fcs") {
+        OWN_FC
+    } else if mark.starts_with("tm-l") {
+        OWN_TRANDM
+    } else if mark.starts_with("trend-l") {
+        OWN_TREND
+    } else if mark.starts_with("re-l") {
+        OWN_REENTRY
+    } else if mark.starts_with("stair") || mark.starts_with("dca-l") {
+        OWN_STAIR
+    } else {
+        OWN_AUTO // auto-l and anything else base
+    }
+}

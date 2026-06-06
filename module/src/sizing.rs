@@ -233,12 +233,17 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
 
     let mut open_positions: Vec<ModuleOpenPosition> = Vec::new();
 
-    // ── Fast-candle scalp (opt-in) — SOLE entry when enabled ────────────────────
-    // Pure dip-buyer. Entry = nearest order-book SUPPORT wall below price (live) or the
-    // MRC DownInner band (fallback / backtest). Maker LIMIT create-with-price. Returns
-    // early → skips ALL base entries (auto-l/stair/trend/dca) so the bot never buys tops.
-    if state.cfg.enable_fcscalp {
-        if !has_long && !long_on_cd {
+    // ── Fast-candle scalp (opt-in) — owns the SIDEWAYS regime ───────────────────
+    // FC has its OWN entry signal (docs/strategy-arbitration.md §5b): sideways regime +
+    // a fast-DOWN flush that just completed → buy the nearest order-book SUPPORT wall
+    // (live) or the MRC DownInner dip (fallback/backtest). Maker LIMIT create-with-price.
+    // It COEXISTS with the base strategies (no early-return): base owns the trend regime
+    // (mode 2/-2), FC owns sideways (mode 1) — the base auto-l sideways arm yields below.
+    if state.cfg.enable_fcscalp && !has_long && !long_on_cd && mode == 1 {
+        let fc_flush = state.fc.last_end_dir == -1
+            && state.fc.last_end_tick > 0
+            && now_tick.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
+        if fc_flush {
             let min_n = input
                 .symbol_info
                 .min_notional
@@ -261,7 +266,6 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
                 }
             }
         }
-        return open_positions;
     }
 
     // LONG-ONLY: open only on long setups; the bot never opens a short. (The hedge — which
@@ -269,7 +273,10 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     if !has_long && !long_on_cd && cas_allows_long && !trandm_block_long {
         let (trigger, extra) = match mode {
             2 => (stair_long_ok, stair_lscale),
-            1 => (cross1m <= 0 && v_bull_fresh && pzone < 0.5, 1.0),
+            // FC owns sideways: when enabled, base auto-l yields the mode-1 entry to FC.
+            1 if !state.cfg.enable_fcscalp => {
+                (cross1m <= 0 && v_bull_fresh && pzone < 0.5, 1.0)
+            }
             -2 => (price <= state.mrc_db, 1.0),
             _ => (false, 1.0),
         };
@@ -439,10 +446,11 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     // Entry: rest a maker BUY at the candle low after a fast-DOWN flush ("buy the low").
     // Exit:  rest a maker reduce-only SELL at entry × (1 + fcscalp_tp_pct) ("sell the high").
     // The DownBig hard stop is the ONLY market exit (handle_sug_info) — rare, catastrophic.
-    // ── Fast-candle scalp (opt-in) — SOLE exit when enabled ─────────────────────
+    // ── Fast-candle scalp exit — runs ONLY for an FC-owned position ─────────────
     // TP = nearest order-book RESISTANCE wall above price (live) or entry×(1+tp_pct)
-    // (fallback). Maker reduce-only limit. Returns early → skips ALL base TPs/DCA.
-    if state.cfg.enable_fcscalp {
+    // (fallback). Maker reduce-only limit. Per-owner routed: an FC position gets ONLY
+    // this TP (early-return below skips base TPs); a base position skips this block.
+    if state.pos_owner == OWN_FC {
         if has_long && long_n > 1.0 {
             if let Some(p) = input.positions.long.as_ref() {
                 let tp_px = fcscalp_tp_px(input, state, price, p.entry_price);
