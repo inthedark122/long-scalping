@@ -1,5 +1,12 @@
 # ETH Dynamic Grid Hedge
 
+> **📋 Start with [`HANDOFF.md`](./HANDOFF.md)** — the authoritative project state, architecture,
+> build/deploy/backtest workflow, and critical gotchas (notably the backtest PnL bug). The next-feature
+> design is [`docs/regime-modes.md`](./docs/regime-modes.md).
+>
+> **⚠️ The deployed version is now `v0.61-long` (LONG-ONLY)** — short + hedge code removed. The
+> delta-neutral both-sided description below is the *legacy* design (preserved on branch `v0.61-hedge`).
+
 Delta-neutral grid strategy on ETH-USDT perpetual swap. Holds simultaneous LONG and SHORT positions, scaling into each side via limit orders placed at MRC (Mean Reversion Channel) band levels. Trend bias dynamically adjusts order sizes to favor the side aligned with market direction.
 
 ## Key Settings
