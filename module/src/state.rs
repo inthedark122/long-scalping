@@ -181,7 +181,7 @@ pub struct Config {
     // Bitmask preset (add to combine):
     //   1 V   — V-tracker table (per-MRC-line resistance/support V counts, power%, exhausted)
     //   2 MRC — 1m band price map (DB..UB) + 5m mean-line
-    //   4 BIG — Big-line bracket state: big_tested flags, invalid_side, best-negative exits
+    //   4 BIG — Big-line bracket state: long big_tested flag
     //   8 CAS — movement cascade / run leg / stair-cross / 5m hard-break
     //  16 DMP — uncertainty damp + risk drawdown
     //  31 ALL — everything

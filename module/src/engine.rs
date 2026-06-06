@@ -582,7 +582,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // The ride has no fixed MRC-line TP — while the controlling side stays strong we let it FLY
     // (0.B). It exits when the strong-trandm regime it belongs to NEUTRALIZES (trandm returns
     // toward 0). P&L-agnostic: banks a winner whose momentum is done, cuts a wrong ride. The deep
-    // margin SL still backstops a runaway. Skipped during a hedge episode (invalid_side handles it).
+    // margin SL still backstops a runaway.
     if trandm <= -TRANDM_STRONG {
         state.tm_side = -1;
     } else if trandm >= TRANDM_STRONG {
@@ -605,7 +605,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // ── Sug-tick organic entry (Priority Timing 0.1) ────────────────────────
     // compute_auto_open also runs on 1m candle closes; running it here lets entries
     // fire mid-candle the moment conditions align rather than waiting up to ~60s for
-    // the next close. Once a position is open its internal has_long/has_short guards
+    // the next close. Once a position is open its internal has_long guard
     // make this a no-op, so it cannot double-open.
     let open_positions: Vec<ModuleOpenPosition> = if state.has_mrc
         && (state.cfg.enable_stairs || state.cfg.enable_trend)
