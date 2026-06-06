@@ -377,30 +377,23 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
         if !has_long
             && balance_ok
             && !long_on_cd
-            && state.fc.last_end_dir == -1
-            && state.ticks.saturating_sub(state.fc.last_end_tick) <= 5
-            && price < state.mrc_ml
-            && price > state.mrc_db
+            && state.mrc_di > state.mrc_db
+            && price > state.mrc_di
         {
-            let buy_px = if state.cur_lo > 0.0 {
-                state.cur_lo.min(price - tick)
-            } else {
-                price - tick
-            };
-            // Size: seed fraction of notional, floored at the exchange min order size
-            // (symbol min_notional or the min_order override), capped at the budget.
+            // Rest a maker BUY at DownInner so it FILLS when price pulls back to it
+            // (a limit at the moving candle low never fills once price bounces).
+            // Bracket: pure-limit stop attached at DownBig, just below.
             let min_n = input
                 .symbol_info
                 .min_notional
                 .unwrap_or(0.0)
                 .max(state.cfg.min_order);
             let amt = (max * state.cfg.seed).max(min_n).max(1.0);
-            if amt <= max && buy_px > 0.0 {
-                // Bracket: maker BUY at the low + attached pure-limit stop at DownBig.
+            if amt <= max {
                 place_orders.push(limit_order_sl(
                     Direction::Long,
                     amt,
-                    buy_px,
+                    state.mrc_di,
                     state.mrc_db,
                     "fcs-l",
                 ));
