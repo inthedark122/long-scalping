@@ -94,6 +94,24 @@ weight(strategy) = expected_move% / risk%       // potential reward per unit ris
 If `weight(FC) > weight(base)` in the current book/regime, FC may issue the handoff command to
 base (and vice-versa). Keep it **simple first** (regime table in §3) and add the weight later.
 
+## 5b. FC's own entry signal
+
+FC has its **own trigger**, separate from the base's trend/cross/stair signals:
+
+- **Regime gate**: sideways only (`mkt_mode == 1` / 5m `SWY`). FC stands down in a trend.
+- **Trigger**: a **fast-DOWN flush just completed** (`fc` event ended, `dir == -1`) — the
+  "fast-candle" dip signal — i.e. a sharp pullback that just exhausted.
+- **Location**: price at/approaching an order-book **support wall** (`short_levels`), else the
+  MRC DownInner band (fallback).
+- **Confirmation (future)**: Parabolic-SAR-timed so we buy *into* the pullback for a lower price,
+  not after it has reclaimed (which chases). Skip when a strong pump just ran with no pullback
+  (a big pullback is likely coming — don't chase).
+- **Order**: maker LIMIT create-with-price at the support wall (live) / MARKET at the dip
+  (fallback). One position; re-armed only after the prior FC trade closes + cooldown.
+
+So FC = "in chop, a dump exhausts into bid liquidity → buy that level, sell the next resistance
+wall, deep stop only." Base never fires this; FC never fires the base's trend signals.
+
 ## 6. FC entry/exit specifics (already built into `fcscalp9`)
 
 - **Entry price**: nearest **order-book SUPPORT wall** below price (`short_levels`); maker LIMIT
