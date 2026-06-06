@@ -47,13 +47,11 @@ pub(crate) fn limit_order(
     }
 }
 
-/// Maker LIMIT open (ModuleOpenPosition with order_type=Limit) with an attached
-/// pure-limit stop_loss. Opening a position from flat must go through the
-/// open_positions path — a resting place-order limit only DCAs an existing one.
-pub(crate) fn limit_open_sl(
+/// MARKET open with an attached stop_loss bracket. Opening a position requires a
+/// market order in this framework (limit opens don't fill); the stop rides along.
+pub(crate) fn market_open_sl(
     direction: Direction,
     amount: f64,
-    enter: f64,
     stop_loss: f64,
     note: &str,
 ) -> ModuleOpenPosition {
@@ -61,8 +59,8 @@ pub(crate) fn limit_open_sl(
         direction,
         amount: Some(amount),
         qty: None,
-        enter_price: Some(enter),
-        order_type: "Limit".to_string(),
+        enter_price: None,
+        order_type: "Market".to_string(),
         take_profit: None,
         stop_loss: Some(stop_loss),
         note: note.to_string(),

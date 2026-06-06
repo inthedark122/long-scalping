@@ -3,7 +3,7 @@
 
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
-use crate::orders::{limit_open_sl, limit_order, market_open, tp_order_with_band};
+use crate::orders::{limit_order, market_open, market_open_sl, tp_order_with_band};
 use crate::state::State;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -218,16 +218,17 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — LIMIT open ───────────
-    // Open via the ModuleOpenPosition path: a maker LIMIT buy resting at DownInner
-    // (the dip level) with a pure-limit stop attached at DownBig. A place-order limit
-    // can't open from flat — only this path opens a position.
+    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) — MARKET open at the dip ─
+    // Buy when price dips into the bottom zone [DownBig, DownInner] — a market open
+    // (limit opens don't fill in this framework), with a bracket stop at DownBig.
+    // The TP is a maker limit (compute_limit_orders).
     if state.cfg.enable_fcscalp
         && !has_long
         && open_positions.is_empty()
         && !long_on_cd
         && state.mrc_di > state.mrc_db
-        && price > state.mrc_di
+        && price <= state.mrc_di
+        && price > state.mrc_db
     {
         let min_n = input
             .symbol_info
@@ -236,10 +237,9 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
             .max(state.cfg.min_order);
         let amt = (max * state.cfg.seed).max(min_n).max(1.0);
         if amt <= max {
-            open_positions.push(limit_open_sl(
+            open_positions.push(market_open_sl(
                 Direction::Long,
                 amt,
-                state.mrc_di,
                 state.mrc_db,
                 "fcs-l",
             ));
