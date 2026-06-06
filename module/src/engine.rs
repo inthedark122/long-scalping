@@ -485,6 +485,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let mut close_positions: Vec<ModuleClosePosition> = Vec::new();
 
+    // ── Fast-candle scalp stop: market close on a DownBig breach ────────────────
+    // The entry + TP are maker limits; only this rare protective stop is a market.
+    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 && price <= state.mrc_db {
+        close_positions.push(close(Direction::Long, "fcs-sl"));
+    }
+
     // ── SL: last-resort margin protection ──────────────────────────────
     if state.cfg.margin_sl && total_pnl < -(margin * state.cfg.sl_margin_pct) {
         if has_long && long_n > 1.0 {

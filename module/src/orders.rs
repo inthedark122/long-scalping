@@ -47,22 +47,23 @@ pub(crate) fn limit_order(
     }
 }
 
-/// MARKET open with an attached stop_loss bracket. Opening a position requires a
-/// market order in this framework (limit opens don't fill); the stop rides along.
-pub(crate) fn market_open_sl(
+/// Clean LIMIT open ("create position with price"): a maker open resting at
+/// `enter`. NO stop_loss/take_profit bracket on the create — attaching those
+/// gets the order rejected; the stop/TP are handled separately.
+pub(crate) fn limit_open(
     direction: Direction,
     amount: f64,
-    stop_loss: f64,
+    enter: f64,
     note: &str,
 ) -> ModuleOpenPosition {
     ModuleOpenPosition {
         direction,
         amount: Some(amount),
         qty: None,
-        enter_price: None,
-        order_type: "Market".to_string(),
+        enter_price: Some(enter),
+        order_type: "Limit".to_string(),
         take_profit: None,
-        stop_loss: Some(stop_loss),
+        stop_loss: None,
         note: note.to_string(),
     }
 }
