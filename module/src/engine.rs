@@ -485,20 +485,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let mut close_positions: Vec<ModuleClosePosition> = Vec::new();
 
-    // ── Fast-candle scalp exit (opt-in, enable_fcscalp) ─────────────────────────
-    // Hard SL at DownBig; take profit at +fcscalp_tp_pct of notional; or sell the rip
-    // when a fast-UP flush completes in profit. Runs before the other exits.
-    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 {
-        let gain_pct = long_pnl / long_n;
-        let fastup_done = state.fc.last_end_dir == 1
-            && state.ticks.saturating_sub(state.fc.last_end_tick) <= 3;
-        if price <= state.mrc_db {
-            close_positions.push(close(Direction::Long, "fcs-sl"));
-        } else if gain_pct >= state.cfg.fcscalp_tp_pct {
-            close_positions.push(close(Direction::Long, "fcs-tp"));
-        } else if fastup_done && gain_pct > 0.0 {
-            close_positions.push(close(Direction::Long, "fcs-rip"));
-        }
+    // ── Fast-candle scalp hard stop (opt-in, enable_fcscalp) ────────────────────
+    // The ONLY market exit: catastrophic stop when price breaches DownBig. The profit
+    // exit (fcs-tp) is a resting maker limit placed in compute_limit_orders.
+    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 && price <= state.mrc_db {
+        close_positions.push(close(Direction::Long, "fcs-sl"));
     }
 
     // ── SL: last-resort margin protection ──────────────────────────────

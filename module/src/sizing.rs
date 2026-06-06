@@ -218,26 +218,6 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── Fast-candle scalp entry (opt-in, enable_fcscalp) ───────────────────────
-    // Buy the LOW right after a fast-DOWN flush completes — the "lowest candle". This
-    // DELIBERATELY bypasses the trandm sell-block (it IS a counter-flush dip-buy) and is
-    // protected by the DownBig hard stop in handle_sug_info. Lower-half of the channel only.
-    if state.cfg.enable_fcscalp
-        && !has_long
-        && open_positions.is_empty()
-        && !long_on_cd
-        && state.fc.last_end_dir == -1
-        && now_tick.saturating_sub(state.fc.last_end_tick) <= 5
-        && price < state.mrc_ml
-        && price > state.mrc_db
-        && room_l > 1.0
-    {
-        let amt = budget_size(room_l, F_SEED, lbias * lscale, state);
-        if amt > 1.0 {
-            open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
-        }
-    }
-
     // ── Trend entry (zone-rejection / fast-candle breakout) — long only ─────────
     if state.cfg.enable_trend
         && !has_long
@@ -388,6 +368,42 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     // Block long DCA when price is below DownBig (stop hunt down) and not yet exhausted.
     let v_blocks_long_dca =
         state.v_lines[0].was_above == Some(false) && !state.v_lines[0].short_side.exhausted;
+
+    // ── Fast-candle scalp (opt-in, enable_fcscalp) — LIMIT / maker only ─────────
+    // Entry: rest a maker BUY at the candle low after a fast-DOWN flush ("buy the low").
+    // Exit:  rest a maker reduce-only SELL at entry × (1 + fcscalp_tp_pct) ("sell the high").
+    // The DownBig hard stop is the ONLY market exit (handle_sug_info) — rare, catastrophic.
+    if state.cfg.enable_fcscalp {
+        if !has_long
+            && balance_ok
+            && !long_on_cd
+            && state.fc.last_end_dir == -1
+            && state.ticks.saturating_sub(state.fc.last_end_tick) <= 5
+            && price < state.mrc_ml
+            && price > state.mrc_db
+        {
+            let buy_px = if state.cur_lo > 0.0 {
+                state.cur_lo.min(price - tick)
+            } else {
+                price - tick
+            };
+            let amt = (max * state.cfg.seed).max(1.0).min(r_side.max(1.0));
+            if amt > 1.0 && buy_px > 0.0 {
+                place_orders.push(limit_order(Direction::Long, amt, buy_px, "fcs-l"));
+            }
+        } else if has_long && long_n > 1.0 {
+            if let Some(p) = input.positions.long.as_ref() {
+                let tp_px = p.entry_price * (1.0 + state.cfg.fcscalp_tp_pct);
+                place_orders.push(tp_order_with_band(
+                    Direction::Long,
+                    long_n,
+                    tp_px,
+                    "fcs-tp",
+                    "fcs-tp",
+                ));
+            }
+        }
+    }
 
     // ── Long TPs ─────────────────────────────────────────────────────────────
     if has_long && long_n > min_tp_notional {
