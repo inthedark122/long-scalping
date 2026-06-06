@@ -47,6 +47,33 @@ pub(crate) fn limit_order(
     }
 }
 
+/// Resting maker BUY limit with an attached stop_loss (bracket). Used by the
+/// fast-candle scalp so the DownBig protective stop travels with the entry and
+/// the module never issues a market order.
+pub(crate) fn limit_order_sl(
+    direction: Direction,
+    amount: f64,
+    price: f64,
+    stop_loss: f64,
+    mark: &str,
+) -> ModulePlaceOrder {
+    ModulePlaceOrder {
+        direction,
+        amount: Some(amount),
+        qty: None,
+        enter_price: price,
+        take_profit: None,
+        stop_loss: Some(stop_loss),
+        mark: mark.to_string(),
+        order_side: match direction {
+            Direction::Long => ModuleOrderSide::Buy,
+            Direction::Short => ModuleOrderSide::Sell,
+            _ => ModuleOrderSide::Buy,
+        },
+        reduce_only: false,
+    }
+}
+
 pub(crate) fn tp_order_with_band(
     direction: Direction,
     amount: f64,

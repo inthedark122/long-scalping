@@ -3,7 +3,7 @@
 
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
-use crate::orders::{limit_order, market_open, tp_order_with_band};
+use crate::orders::{limit_order, limit_order_sl, market_open, tp_order_with_band};
 use crate::state::State;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -389,7 +389,14 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
             };
             let amt = (max * state.cfg.seed).max(1.0).min(r_side.max(1.0));
             if amt > 1.0 && buy_px > 0.0 {
-                place_orders.push(limit_order(Direction::Long, amt, buy_px, "fcs-l"));
+                // Bracket: maker BUY at the low + attached pure-limit stop at DownBig.
+                place_orders.push(limit_order_sl(
+                    Direction::Long,
+                    amt,
+                    buy_px,
+                    state.mrc_db,
+                    "fcs-l",
+                ));
             }
         } else if has_long && long_n > 1.0 {
             if let Some(p) = input.positions.long.as_ref() {

@@ -485,13 +485,6 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let mut close_positions: Vec<ModuleClosePosition> = Vec::new();
 
-    // ── Fast-candle scalp hard stop (opt-in, enable_fcscalp) ────────────────────
-    // The ONLY market exit: catastrophic stop when price breaches DownBig. The profit
-    // exit (fcs-tp) is a resting maker limit placed in compute_limit_orders.
-    if state.cfg.enable_fcscalp && has_long && long_n > 1.0 && price <= state.mrc_db {
-        close_positions.push(close(Direction::Long, "fcs-sl"));
-    }
-
     // ── SL: last-resort margin protection ──────────────────────────────
     if state.cfg.margin_sl && total_pnl < -(margin * state.cfg.sl_margin_pct) {
         if has_long && long_n > 1.0 {
