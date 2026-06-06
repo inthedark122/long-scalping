@@ -205,6 +205,7 @@ pub struct Config {
     pub fcscalp_rung_frac: f64, // 0.075 → $15 rung at a $200 budget
     pub fcscalp_grid_frac: f64, // 0.375 → $75 max (≈5 rungs)
     pub fcscalp_rung_gap: f64,  // 0.003 → next rung ≥0.3% below the last fill (spacing)
+    pub fcscalp_tp_band: f64,   // 0.02 → only ladder TPs onto walls within +2% of avg entry
 }
 
 impl Default for Config {
@@ -235,6 +236,7 @@ impl Default for Config {
             fcscalp_rung_frac: 0.075, // ~$15 per rung at a $200 budget
             fcscalp_grid_frac: 0.375, // ~$75 max grid (≈5 rungs)
             fcscalp_rung_gap: 0.003,  // next rung ≥0.3% below the last fill
+            fcscalp_tp_band: 0.02,    // ladder TPs only onto walls within +2% of avg
         }
     }
 }
@@ -268,6 +270,7 @@ impl Config {
                 "fcscalp_rung_frac" => self.fcscalp_rung_frac = n,
                 "fcscalp_grid_frac" => self.fcscalp_grid_frac = n,
                 "fcscalp_rung_gap" => self.fcscalp_rung_gap = n,
+                "fcscalp_tp_band" => self.fcscalp_tp_band = n,
                 _ => {}
             }
         }

@@ -518,7 +518,12 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 // ── TP ladder: reduce-only maker SELLs at the nearest resistance walls
                 //    ABOVE the avg entry, splitting the position so every fill banks
                 //    profit. Fallback (no order book / backtest): a single wall/%% TP.
-                let walls = fcscalp_resist_walls(input, avg, 5);
+                let band_top = avg * (1.0 + state.cfg.fcscalp_tp_band);
+                let walls: Vec<f64> = fcscalp_resist_walls(input, avg, 8)
+                    .into_iter()
+                    .filter(|&p| p <= band_top) // skip far walls (e.g. +32%) — unreachable TPs
+                    .take(5)
+                    .collect();
                 let slice = if walls.is_empty() {
                     0.0
                 } else {
