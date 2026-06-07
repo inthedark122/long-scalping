@@ -1,5 +1,51 @@
 # Long Scalping — AI Memory
 
+> NOTE: Sections below "Module Architecture" are PRE-REFACTOR (v0.11 grid/hedge era) and
+> largely stale. The current strategy is the long-only window-scalp on branch
+> `test/fastcandle-scalp`. The section directly below is the current source of truth for
+> the platform / bot groups.
+
+## Sinvoid Platform & Bot Groups (current — 2026-06-07)
+
+Trading runs on the **sinvoid** platform (`trading.sinvoid.me`) via the `mcp__claude_ai_LTE__*`
+MCP tools. OKX live indicator/price API:
+`https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
+
+- **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
+  **`0.64-arb21`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
+  `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
+- **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
+- **User manages bot STATUS + API_KEY MANUALLY** — do NOT change a group's status/api_key; create/configure structure only.
+
+### Bot groups
+
+| ID | Name | Status | Money | Margin/Lev | Symbols | Notes |
+|----|------|--------|-------|-----------|---------|-------|
+| **29** | Long Scalping | Simulation | **sim** | ~$10 / 20× per start | ETH, HOME, HYPE, ALLO, OPN | FC dev/test group. Bots: 694 ETH, 919 ALLO, 921 OPN (running on arb21); 918 HYPE, 917 HOME (stopped). |
+| **39** | [PROD] Long Scalping | Stopped | **REAL** | $5 / 10× | ETH, HOME, ALLO, OPN | Production. Created 2026-06-07, NOT started. Starting bots here trades REAL money. |
+
+- **Start a bot**: `run_bot_group_action(<gid>, "start", <symbol_key>, <price>, leverage, margin, values)`.
+  `values` = the start signal_action params (margin_sl, sl_margin_pct, seed, cap, cooldown_ticks,
+  nearest, enable_stairs, enable_trend). FC params (enable_fcscalp default ON, fcscalp_*) are NOT in
+  the group's start UI params, so they apply via the module defaults on param-absent starts.
+- **Stop**: `run_bot_action(<bot_id>, "lte:stop")`. **Force close**: `run_bot_action(<bot_id>, "force_close_long")`.
+- Config loads ONCE per start (cfg_loaded guard) → to re-apply config, lte:stop then start.
+- **Backtest**: `run_bot_group_backtest` — any symbol works (not just the group list). FC opens
+  with MARKET in backtest (no order book) so it fills; live it's maker LIMIT. FC backtests are
+  SLOW (high per-tick order volume + first-time per-token/period data load).
+
+### FC (window scalp) — current design (arb21)
+Window/cascade-only (order book = disabled `fcscalp_use_ob` extension). **1m cascade = entry
+window; 5m cascade = confirmation** (safe gate + bias). Per-RUNG TPs (each rung exits at its own
+entry × (1+tp_dist)). Rung spacing = fraction (`fcscalp_rung_step`) of last-fill→floor distance
+(clusters near the bottom, widens for a new lower window). Entry capped at the buy-zone line
+(lower window) so it never buys the top. Confirmed downtrend (`mkt_mode == -2`) → tight TP + no
+averaging + bag-exit on pump/wide-window; up/sideways → full accumulate. Sectioned debug via
+`debug_info` bitmask: 1 CORE · 2 CAS · 4 WIN · 8 RUN · 16 FC · 32 VT · 64 MRC · 128 DMP (0 = default CORE|CAS|WIN).
+Live (maker fees) is meaningfully better than backtest (taker market opens). Live sim: OPN +,
+ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
+
 ## Module Architecture
 
 - **Type**: DynamicModule (WASM via `lte_strategy_bridge::run_loop`)
