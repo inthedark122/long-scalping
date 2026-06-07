@@ -354,11 +354,12 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
     ModuleOutput {
         open_positions,
         debug: format!(
-            "ind t={} rng={:.2} smc={} mode={} mv={}/{:.0} | 1m:{} | 5m:{} | fc cnt={} pct={:.1}% dur={:.0}t gain={:.2} calm={:.0}c mom={:.1} pre={}{} | {}{}",
+            "ind t={} rng={:.2} smc={} mode={} mv={}/{:.0} | 1m:{} | 5m:{} | win=[{}] c5=[{}] | fc cnt={} pct={:.1}% dur={:.0}t gain={:.2} calm={:.0}c mom={:.1} pre={}{} | {}{}",
             state.ticks, state.mrc_range, state.smc_dir,
             state.mkt_mode, state.cas1.cas_dir,
             state.cas1.cas_high - state.cas1.cas_low,
             tf_debug(&state.tf1), tf_debug(&state.tf5),
+            window_debug(&state.win), cascade_debug(&state.cas5, input.price),
             state.fc.count, state.fc.avg_pct, state.fc.avg_dur, state.fc.avg_gain,
             state.fc.avg_calm, state.fc.momentum, state.fc.prefire,
             if state.fc.active { if state.fc.dir > 0 { " [FAST^]" } else { " [FASTv]" } } else { "" },
