@@ -311,9 +311,8 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
     // Window context (Layer 1) — refresh before the candle-close FC entry consumes it.
     let w = detect_window(input, state);
     state.win = w;
-    // The ZigZag breakout is a live-tick cross; don't let a stale sug-tick flag fire on a
-    // candle close (compute_auto_open also runs here).
-    state.zz_cross_up = false;
+    // NOTE: zz_break_up is set in update_zigzag (1m close) above and consumed by compute_auto_open
+    // both here AND on sug ticks within this candle — do NOT reset it here.
 
     // Market auto-open only — one-shot per candle. Limit orders live in handle_sug_info.
     let open_positions = if timeframes.contains(&TF)
@@ -385,7 +384,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                         state.zz_buy,
                         state.zz_dir,
                         state.zz_klines,
-                        if state.zz_cross_up { " X" } else { "" },
+                        if state.zz_break_up { " BRK" } else { "" },
                         if state.fc_deep_active { 1 } else { 0 },
                         state.tf30.cross,
                     ),
@@ -801,12 +800,8 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let w = detect_window(input, state);
     state.win = w;
 
-    // ZigZag breakout cross: price just crossed ABOVE the last swing-high pivot (zz_sell) on
-    // this tick (was below last tick). Drives the early reversal/breakout long in compute_auto_open.
-    state.zz_cross_up = state.zz_sell > 0.0
-        && prev_tick_price > 0.0
-        && prev_tick_price < state.zz_sell
-        && input.price >= state.zz_sell;
+    // (zz line-break is detected on_indicator in update_zigzag — NOT on sug ticks. The zigzag is
+    // static within a 1m candle, so a live-tick price compare would be meaningless / miss the break.)
 
     // ── Static FC grid level ────────────────────────────────────────────────────
     // The resting `fcs-g` price is computed HERE (with the fresh window) and frozen, NOT in
@@ -1060,7 +1055,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         state.zz_buy,
                         state.zz_dir,
                         state.zz_klines,
-                        if state.zz_cross_up { " X" } else { "" },
+                        if state.zz_break_up { " BRK" } else { "" },
                         if state.fc_deep_active { 1 } else { 0 },
                         state.tf30.cross,
                     ),

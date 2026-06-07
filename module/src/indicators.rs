@@ -51,21 +51,39 @@ pub(crate) fn read_smc_dir(ind: &Indicators) -> i8 {
     }
 }
 
-/// Read the 1m ZigZagTrend pivots into state (call on each 1m close). SellPrice = the last
-/// swing-HIGH pivot; price crossing above it = a confirmed break of the prior lower-high.
+/// Read the 1m ZigZagTrend pivots and detect the LINE BREAK (call on each 1m close only — the
+/// zigzag is static within a candle). The entry signal is a candle CLOSE that breaks above the
+/// swing-high line (SellPrice). Crucially we compare to the PREVIOUS candle's SellPrice (the value
+/// held in state before this update): the zigzag bumps SellPrice up the instant the line is broken,
+/// so by the time we read the new value it has already run above price — only the previous value
+/// shows the break. Direction is the "strong move" state (HH+HL); we just exclude a strong-down leg.
 pub(crate) fn update_zigzag(ind: &Indicators, state: &mut State) {
+    let new_dir = match read_direction(ind, TF, 0, ZZ_IND, "Direction") {
+        Some(Direction::Long) => 1,
+        Some(Direction::Short) => -1,
+        _ => 0,
+    };
+    let close = read_float(ind, TF, 0, CANDLE_IND, "Close").unwrap_or(0.0);
+    // LINE BREAK: this candle closed above the swing-high line as it stood at the PREVIOUS candle
+    // (state.zz_sell, not yet overwritten), and it's a FRESH break (the prior close was at/below the
+    // line — not a continuation already above it). Exclude a confirmed strong-down leg.
+    state.zz_break_up = state.zz_sell > 0.0
+        && state.zz_close_prev > 0.0
+        && state.zz_close_prev <= state.zz_sell
+        && close > state.zz_sell
+        && new_dir != -1;
+
     if let Some(sell) = read_float(ind, TF, 0, ZZ_IND, "SellPrice") {
         state.zz_sell = sell;
     }
     if let Some(buy) = read_float(ind, TF, 0, ZZ_IND, "BuyPrice") {
         state.zz_buy = buy;
     }
-    state.zz_dir = match read_direction(ind, TF, 0, ZZ_IND, "Direction") {
-        Some(Direction::Long) => 1,
-        Some(Direction::Short) => -1,
-        _ => 0,
-    };
+    state.zz_dir = new_dir;
     state.zz_klines = read_float(ind, TF, 0, ZZ_IND, "KLines").unwrap_or(0.0);
+    if close > 0.0 {
+        state.zz_close_prev = close;
+    }
 }
 
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {

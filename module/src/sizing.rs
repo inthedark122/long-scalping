@@ -276,24 +276,22 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── Early reversal/breakout long (ZigZag sell-cross) ────────────────────────
-    // Complement to the dip-buyer above: open at the START of an up-move the moment price crosses
-    // ABOVE the ZigZag SellPrice (the swing-high pivot it just broke through). This is the ONE
-    // place FC may enter the UPPER window (the dip gate blocks it) — gated on the confirmed break
-    // so it isn't chasing. Deliberately a MARKET entry (not the usual maker limit): a strong
-    // breakout often never retests, so we take it at the cross to actually catch the pump, then
-    // ride to the per-rung TP. Stands down in a confirmed downtrend (mkt_mode == -2) so a
-    // relief-bounce break doesn't catch a falling knife.
+    // ── Early line-break long (ZigZag swing-high break) ─────────────────────────
+    // Complement to the dip-buyer above: open at the START of an up-move when a 1m candle CLOSES
+    // above the ZigZag swing-high line (zz_break_up, detected on_indicator vs the PREVIOUS SellPrice
+    // — see update_zigzag). This is the breakout event itself, which fires while Direction may still
+    // be BOTH (the line-break LEADS the "strong move" Direction=LONG confirmation), so we do NOT
+    // require zz_dir==1 — zz_break_up already excludes a strong-down leg. The ONE place FC may enter
+    // the UPPER window (the dip gate blocks it). MARKET entry: a breakout often never retests, so
+    // take it now and ride to the per-rung TP. Stands down in a confirmed downtrend (mkt_mode==-2).
     if state.cfg.enable_fcscalp
         && state.cfg.fcscalp_zz_breakout
         && !has_long
         && !long_on_cd
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
-        && state.zz_cross_up
-        && state.zz_dir == 1
+        && state.zz_break_up
         && state.mkt_mode != -2
-        && state.zz_sell > 0.0
     {
         let min_n = input
             .symbol_info

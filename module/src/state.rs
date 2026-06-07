@@ -430,16 +430,20 @@ pub struct State {
     // Window context (Layer 1): recomputed each sug tick, consumed by FC (Layer 2).
     pub win: WindowContext,
 
-    // ── ZigZag (1m) — swing pivots for the breakout/reversal entry ─────────────
-    // zz_sell = last swing-HIGH pivot (SellPrice); crossing ABOVE it = a confirmed
-    // break of the prior lower-high → reversal up. zz_dir = current leg (+1 up/-1 dn).
-    // zz_cross_up is a transient per-tick flag (price just crossed above zz_sell);
-    // computed in handle_sug_info, consumed by compute_auto_open. None are serialized.
+    // ── ZigZag (1m) — swing pivots for the line-break entry ────────────────────
+    // zz_sell = last swing-HIGH line (SellPrice). zz_dir = the "strong move" state (+1 LONG = higher
+    // highs & higher lows, -1 SHORT, 0 BOTH/ranging). The entry is the LINE BREAK, not the (late)
+    // strong-move confirmation: a 1m candle CLOSE that breaks above the swing-high line. Detected
+    // ONLY on_indicator (the zigzag is static within a candle) and against the PREVIOUS candle's
+    // SellPrice — the zigzag bumps SellPrice up the instant the line breaks, so the current value has
+    // already run away. zz_break_up = that fresh break fired this candle. zz_close_prev = prior 1m
+    // close (to require the break is fresh, not a continuation already above the line). Not serialized.
     pub zz_sell: f64,
     pub zz_buy: f64,
     pub zz_dir: i8,
     pub zz_klines: f64,
-    pub zz_cross_up: bool,
+    pub zz_close_prev: f64,
+    pub zz_break_up: bool,
 
     // Deep-dump hold-for-bounce: fc_deep_tick = the tick the hold armed (0 = not holding);
     // fc_deep_active = transient, set each sug tick when the hold is in force (suppresses the FC
@@ -602,7 +606,8 @@ impl Default for State {
             zz_buy: 0.0,
             zz_dir: 0,
             zz_klines: 0.0,
-            zz_cross_up: false,
+            zz_close_prev: 0.0,
+            zz_break_up: false,
             fc_deep_tick: 0,
             fc_deep_active: false,
             // Market mode
