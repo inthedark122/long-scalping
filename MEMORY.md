@@ -29,6 +29,13 @@ MCP tools. OKX live indicator/price API:
   `values` = the start signal_action params (margin_sl, sl_margin_pct, seed, cap, cooldown_ticks,
   nearest, enable_stairs, enable_trend). FC params (enable_fcscalp default ON, fcscalp_*) are NOT in
   the group's start UI params, so they apply via the module defaults on param-absent starts.
+- **⚠️ MARGIN GOTCHA (cost me a confused debug):** the budget = `margin × leverage` (`auto_max_amount`).
+  Group 29's **default `margin` is 2.5** → a start (or group update) WITHOUT an explicit margin uses
+  2.5 → **2.5×20 = $50 budget** (small rungs), NOT the intended $10×20=$200. Worse: **`update_bot_group`
+  resets the top-level `margin` back to the 2.5 default if you don't re-pass it** — so a module-version
+  deploy silently reverts margin. ALWAYS pass `margin=10, margin_leverage=20` on EVERY group update,
+  and `margin=10` on EVERY start. (`auto_max_amount` does NOT secretly drift on close — that was a wrong
+  earlier guess; the size changes were purely the 2.5 default sneaking in.) Group 29 default now set to 10.
 - **Stop**: `run_bot_action(<bot_id>, "lte:stop")`. **Force close**: `run_bot_action(<bot_id>, "force_close_long")`.
 - Config loads ONCE per start (cfg_loaded guard) → to re-apply config, lte:stop then start.
 - **Backtest**: `run_bot_group_backtest` — any symbol works (not just the group list). FC opens
