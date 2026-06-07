@@ -888,8 +888,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         && state.win.safe
         && state.win.pos_frac < state.cfg.fcscalp_buy_zone;
     let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
+    // ORPHANED entry: the window relocated UP and left the resting buy below the new floor. It can
+    // no longer fill AND — because fc_open_px > 0 gates every FC entry — it silently BLOCKS both the
+    // dip-buyer and the ZigZag breakout, freezing the symbol. Cancel it so the next tick re-arms in
+    // the current window (the entry analogue of the grid "restart on window change"). The trail only
+    // moves DOWN (never chase up within a window), so it can't self-correct this; we must cancel.
+    let orphaned = state.win.floor > 0.0 && state.fc_open_px < state.win.floor;
     if !has_long && state.fc_open_px > 0.0 {
-        if fc_armable {
+        if fc_armable && !orphaned {
             // Trail target from the 1m window/cascade (same as the entry): a small dip,
             // capped at the buy-zone line so it never trails up into the top. OB opt-in.
             let scale = (state.win.scale_pct / 100.0).max(0.0005);
@@ -913,7 +919,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 state.fc_open_px = target;
             }
         } else {
-            close_positions.push(close(Direction::Long, "fcs-stale"));
+            // Cancel the pending open: window went unsafe / left the buy zone, OR it's orphaned
+            // below the relocated window. Either way clear fc_open_px so a fresh entry can re-arm.
+            let why = if orphaned { "fcs-rearm" } else { "fcs-stale" };
+            close_positions.push(close(Direction::Long, why));
             state.fc_open_px = 0.0;
         }
     }
