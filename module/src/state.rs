@@ -258,6 +258,11 @@ pub struct Config {
     pub fcscalp_zone_gate: bool,    // true → enable the mean-line zone gate
     pub fcscalp_mean_band: f64,     // 0.10 → "around the mean" = within this × MRC range of mrc_ml
     pub fcscalp_pullback_frac: f64, // 0.5 → pullback-to-mean first order = this × grid_max (half position)
+    // Stairs-zone scale-out TP: in the Momentum/stairs zone (above mean + uptrend) we EXPECT higher
+    // highs, so don't cap the winner at one small movement. Split the position 1/3·1/3·1/3 — a quick
+    // scalp TP, the current high (window ceiling), and a RUNNER at the expected new high (zz_sell,
+    // capped at UpBig). Only while the stairs read holds; if it fades the per-rung small TPs resume.
+    pub fcscalp_stairs_tp: bool, // true → enable the stairs-zone scale-out TP
 }
 
 impl Default for Config {
@@ -301,6 +306,7 @@ impl Default for Config {
             fcscalp_zone_gate: true,     // mean-line zone gate on (scalp only in favourable zones)
             fcscalp_mean_band: 0.10,     // ±10% of MRC range around the mean = "around the mean"
             fcscalp_pullback_frac: 0.5,  // pullback-to-mean first order = half the full position
+            fcscalp_stairs_tp: true,     // stairs-zone scale-out TP on (ride the higher highs)
         }
     }
 }
@@ -347,6 +353,7 @@ impl Config {
                 "fcscalp_zone_gate" => self.fcscalp_zone_gate = n != 0.0,
                 "fcscalp_mean_band" => self.fcscalp_mean_band = n,
                 "fcscalp_pullback_frac" => self.fcscalp_pullback_frac = n,
+                "fcscalp_stairs_tp" => self.fcscalp_stairs_tp = n != 0.0,
                 _ => {}
             }
         }
