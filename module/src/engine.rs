@@ -262,6 +262,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         state.smc_dir_prev = state.smc_dir;
         state.smc_dir = read_smc_dir(&input.indicators);
         update_volume_spike(&input.indicators, state);
+        update_zigzag(&input.indicators, state);
 
         // Update movement cascade and re-evaluate market mode on each 1m close.
         let c_high = read_float(&input.indicators, TF, 0, CANDLE_IND, "High").unwrap_or(0.0);
@@ -310,6 +311,9 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
     // Window context (Layer 1) — refresh before the candle-close FC entry consumes it.
     let w = detect_window(input, state);
     state.win = w;
+    // The ZigZag breakout is a live-tick cross; don't let a stale sug-tick flag fire on a
+    // candle close (compute_auto_open also runs here).
+    state.zz_cross_up = false;
 
     // Market auto-open only — one-shot per candle. Limit orders live in handle_sug_info.
     let open_positions = if timeframes.contains(&TF)
@@ -372,7 +376,18 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                         cascade_debug(&state.cas5, input.price)
                     ),
                 ),
-                (DBG_WIN, format!("win=[{}]", window_debug(&state.win))),
+                (
+                    DBG_WIN,
+                    format!(
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}]",
+                        window_debug(&state.win),
+                        state.zz_sell,
+                        state.zz_buy,
+                        state.zz_dir,
+                        state.zz_klines,
+                        if state.zz_cross_up { " X" } else { "" },
+                    ),
+                ),
                 (
                     DBG_FC,
                     format!(
@@ -717,6 +732,13 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let w = detect_window(input, state);
     state.win = w;
 
+    // ZigZag breakout cross: price just crossed ABOVE the last swing-high pivot (zz_sell) on
+    // this tick (was below last tick). Drives the early reversal/breakout long in compute_auto_open.
+    state.zz_cross_up = state.zz_sell > 0.0
+        && prev_tick_price > 0.0
+        && prev_tick_price < state.zz_sell
+        && input.price >= state.zz_sell;
+
     // ── Sug-tick organic entry (Priority Timing 0.1) ────────────────────────
     // compute_auto_open also runs on 1m candle closes; running it here lets entries
     // fire mid-candle the moment conditions align rather than waiting up to ~60s for
@@ -912,7 +934,18 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         cascade_debug(&state.cas5, price)
                     ),
                 ),
-                (DBG_WIN, format!("win=[{}]", window_debug(&state.win))),
+                (
+                    DBG_WIN,
+                    format!(
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}]",
+                        window_debug(&state.win),
+                        state.zz_sell,
+                        state.zz_buy,
+                        state.zz_dir,
+                        state.zz_klines,
+                        if state.zz_cross_up { " X" } else { "" },
+                    ),
+                ),
                 (DBG_RUN, run_dbg.trim().to_string()),
                 (DBG_FC, fast_candle_debug(&fast_candle)),
                 (DBG_VT, format!("vt={}", vt_debug(&state.v_lines))),

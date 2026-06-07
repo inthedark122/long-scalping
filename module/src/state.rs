@@ -233,6 +233,11 @@ pub struct Config {
     pub fcscalp_buy_zone: f64,  // 0.5 → scalp-buy when price is in the lower half of the window
     pub fcscalp_use_ob: bool,   // false → FC uses ONLY window/cascade levels (order book = disabled extension)
     pub fcscalp_rung_step: f64, // 0.4 → next rung is this fraction of the distance from the last fill to the floor
+    // Early reversal/breakout long: open at the START of an up-move (not just on a dip) when price
+    // crosses ABOVE the ZigZag SellPrice (the last swing-high pivot it just broke through). Maker
+    // entry = a limit at that broken pivot (now support) — buy the retest, ride the pump to TP.
+    pub fcscalp_zz_breakout: bool, // true → enable the ZigZag sell-cross breakout entry
+    pub fcscalp_zz_seed_mult: f64, // 1.5 → breakout first entry is this × the normal dip rung (higher conviction)
 }
 
 impl Default for Config {
@@ -267,6 +272,8 @@ impl Default for Config {
             fcscalp_buy_zone: 0.5,    // buy in the lower half of the window
             fcscalp_use_ob: false,    // window/cascade-only by default; order book is opt-in
             fcscalp_rung_step: 0.4,   // next rung 40% of the way to the floor (tighter near the bottom)
+            fcscalp_zz_breakout: true, // catch the start of an up-move on a ZigZag sell-cross
+            fcscalp_zz_seed_mult: 1.5, // breakout entry 1.5× the dip rung
         }
     }
 }
@@ -304,6 +311,8 @@ impl Config {
                 "fcscalp_buy_zone" => self.fcscalp_buy_zone = n,
                 "fcscalp_use_ob" => self.fcscalp_use_ob = n != 0.0,
                 "fcscalp_rung_step" => self.fcscalp_rung_step = n,
+                "fcscalp_zz_breakout" => self.fcscalp_zz_breakout = n != 0.0,
+                "fcscalp_zz_seed_mult" => self.fcscalp_zz_seed_mult = n,
                 _ => {}
             }
         }
@@ -403,6 +412,17 @@ pub struct State {
     pub cas5: CascadeState,
     // Window context (Layer 1): recomputed each sug tick, consumed by FC (Layer 2).
     pub win: WindowContext,
+
+    // ── ZigZag (1m) — swing pivots for the breakout/reversal entry ─────────────
+    // zz_sell = last swing-HIGH pivot (SellPrice); crossing ABOVE it = a confirmed
+    // break of the prior lower-high → reversal up. zz_dir = current leg (+1 up/-1 dn).
+    // zz_cross_up is a transient per-tick flag (price just crossed above zz_sell);
+    // computed in handle_sug_info, consumed by compute_auto_open. None are serialized.
+    pub zz_sell: f64,
+    pub zz_buy: f64,
+    pub zz_dir: i8,
+    pub zz_klines: f64,
+    pub zz_cross_up: bool,
 
     // ── Market mode ───────────────────────────────────────────────────────────
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
@@ -540,6 +560,11 @@ impl Default for State {
             cas1: CascadeState::default(),
             cas5: CascadeState::default(),
             win: WindowContext::default(),
+            zz_sell: 0.0,
+            zz_buy: 0.0,
+            zz_dir: 0,
+            zz_klines: 0.0,
+            zz_cross_up: false,
             // Market mode
             mkt_mode: 0,
             pos_owner: 0,

@@ -51,6 +51,23 @@ pub(crate) fn read_smc_dir(ind: &Indicators) -> i8 {
     }
 }
 
+/// Read the 1m ZigZagTrend pivots into state (call on each 1m close). SellPrice = the last
+/// swing-HIGH pivot; price crossing above it = a confirmed break of the prior lower-high.
+pub(crate) fn update_zigzag(ind: &Indicators, state: &mut State) {
+    if let Some(sell) = read_float(ind, TF, 0, ZZ_IND, "SellPrice") {
+        state.zz_sell = sell;
+    }
+    if let Some(buy) = read_float(ind, TF, 0, ZZ_IND, "BuyPrice") {
+        state.zz_buy = buy;
+    }
+    state.zz_dir = match read_direction(ind, TF, 0, ZZ_IND, "Direction") {
+        Some(Direction::Long) => 1,
+        Some(Direction::Short) => -1,
+        _ => 0,
+    };
+    state.zz_klines = read_float(ind, TF, 0, ZZ_IND, "KLines").unwrap_or(0.0);
+}
+
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {
     let gain = read_float(ind, TF, 0, "volume_50", "Gain").unwrap_or(0.0);
     let gain_min = read_float(ind, TF, 0, "volume_50", "GainMin").unwrap_or(-1.0);

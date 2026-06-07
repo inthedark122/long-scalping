@@ -6,6 +6,7 @@ pub(crate) const TF_15M: i64 = 900;
 pub(crate) const TF_30M: i64 = 1800;
 pub(crate) const MRC: &str = "mrc_200";
 pub(crate) const SMC_IND: &str = "smc";
+pub(crate) const ZZ_IND: &str = "zigzagtrend";
 pub(crate) const CANDLE_IND: &str = "candle";
 // Approx sug ticks per 1m candle. Used to (a) seed the V-line tracker from candle history on a
 // synthetic tick timeline at Init, and (b) express the freshness/staleness windows in candles.

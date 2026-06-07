@@ -295,6 +295,43 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
+    // ── Early reversal/breakout long (ZigZag sell-cross) ────────────────────────
+    // Complement to the dip-buyer above: open at the START of an up-move the moment price crosses
+    // ABOVE the ZigZag SellPrice (the swing-high pivot it just broke through). This is the ONE
+    // place FC may enter the UPPER window (the dip gate blocks it) — gated on the confirmed break
+    // so it isn't chasing. Deliberately a MARKET entry (not the usual maker limit): a strong
+    // breakout often never retests, so we take it at the cross to actually catch the pump, then
+    // ride to the per-rung TP. Stands down in a confirmed downtrend (mkt_mode == -2) so a
+    // relief-bounce break doesn't catch a falling knife.
+    if state.cfg.enable_fcscalp
+        && state.cfg.fcscalp_zz_breakout
+        && !has_long
+        && !long_on_cd
+        && state.fc_open_px <= 0.0
+        && open_positions.is_empty()
+        && state.zz_cross_up
+        && state.zz_dir == 1
+        && state.mkt_mode != -2
+        && state.zz_sell > 0.0
+    {
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        // Higher-conviction first entry: the dip rung × the breakout multiplier.
+        let amt = (max * state.cfg.fcscalp_rung_frac * state.cfg.fcscalp_zz_seed_mult)
+            .max(min_n)
+            .max(1.0);
+        if amt <= max {
+            let note = format!(
+                "fcs-bk zz{:.4} p{:.4} pos{:.2}",
+                state.zz_sell, price, state.win.pos_frac
+            );
+            open_positions.push(market_open(Direction::Long, amt, &note));
+        }
+    }
+
     // LONG-ONLY: open only on long setups; the bot never opens a short. (The hedge — which
     // opened the opposite side — is removed entirely along with all short entries.)
     if !has_long && !long_on_cd && cas_allows_long && !trandm_block_long {
