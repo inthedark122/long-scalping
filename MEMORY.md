@@ -12,7 +12,7 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.66-deep`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  **`0.68-grid2`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
   → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
   `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
@@ -54,7 +54,15 @@ while held it SUPPRESSES the FC cuts (`fcs-sl`/`fcs-dn-exit`), stops averaging, 
 reachable reduce-only TP at `avg×(1-deep_neg_pct)` — ALLOWED below avg entry (breakeven / small loss)
 so the quick bounce closes us near flat. Bounded: holds `deep_hold_candles`(~6); if no recovery →
 cut (`fcs-deep-stop`). Margin SL still backstops. Cfg: `fcscalp_deep_hold`(on), `_deep_cross`(-3),
-`_deep_neg_pct`(0.005), `_deep_hold_candles`(6). Debug WIN line: `dh{0/1} t30c{tf30.cross}`. Sectioned debug via
+`_deep_neg_pct`(0.005), `_deep_hold_candles`(6). Debug WIN line: `dh{0/1} t30c{tf30.cross}`.
+**Static grid fix (0.67-grid / 0.68-grid2):** the `fcs-g` rung price is now computed ONCE in the
+engine (anchored to the actual rung level + window floor) and FROZEN, emitted exactly once
+(`fc_grid_placed` guard); recomputed only on a fill (advance) or a partial-TP-with-window-shift
+(restart). Fixes the old per-tick live-price recompute that produced same-price / rising rungs and
+duplicate stacked orders. 2wk backtest (ETH+HOME+ALLO+OPN, $100/20×, May22–Jun5): total **−3.4 → +13.9**
+(HOME −1.3→+15.1, OPN −2.7→−1.9, ALLO +0.66→+0.94, ETH −0.08→−0.24). HOME +15 is a BACKTEST number
+(compounding + issue-001 under-reports losses + taker fees) — directional, not a promise. Minor: ~2
+same-price pairs / 50 positions remain from the restart edge case (refinable). Sectioned debug via
 `debug_info` bitmask: 1 CORE · 2 CAS · 4 WIN · 8 RUN · 16 FC · 32 VT · 64 MRC · 128 DMP (0 = default CORE|CAS|WIN).
 Live (maker fees) is meaningfully better than backtest (taker market opens). Live sim: OPN +,
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
