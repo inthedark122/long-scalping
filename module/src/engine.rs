@@ -606,7 +606,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // price PUMPS back to the upper window (a bounce to sell into) OR the window is too
     // wide to safely hold (e.g. a 5% window in a downtrend). Up/sideways never triggers
     // this — there we accumulate. Owner-routed (FC only).
-    if fc_owner && has_long && long_n > 1.0 && state.win.bias < 0 {
+    if fc_owner && has_long && long_n > 1.0 && state.mkt_mode == -2 {
         let win_pct = if price > 0.0 {
             (state.win.ceiling - state.win.floor) / price
         } else {

@@ -487,10 +487,12 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 // the configured minima. So a volatile token (ALLO ~3%) spaces/targets wide,
                 // a calm one (ETH ~0.16%) tight — never the fixed 0.3%/0.4% for both.
                 let scale = state.win.scale_pct / 100.0;
-                // Trend-adaptive (5m bias): a DOWNTREND exits FAST — TP a SMALLER distance
-                // than the rung/averaging spacing (cut quick, don't hold for a full move and
-                // don't average a falling knife). Up/sideways → the normal one-movement TP.
-                let down = state.win.bias < 0;
+                // Trend-adaptive: only a CONFIRMED downtrend (mkt_mode == -2, the slow
+                // multi-TF/hysteresis observer) switches to conservative mode — NOT the
+                // twitchy 5m bias, which is negative on any minor down-block and was firing
+                // constantly (cutting good sideways scalps short). Downtrend → exit FAST
+                // (smaller TP), no averaging. Up/sideways → normal one-movement TP + grid.
+                let down = state.mkt_mode == -2;
                 let tp_dist = if down {
                     state.cfg.fcscalp_tp_pct.max(scale * 0.3)
                 } else {
