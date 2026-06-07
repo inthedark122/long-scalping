@@ -12,7 +12,7 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.65-zzbreak`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  **`0.66-deep`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
   → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
   `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
@@ -47,7 +47,14 @@ averaging + bag-exit on pump/wide-window; up/sideways → full accumulate.
 up-move when price crosses ABOVE `ZigZagTrend.SellPrice` (the swing-high pivot it broke), MARKET
 entry, 1.5× rung, allowed in the UPPER window, gated on `zz_dir==up && mkt_mode!=-2`. Both route to
 OWN_FC per-rung TPs. Cfg: `fcscalp_zz_breakout`(on), `fcscalp_zz_seed_mult`(1.5). Debug WIN line now
-shows `zz[sell.. buy.. d±.. k.. X]` (X = cross fired this tick). Sectioned debug via
+shows `zz[sell.. buy.. d±.. k.. X]` (X = cross fired this tick).
+**Deep-dump hold-for-bounce (0.66-deep):** a SUDDEN dump into the 30m deep bands (`tf30.cross <= -3`)
+is a potential FLIP zone — don't force-cut at the low. Arms on (sudden_dump & 30m-deep & underwater);
+while held it SUPPRESSES the FC cuts (`fcs-sl`/`fcs-dn-exit`), stops averaging, and sizing rests ONE
+reachable reduce-only TP at `avg×(1-deep_neg_pct)` — ALLOWED below avg entry (breakeven / small loss)
+so the quick bounce closes us near flat. Bounded: holds `deep_hold_candles`(~6); if no recovery →
+cut (`fcs-deep-stop`). Margin SL still backstops. Cfg: `fcscalp_deep_hold`(on), `_deep_cross`(-3),
+`_deep_neg_pct`(0.005), `_deep_hold_candles`(6). Debug WIN line: `dh{0/1} t30c{tf30.cross}`. Sectioned debug via
 `debug_info` bitmask: 1 CORE · 2 CAS · 4 WIN · 8 RUN · 16 FC · 32 VT · 64 MRC · 128 DMP (0 = default CORE|CAS|WIN).
 Live (maker fees) is meaningfully better than backtest (taker market opens). Live sim: OPN +,
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
