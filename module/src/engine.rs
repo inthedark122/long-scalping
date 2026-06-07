@@ -379,13 +379,15 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}]",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{}",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
                         state.zz_dir,
                         state.zz_klines,
                         if state.zz_cross_up { " X" } else { "" },
+                        if state.fc_deep_active { 1 } else { 0 },
+                        state.tf30.cross,
                     ),
                 ),
                 (
@@ -610,6 +612,44 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let fc_owner = state.pos_owner == OWN_FC;
     let base_owner = (OWN_AUTO..=OWN_REENTRY).contains(&state.pos_owner);
 
+    // ── Deep-dump hold-for-bounce ───────────────────────────────────────────────
+    // A SUDDEN dump into the 30m deep bands is a potential FLIP zone (high recovery potential):
+    // don't force-cut at the very bottom. While the hold is active we suppress the discretionary
+    // FC cuts (fcs-sl / fcs-dn-exit) and sizing rests a reachable reduce-only TP near breakeven
+    // (allowed to be slightly NEGATIVE) so the expected quick bounce closes us near flat instead
+    // of crystallising the loss at the low. A sudden spike should recover suddenly — if it does
+    // NOT within deep_hold_candles, the hold expires and we cut (fcs-deep-stop). The hold disarms
+    // the moment we're back to flat-or-better, leave the deep zone, or go flat. Margin SL still
+    // backstops a true runaway.
+    let deep_zone = (state.tf30.cross as i32) <= (state.cfg.fcscalp_deep_cross as i32);
+    let sudden_dump = sudden_move && state.run_dir < 0; // a sharp drop, not slow drift
+    if state.cfg.fcscalp_deep_hold
+        && fc_owner
+        && has_long
+        && long_n > 1.0
+        && total_pnl < 0.0
+        && deep_zone
+        && sudden_dump
+        && state.fc_deep_tick == 0
+    {
+        state.fc_deep_tick = state.ticks; // arm the hold window on the first sudden-dump-into-deep tick
+    }
+    if state.fc_deep_tick > 0 && (total_pnl >= 0.0 || !deep_zone || !has_long) {
+        state.fc_deep_tick = 0; // recovered / left the deep / flat → disarm
+    }
+    let hold_ticks =
+        (state.cfg.fcscalp_deep_hold_candles.max(1.0) * TICKS_PER_CANDLE as f64) as u64;
+    let deep_hold_expired =
+        state.fc_deep_tick > 0 && state.ticks.saturating_sub(state.fc_deep_tick) > hold_ticks;
+    state.fc_deep_active = state.fc_deep_tick > 0 && !deep_hold_expired;
+    let deep_hold_active = state.fc_deep_active;
+
+    // Hold window elapsed without the bounce → the "if not, stop": cut now.
+    if fc_owner && has_long && long_n > 1.0 && deep_hold_expired {
+        close_positions.push(close(Direction::Long, "fcs-deep-stop"));
+        state.fc_deep_tick = 0;
+    }
+
     // ── Fast-candle scalp stop: market close on a DownBig breach ────────────────
     // BUT only when we would NOT just re-open here. If the window still reads "buy" (safe +
     // price in the lower buy-zone), closing at the very bottom only to re-open at the same
@@ -618,7 +658,16 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // genuinely no longer a buy (window unsafe / confirmed downtrend), the deep stop fires;
     // the margin SL + dn-exit remain the real backstops either way.
     let fc_would_reopen = state.win.safe && state.win.pos_frac < state.cfg.fcscalp_buy_zone;
-    if fc_owner && has_long && long_n > 1.0 && price <= state.mrc_db && !fc_would_reopen {
+    if fc_owner
+        && has_long
+        && long_n > 1.0
+        && price <= state.mrc_db
+        && !fc_would_reopen
+        && !deep_hold_active
+        && !close_positions
+            .iter()
+            .any(|c| matches!(c.direction, Direction::Long))
+    {
         close_positions.push(close(Direction::Long, "fcs-sl"));
     }
 
@@ -636,6 +685,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         let pumped = state.win.pos_frac > 0.7; // bounced into the top of the window
         let too_wide = win_pct > 0.04; // window too big to hold against the trend
         if (pumped || too_wide)
+            && !deep_hold_active
             && !close_positions
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
@@ -937,13 +987,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}]",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{}",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
                         state.zz_dir,
                         state.zz_klines,
                         if state.zz_cross_up { " X" } else { "" },
+                        if state.fc_deep_active { 1 } else { 0 },
+                        state.tf30.cross,
                     ),
                 ),
                 (DBG_RUN, run_dbg.trim().to_string()),

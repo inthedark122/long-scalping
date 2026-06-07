@@ -238,6 +238,15 @@ pub struct Config {
     // entry = a limit at that broken pivot (now support) — buy the retest, ride the pump to TP.
     pub fcscalp_zz_breakout: bool, // true → enable the ZigZag sell-cross breakout entry
     pub fcscalp_zz_seed_mult: f64, // 1.5 → breakout first entry is this × the normal dip rung (higher conviction)
+    // Deep-dump hold-for-bounce: a sudden dump into the 30m deep bands is a potential FLIP zone
+    // (high recovery potential). Don't force-cut at the bottom — suppress the FC cuts, refind a
+    // reachable reduce-only TP near breakeven (ALLOWED to be negative), and hold for the quick
+    // bounce. A sudden spike should recover suddenly; if it doesn't within deep_hold_candles, the
+    // hold expires and we cut. The margin SL still backstops.
+    pub fcscalp_deep_hold: bool,       // true → enable the deep-dump hold-for-bounce
+    pub fcscalp_deep_cross: f64,       // -3 → "30m big deep" = tf30.cross <= this
+    pub fcscalp_deep_neg_pct: f64,     // 0.005 → hold-exit TP at avg × (1 - this) (small negative ok)
+    pub fcscalp_deep_hold_candles: f64, // 6 → hold this many candles for the bounce, then cut
 }
 
 impl Default for Config {
@@ -274,6 +283,10 @@ impl Default for Config {
             fcscalp_rung_step: 0.4,   // next rung 40% of the way to the floor (tighter near the bottom)
             fcscalp_zz_breakout: true, // catch the start of an up-move on a ZigZag sell-cross
             fcscalp_zz_seed_mult: 1.5, // breakout entry 1.5× the dip rung
+            fcscalp_deep_hold: true,        // hold a sudden deep dump for the bounce, don't cut the bottom
+            fcscalp_deep_cross: -3.0,       // 30m deep = bottom bands (DownOuter/DownBig)
+            fcscalp_deep_neg_pct: 0.005,    // exit at ≤0.5% below avg entry (breakeven / small loss)
+            fcscalp_deep_hold_candles: 6.0, // ~6 candles to bounce, else cut
         }
     }
 }
@@ -313,6 +326,10 @@ impl Config {
                 "fcscalp_rung_step" => self.fcscalp_rung_step = n,
                 "fcscalp_zz_breakout" => self.fcscalp_zz_breakout = n != 0.0,
                 "fcscalp_zz_seed_mult" => self.fcscalp_zz_seed_mult = n,
+                "fcscalp_deep_hold" => self.fcscalp_deep_hold = n != 0.0,
+                "fcscalp_deep_cross" => self.fcscalp_deep_cross = n,
+                "fcscalp_deep_neg_pct" => self.fcscalp_deep_neg_pct = n,
+                "fcscalp_deep_hold_candles" => self.fcscalp_deep_hold_candles = n,
                 _ => {}
             }
         }
@@ -423,6 +440,12 @@ pub struct State {
     pub zz_dir: i8,
     pub zz_klines: f64,
     pub zz_cross_up: bool,
+
+    // Deep-dump hold-for-bounce: fc_deep_tick = the tick the hold armed (0 = not holding);
+    // fc_deep_active = transient, set each sug tick when the hold is in force (suppresses the FC
+    // force-cuts + switches sizing to the breakeven/negative reduce-only TP). Neither serialized.
+    pub fc_deep_tick: u64,
+    pub fc_deep_active: bool,
 
     // ── Market mode ───────────────────────────────────────────────────────────
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
@@ -565,6 +588,8 @@ impl Default for State {
             zz_dir: 0,
             zz_klines: 0.0,
             zz_cross_up: false,
+            fc_deep_tick: 0,
+            fc_deep_active: false,
             // Market mode
             mkt_mode: 0,
             pos_owner: 0,

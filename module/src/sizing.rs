@@ -543,7 +543,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    the expected bounce), and a NEW (lower) window drops the floor → the gap
                 //    re-widens to ~a full movement. Floored by fcscalp_rung_gap so rungs never
                 //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
-                if state.win.safe && !down && long_n + rung <= grid_max {
+                if state.win.safe && !down && !state.fc_deep_active && long_n + rung <= grid_max {
                     let anchor = if state.fc_last_fill_px > 0.0 {
                         state.fc_last_fill_px
                     } else {
@@ -564,11 +564,28 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     }
                 }
 
+                // ── Deep-dump hold: refind ONE reachable reduce-only TP near breakeven, ALLOWED
+                //    to sit slightly BELOW avg entry (negative PnL). Price is far under avg in the
+                //    deep, so this target is still above current price — the expected quick bounce
+                //    fills it and we exit near flat instead of cutting at the low. Replaces the
+                //    per-rung TPs (which sit far above and won't fill on a partial bounce).
+                if state.fc_deep_active {
+                    let tp_px = avg * (1.0 - state.cfg.fcscalp_deep_neg_pct);
+                    if tp_px > 0.0 {
+                        place_orders.push(tp_order_with_band(
+                            Direction::Long,
+                            long_n,
+                            tp_px,
+                            "fcs-tp",
+                            "deep",
+                        ));
+                    }
+                }
                 // ── Exit PER ORDER: each tracked rung gets its OWN reduce-only maker SELL at
                 //    rung_price × (1 + tp_dist) — one typical 1m movement above THAT rung's
                 //    entry, not the position avg. So every rung closes in its own profit and
                 //    re-arms independently. Lowest rungs (lowest target) fill first on a bounce.
-                if state.fc_rung_n > 0 {
+                else if state.fc_rung_n > 0 {
                     for i in 0..state.fc_rung_n {
                         let q = state.fc_rung_qty[i];
                         let rpx = state.fc_rung_px[i];
