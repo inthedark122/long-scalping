@@ -1,3 +1,4 @@
+use crate::window::WindowContext;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 use std::collections::{HashMap, HashSet};
 
@@ -229,6 +230,7 @@ pub struct Config {
     pub fcscalp_grid_frac: f64, // 0.375 → $75 max (≈5 rungs)
     pub fcscalp_rung_gap: f64,  // 0.003 → next rung ≥0.3% below the last fill (spacing)
     pub fcscalp_tp_band: f64,   // 0.02 → only ladder TPs onto walls within +2% of avg entry
+    pub fcscalp_buy_zone: f64,  // 0.5 → scalp-buy when price is in the lower half of the window
 }
 
 impl Default for Config {
@@ -260,6 +262,7 @@ impl Default for Config {
             fcscalp_grid_frac: 0.375, // ~$75 max grid (≈5 rungs)
             fcscalp_rung_gap: 0.003,  // next rung ≥0.3% below the last fill
             fcscalp_tp_band: 0.02,    // ladder TPs only onto walls within +2% of avg
+            fcscalp_buy_zone: 0.5,    // buy in the lower half of the window
         }
     }
 }
@@ -294,6 +297,7 @@ impl Config {
                 "fcscalp_grid_frac" => self.fcscalp_grid_frac = n,
                 "fcscalp_rung_gap" => self.fcscalp_rung_gap = n,
                 "fcscalp_tp_band" => self.fcscalp_tp_band = n,
+                "fcscalp_buy_zone" => self.fcscalp_buy_zone = n,
                 _ => {}
             }
         }
@@ -391,6 +395,8 @@ pub struct State {
     // bigger move magnitude / window / direction context.
     pub cas1: CascadeState,
     pub cas5: CascadeState,
+    // Window context (Layer 1): recomputed each sug tick, consumed by FC (Layer 2).
+    pub win: WindowContext,
 
     // ── Market mode ───────────────────────────────────────────────────────────
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
@@ -522,6 +528,7 @@ impl Default for State {
             // Movement cascade (per-TF)
             cas1: CascadeState::default(),
             cas5: CascadeState::default(),
+            win: WindowContext::default(),
             // Market mode
             mkt_mode: 0,
             pos_owner: 0,

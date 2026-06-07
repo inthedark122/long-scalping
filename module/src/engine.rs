@@ -307,6 +307,10 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         advance_tf_from_ind(&input.indicators, state, tf_sec);
     }
 
+    // Window context (Layer 1) — refresh before the candle-close FC entry consumes it.
+    let w = detect_window(input, state);
+    state.win = w;
+
     // Market auto-open only — one-shot per candle. Limit orders live in handle_sug_info.
     let open_positions = if timeframes.contains(&TF)
         && state.has_mrc
@@ -633,6 +637,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.tm_side = 0;
     }
 
+    // Window context (Layer 1) — recompute BEFORE FC entry so it can consume it.
+    let w = detect_window(input, state);
+    state.win = w;
+
     // ── Sug-tick organic entry (Priority Timing 0.1) ────────────────────────
     // compute_auto_open also runs on 1m candle closes; running it here lets entries
     // fire mid-candle the moment conditions align rather than waiting up to ~60s for
@@ -670,14 +678,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     };
 
     // ── FC entry trail / stale-cancel (ModuleUpdatePosition) ────────────────────
-    // The FC open is a pending maker limit. While the dip-buy setup is still fresh,
-    // amend its enter_price in place to trail it DOWN to the nearest support (better
-    // fill, never chase up). Once the setup goes stale (price pumped away / flush
-    // expired), close the pending order so it can't fill later on an unrelated dip.
-    let fc_flush_fresh = state.fc.last_end_dir == -1
-        && state.fc.last_end_tick > 0
-        && state.ticks.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
-    let fc_armable = state.cfg.enable_fcscalp && state.tf5.regime == 1 && fc_flush_fresh;
+    // The FC open is a pending maker limit. While the scalp setup is still valid (safe
+    // window + price still in the buy zone), amend its enter_price in place to trail it
+    // DOWN to the nearest support (better fill, never chase up). Once the setup goes
+    // stale (window unsafe / price left the buy zone), close the pending order so it
+    // can't fill later in a worse context.
+    let fc_armable = state.cfg.enable_fcscalp
+        && state.win.safe
+        && state.win.pos_frac < state.cfg.fcscalp_buy_zone;
     let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
     if !has_long && state.fc_open_px > 0.0 {
         if fc_armable {
@@ -753,10 +761,6 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let ord_count = place_orders.len();
 
-    // Window context (Layer 1, observe-only): is it safe to scalp + the bounds/scale.
-    // Computed and surfaced in the debug; FC does not consume it yet.
-    let win = detect_window(input, state);
-
     // ── FC grid cancel-on-stale ─────────────────────────────────────────────────
     // Standing limit orders persist by mark until cancelled (they are NOT auto-pulled
     // when we stop emitting them). When FLAT and the FC setup is stale, cancel any
@@ -811,7 +815,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             ord_count,
             cascade_debug(&state.cas1, price),
             cascade_debug(&state.cas5, price),
-            window_debug(&win),
+            window_debug(&state.win),
             run_dbg,
             fast_candle_debug(&fast_candle),
             vt_debug(&state.v_lines),

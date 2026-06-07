@@ -236,40 +236,35 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
 
     let mut open_positions: Vec<ModuleOpenPosition> = Vec::new();
 
-    // ── Fast-candle scalp (opt-in) — owns the SIDEWAYS regime ───────────────────
-    // FC has its OWN entry signal (docs/strategy-arbitration.md §5b): sideways regime +
-    // a fast-DOWN flush that just completed → buy the nearest order-book SUPPORT wall
-    // (live) or the MRC DownInner dip (fallback/backtest). Maker LIMIT create-with-price.
-    // It COEXISTS with the base strategies (no early-return): base owns the trend regime
-    // (mode 2/-2), FC owns sideways (mode 1) — the base auto-l sideways arm yields below.
-    if state.cfg.enable_fcscalp && !has_long && !long_on_cd && mode == 1 && state.fc_open_px <= 0.0
+    // ── Fast-candle scalp — movement scalp inside the window (Layer 2) ──────────
+    // The window (Layer 1, state.win) is the SAFETY GATE; FC scalps the movements inside
+    // it. While the window is SAFE and price is in its lower part (a dip to scalp), open
+    // the first rung — NO fast-flush required, so it actually fires in a quiet range.
+    // Entry = nearest order-book support wall (live) / MARKET in the buy zone (backtest).
+    // It coexists with base (no early-return); base owns trend, FC owns the safe window.
+    if state.cfg.enable_fcscalp
+        && !has_long
+        && !long_on_cd
+        && state.fc_open_px <= 0.0
+        && state.win.safe
+        && state.win.pos_frac < state.cfg.fcscalp_buy_zone
     {
-        let fc_flush = state.fc.last_end_dir == -1
-            && state.fc.last_end_tick > 0
-            && now_tick.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
-        if fc_flush {
-            let min_n = input
-                .symbol_info
-                .min_notional
-                .unwrap_or(0.0)
-                .max(state.cfg.min_order);
-            // First grid rung — rung-sized (fcscalp_rung_frac of budget). The remaining
-            // rungs are added as maker buys at lower support walls in compute_limit_orders.
-            let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
-            if amt <= max {
-                if let Some(support) = fcscalp_support(input, price) {
-                    // LIVE: maker LIMIT create-with-price at the nearest support wall.
-                    if support < price {
-                        open_positions.push(limit_open(Direction::Long, amt, support, "fcs-l"));
-                    }
-                } else if state.mrc_di > state.mrc_db
-                    && price <= state.mrc_di
-                    && price > state.mrc_db
-                {
-                    // FALLBACK (backtest, no order book): MARKET open at the DownInner dip —
-                    // limit opens don't fill in backtest; the TP is still a maker limit.
-                    open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        // First grid rung — rung-sized (fcscalp_rung_frac of budget). Lower rungs are
+        // added as maker buys at lower support walls in compute_limit_orders.
+        let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
+        if amt <= max {
+            if let Some(support) = fcscalp_support(input, price) {
+                if support < price {
+                    open_positions.push(limit_open(Direction::Long, amt, support, "fcs-l"));
                 }
+            } else {
+                // No order book (backtest): MARKET buy now — already in the buy zone.
+                open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
             }
         }
     }
@@ -462,33 +457,34 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 let avg = p.entry_price;
                 let rung = (max * state.cfg.fcscalp_rung_frac).max(1.0);
                 let grid_max = max * state.cfg.fcscalp_grid_frac;
+                // NATR-scaled gap & TP = one typical 1m movement (window scale), floored by
+                // the configured minima. So a volatile token (ALLO ~3%) spaces/targets wide,
+                // a calm one (ETH ~0.16%) tight — never the fixed 0.3%/0.4% for both.
+                let scale = state.win.scale_pct / 100.0;
+                let gap = scale.max(state.cfg.fcscalp_rung_gap);
+                let tp_dist = scale.max(state.cfg.fcscalp_tp_pct);
 
-                // ── Entry grid: ONE resting maker BUY at a time. The next rung is placed at
-                //    the nearest support wall that sits ≥ fcscalp_rung_gap BELOW the last
-                //    fill — so rungs are sequential (only after the prior fills, tracked via
-                //    qty in handle_sug_info) and spaced out to catch a real dump instead of
-                //    clustering at one price. Sideways only; capped by the grid budget.
-                if mkt_mode == 1 && long_n + rung <= grid_max {
+                // ── Entry grid: ONE resting maker BUY at a time, ≥ gap below the last fill
+                //    (sequential + spaced). Adds ONLY while the window is SAFE — when the
+                //    window fails (trend down), the grid stops growing (the bag-hold guard).
+                if state.win.safe && long_n + rung <= grid_max {
                     let anchor = if state.fc_last_fill_px > 0.0 {
                         state.fc_last_fill_px
                     } else {
                         avg
                     };
-                    let ceil = anchor * (1.0 - state.cfg.fcscalp_rung_gap);
+                    let ceil = anchor * (1.0 - gap);
                     if let Some(&wall) = fcscalp_support_walls(input, ceil, 1).first() {
                         // single rolling mark → one resting order that trails the wall down.
                         place_orders.push(limit_order(Direction::Long, rung, wall, "fcs-g"));
                     }
                 }
 
-                // ── Exit: ONE reduce-only maker SELL at a FIXED small %% above the avg
-                //    entry — do NOT trail it onto the moving order-book walls. The goal is
-                //    to lock the small scalp reliably and RE-ENTER on the next dip (collect
-                //    many small-%% wins), not to chase a "bigger" move that, on a small
-                //    position, is tiny in $ and often misses the fill. The avg only drops as
-                //    lower grid rungs fill, so this target never trails UP away from price —
-                //    it only moves closer, helping it fill.
-                let tp_px = avg * (1.0 + state.cfg.fcscalp_tp_pct);
+                // ── Exit: ONE reduce-only maker SELL at +tp_dist above the avg entry — one
+                //    typical 1m movement, NATR-scaled. Lock the small scalp and RE-ENTER on
+                //    the next dip (many small wins). Avg only drops as lower rungs fill, so
+                //    the target moves closer (helps fill), never up away from price.
+                let tp_px = avg * (1.0 + tp_dist);
                 place_orders.push(tp_order_with_band(
                     Direction::Long,
                     long_n,
