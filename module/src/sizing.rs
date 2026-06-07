@@ -278,7 +278,19 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
                     "fcs-l w[{:.4}-{:.4}] pos{:.2} scl{:.1}%",
                     state.win.floor, state.win.ceiling, state.win.pos_frac, state.win.scale_pct
                 );
-                open_positions.push(limit_open(Direction::Long, amt, entry_px, &note));
+                // Live (order book present) → maker LIMIT at the window dip. Backtest (no order
+                // book) → MARKET so the open actually fills (limit opens don't fill in backtest);
+                // the grid buys + per-rung TPs are place-orders that DO fill in backtest.
+                let has_ob = input
+                    .sug_info
+                    .as_ref()
+                    .and_then(|s| s.order_book.as_ref())
+                    .is_some();
+                if has_ob {
+                    open_positions.push(limit_open(Direction::Long, amt, entry_px, &note));
+                } else {
+                    open_positions.push(market_open(Direction::Long, amt, &note));
+                }
             }
         }
     }
