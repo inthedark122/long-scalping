@@ -505,7 +505,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             let delta = long_qty - state.fc_prev_qty;
             state.fc_rungs = state.fc_rungs.saturating_add(1);
             let filled = if state.fc_rung_n == 0 {
-                price
+                // Entry rung: prefer the actual limit price (fc_open_px, live maker) over the live
+                // tick price so the first grid step is spaced off the true fill; market entry
+                // (backtest, fc_open_px=0) fills at `price` anyway.
+                if state.fc_open_px > 0.0 {
+                    state.fc_open_px
+                } else {
+                    price
+                }
             } else if state.fc_grid_px > 0.0 {
                 state.fc_grid_px
             } else {
@@ -810,6 +817,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     if !has_long {
         state.fc_grid_px = 0.0;
         state.fc_grid_floor = 0.0;
+        state.fc_grid_placed = false;
     } else {
         let win_shifted = state.fc_grid_floor > 0.0
             && (state.win.floor - state.fc_grid_floor).abs() > price * state.cfg.fcscalp_rung_gap;
@@ -828,6 +836,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 .max(anchor * state.cfg.fcscalp_rung_gap);
             state.fc_grid_px = (anchor - step).max(0.0);
             state.fc_grid_floor = state.win.floor;
+            state.fc_grid_placed = false; // new rung level → allow one emission of it
         }
     }
     state.fc_grid_dirty = false;
@@ -916,6 +925,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     } else {
         vec![]
     };
+    // The static grid rung was emitted this tick → mark it placed so it isn't re-emitted next tick
+    // (one resting order per rung; recompute on the next fill/restart re-opens emission).
+    if place_orders.iter().any(|o| o.mark.starts_with("fcs-g")) {
+        state.fc_grid_placed = true;
+    }
 
     // ── Trend mode: gradual transition close for a long caught in a confirmed downtrend ────
     // Stage 0→1: 25% after 2 candles · 1→2: 25% after 5 · 2→3: 50% after 8.

@@ -524,10 +524,15 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    the expected bounce), and a NEW (lower) window drops the floor → the gap
                 //    re-widens to ~a full movement. Floored by fcscalp_rung_gap so rungs never
                 //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
-                if state.win.safe && !down && !state.fc_deep_active && long_n + rung <= grid_max {
+                if state.win.safe
+                    && !down
+                    && !state.fc_deep_active
+                    && !state.fc_grid_placed
+                    && long_n + rung <= grid_max
+                {
                     // STATIC price: the rung level is frozen in state (computed in the engine on a
-                    // fill / window-shift restart), so re-emitting `fcs-g` each tick rests it at the
-                    // SAME price instead of a live-recomputed one — no same-price / rising rungs.
+                    // fill / window-shift restart) and emitted ONCE (fc_grid_placed guard) — so the
+                    // resting `fcs-g` is a single order at a fixed price, no same-price / rising rungs.
                     let rung_px = state.fc_grid_px;
                     if rung_px > 0.0 && rung_px < price {
                         place_orders.push(limit_order(Direction::Long, rung, rung_px, "fcs-g"));

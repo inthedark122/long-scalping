@@ -468,6 +468,11 @@ pub struct State {
     pub fc_grid_floor: f64,
     pub fc_grid_dirty: bool,
     pub fc_tp_filled: bool,
+    // True once the current static rung has been emitted and is resting — guards against
+    // re-emitting `fcs-g` every tick (the backtest does NOT dedup same-mark orders, so re-emission
+    // stacks duplicate resting orders at one price). Cleared when the ladder recomputes (a fill /
+    // restart) so the NEXT rung can be placed once.
+    pub fc_grid_placed: bool,
     // Price of the resting (unfilled) FC limit open, trailed via ModuleUpdatePosition.
     // 0 = no pending open. Set when the open is emitted, cleared on fill / stale-cancel.
     pub fc_open_px: f64,
@@ -610,6 +615,7 @@ impl Default for State {
             fc_grid_floor: 0.0,
             fc_grid_dirty: false,
             fc_tp_filled: false,
+            fc_grid_placed: false,
             fc_open_px: 0.0,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],
