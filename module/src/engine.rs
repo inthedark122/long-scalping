@@ -596,8 +596,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let base_owner = (OWN_AUTO..=OWN_REENTRY).contains(&state.pos_owner);
 
     // ── Fast-candle scalp stop: market close on a DownBig breach ────────────────
-    // The entry + TP are maker limits; only this rare protective stop is a market.
-    if fc_owner && has_long && long_n > 1.0 && price <= state.mrc_db {
+    // BUT only when we would NOT just re-open here. If the window still reads "buy" (safe +
+    // price in the lower buy-zone), closing at the very bottom only to re-open at the same
+    // level is pointless churn — instead HOLD the position and wait for its TP (price ranged
+    // inside the MRC inner lines = accumulation, so a bounce is expected). When the setup is
+    // genuinely no longer a buy (window unsafe / confirmed downtrend), the deep stop fires;
+    // the margin SL + dn-exit remain the real backstops either way.
+    let fc_would_reopen = state.win.safe && state.win.pos_frac < state.cfg.fcscalp_buy_zone;
+    if fc_owner && has_long && long_n > 1.0 && price <= state.mrc_db && !fc_would_reopen {
         close_positions.push(close(Direction::Long, "fcs-sl"));
     }
 
