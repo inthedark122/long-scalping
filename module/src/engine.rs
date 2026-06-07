@@ -796,7 +796,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         cancel_orders,
         update_positions,
         debug: format!(
-            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}{} | cas1=[{}] cas5=[{}] | {} | vt={}{}",
+            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} | cas1=[{}] cas5=[{}] |{} | {} | vt={}{}",
             state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
             state.mkt_mode, state.cas1.cas_dir,
             state.cas1.cas_high - state.cas1.cas_low, state.cas1.avg_size,
