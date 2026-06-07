@@ -60,7 +60,7 @@ pub(crate) fn budget_size(room: f64, f: f64, tilt: f64, state: &State) -> f64 {
 // ── fcscalp price levels (order-book walls live, MRC fallback for backtest) ──────
 /// Nearest order-book SUPPORT wall below `price` (live). None when there's no order
 /// book (backtest) — caller then falls back to a market open at the MRC dip.
-fn fcscalp_support(input: &ModuleInput, price: f64) -> Option<f64> {
+pub(crate) fn fcscalp_support(input: &ModuleInput, price: f64) -> Option<f64> {
     let ob = input.sug_info.as_ref().and_then(|s| s.order_book.as_ref())?;
     let support = ob
         .short_levels
@@ -242,7 +242,8 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     // (live) or the MRC DownInner dip (fallback/backtest). Maker LIMIT create-with-price.
     // It COEXISTS with the base strategies (no early-return): base owns the trend regime
     // (mode 2/-2), FC owns sideways (mode 1) — the base auto-l sideways arm yields below.
-    if state.cfg.enable_fcscalp && !has_long && !long_on_cd && mode == 1 {
+    if state.cfg.enable_fcscalp && !has_long && !long_on_cd && mode == 1 && state.fc_open_px <= 0.0
+    {
         let fc_flush = state.fc.last_end_dir == -1
             && state.fc.last_end_tick > 0
             && now_tick.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;

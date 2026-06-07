@@ -395,6 +395,9 @@ pub struct State {
     pub fc_last_fill_px: f64,
     pub fc_rungs: u8,
     pub fc_prev_qty: f64,
+    // Price of the resting (unfilled) FC limit open, trailed via ModuleUpdatePosition.
+    // 0 = no pending open. Set when the open is emitted, cleared on fill / stale-cancel.
+    pub fc_open_px: f64,
     pub mkt_mode_candles: u32, // consecutive candles in current confirmed mode
     pub mkt_cand: i8,          // pending mode candidate
     pub mkt_cand_candles: u32, // candles confirming candidate (commit at >= 2)
@@ -529,6 +532,7 @@ impl Default for State {
             fc_last_fill_px: 0.0,
             fc_rungs: 0,
             fc_prev_qty: 0.0,
+            fc_open_px: 0.0,
             mkt_mode_candles: 0,
             mkt_cand: 0,
             mkt_cand_candles: 0,

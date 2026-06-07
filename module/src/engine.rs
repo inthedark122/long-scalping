@@ -9,13 +9,14 @@ use crate::movement::{
 };
 use crate::orders::{close, market_open, tp_order_with_band};
 use crate::sizing::{
-    compute_auto_open, compute_limit_orders, risk_sized_notional, uncertainty_damp, upnl,
+    compute_auto_open, compute_limit_orders, fcscalp_support, risk_sized_notional, uncertainty_damp,
+    upnl,
 };
 use crate::vlines::{seed_v_lines, update_v_lines};
 use crate::state::State;
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleEvent, ModuleInput, ModuleOpenPosition, ModuleOutput,
-    OrderRole,
+    ModuleUpdatePosition, OrderRole,
 };
 
 use crate::consts::*;
@@ -325,6 +326,12 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
             if state.pos_owner == OWN_NONE {
                 state.pos_owner = owner_from_mark(&op.note);
             }
+            // Record the FC limit open's price so it can be trailed (not re-emitted).
+            if op.note == "fcs-l" {
+                if let Some(px) = op.enter_price {
+                    state.fc_open_px = px;
+                }
+            }
         }
         ops
     } else {
@@ -440,6 +447,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             state.fc_last_fill_px = price;
         }
         state.fc_prev_qty = long_qty; // track adds (up) and TP reductions (down)
+        state.fc_open_px = 0.0; // open filled into a position — no pending open to trail
     }
     // v0.55 (0.C): reset the stair ladder when flat so each new ride builds from scratch.
     // v0.56 (0.E): track the first Big-line interaction (reset flat, set on trade-through).
@@ -640,11 +648,46 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             if state.pos_owner == OWN_NONE {
                 state.pos_owner = owner_from_mark(&op.note);
             }
+            // Record the FC limit open's price so it can be trailed (not re-emitted).
+            if op.note == "fcs-l" {
+                if let Some(px) = op.enter_price {
+                    state.fc_open_px = px;
+                }
+            }
         }
         ops
     } else {
         Vec::new()
     };
+
+    // ── FC entry trail / stale-cancel (ModuleUpdatePosition) ────────────────────
+    // The FC open is a pending maker limit. While the dip-buy setup is still fresh,
+    // amend its enter_price in place to trail it DOWN to the nearest support (better
+    // fill, never chase up). Once the setup goes stale (price pumped away / flush
+    // expired), close the pending order so it can't fill later on an unrelated dip.
+    let fc_flush_fresh = state.fc.last_end_dir == -1
+        && state.fc.last_end_tick > 0
+        && state.ticks.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
+    let fc_armable = state.cfg.enable_fcscalp && state.tf5.regime == 1 && fc_flush_fresh;
+    let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
+    if !has_long && state.fc_open_px > 0.0 {
+        if fc_armable {
+            if let Some(support) = fcscalp_support(input, price) {
+                if support < state.fc_open_px && support < price {
+                    update_positions.push(ModuleUpdatePosition {
+                        direction: Direction::Long,
+                        enter_price: Some(support),
+                        take_profit: None,
+                        stop_loss: None,
+                    });
+                    state.fc_open_px = support;
+                }
+            }
+        } else {
+            close_positions.push(close(Direction::Long, "fcs-stale"));
+            state.fc_open_px = 0.0;
+        }
+    }
 
     let tick = input.symbol_info.price_tick_size.max(f64::EPSILON);
 
@@ -701,23 +744,17 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let ord_count = place_orders.len();
 
-    // ── FC cancel-on-stale ──────────────────────────────────────────────────────
+    // ── FC grid cancel-on-stale ─────────────────────────────────────────────────
     // Standing limit orders persist by mark until cancelled (they are NOT auto-pulled
-    // when we stop emitting them). So when we're FLAT and the FC setup is no longer
-    // fresh — price pumped away, the down-flush expired, or a grid was left behind by
-    // a position that just closed into a pump — explicitly cancel the FC entry + grid
-    // buys so they can't fill later on an unrelated dip. While a position is open the
-    // grid is left intact (it's doing its job); this only fires once flat.
+    // when we stop emitting them). When FLAT and the FC setup is stale, cancel any
+    // leftover grid rungs (fcs-g, real place-orders) so they can't fill on an unrelated
+    // dip. The pending OPEN (fcs-l) is handled above via trail / close, not here.
     let mut cancel_orders: Vec<String> = Vec::new();
-    if !has_long {
-        let fc_flush_fresh = state.fc.last_end_dir == -1
-            && state.fc.last_end_tick > 0
-            && state.ticks.saturating_sub(state.fc.last_end_tick) <= 3 * TICKS_PER_CANDLE;
-        let fc_armable = state.cfg.enable_fcscalp && state.tf5.regime == 1 && fc_flush_fresh;
-        if !fc_armable {
-            cancel_orders.push("fcs-l".to_string());
-            cancel_orders.push("fcs-g".to_string());
-        }
+    if !has_long && !fc_armable {
+        cancel_orders.push("fcs-g".to_string());
+        // belt-and-suspenders for the pending open (also closed via close_positions above) —
+        // whichever path the platform honors for a pending-limit open.
+        cancel_orders.push("fcs-l".to_string());
     }
 
     let run_arrow = if state.run_dir > 0 {
@@ -749,6 +786,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         close_positions,
         place_orders,
         cancel_orders,
+        update_positions,
         debug: format!(
             "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}{} | {} | vt={}{}",
             state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
