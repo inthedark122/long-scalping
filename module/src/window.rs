@@ -77,16 +77,20 @@ pub(crate) fn detect_window(input: &ModuleInput, state: &State) -> WindowContext
     };
 
     // ── Safe-to-scalp gate ──────────────────────────────────────────────────────
-    // HARD exclude (down)trends — this is the protection ALLO needed.
-    let downtrend = state.tf5.regime == -2 || state.mkt_mode == -2;
-    // A 5m block stretched well past its avg = a trending leg, not a range.
+    // Stand down ONLY on an ACTIVE down-leg — the live 5m cascade pointing DOWN with its
+    // block stretched well past avg (a real dump in progress) — or a confirmed mkt-mode
+    // downtrend. We deliberately do NOT use tf5.regime here: that MRC-cross flag stays at
+    // -2 long after a dump has stopped, which over-blocked ALLO while it was oscillating.
+    // An UP-leg is fine — we buy dips inside it. This cascade-based check both frees the
+    // post-dump chop AND still catches the genuine dump (the -$17 ALLO scenario).
     let cas5_size = state.cas5.cas_high - state.cas5.cas_low;
-    let trending_move =
-        state.cas5.avg_size > 0.0 && cas5_size > state.cas5.avg_size * TREND_STRETCH;
+    let active_dump = state.cas5.cas_dir == -1
+        && state.cas5.avg_size > 0.0
+        && cas5_size > state.cas5.avg_size * TREND_STRETCH;
     let has_floor = floor > 0.0 && floor < price;
     let not_at_top = pos_frac < TOP_GUARD;
 
-    let safe = !downtrend && !trending_move && has_floor && not_at_top;
+    let safe = !active_dump && state.mkt_mode != -2 && has_floor && not_at_top;
 
     WindowContext {
         safe,
@@ -101,9 +105,12 @@ pub(crate) fn detect_window(input: &ModuleInput, state: &State) -> WindowContext
 /// Nearest support below price: live order-book wall first, then the nearest MRC band
 /// below, then the 5m cascade low.
 fn window_floor(input: &ModuleInput, state: &State, price: f64) -> f64 {
-    if let Some(s) = fcscalp_support(input, price) {
-        if s > 0.0 && s < price {
-            return s;
+    // Order book is an opt-in extension (default off) — window/cascade levels are primary.
+    if state.cfg.fcscalp_use_ob {
+        if let Some(s) = fcscalp_support(input, price) {
+            if s > 0.0 && s < price {
+                return s;
+            }
         }
     }
     let mut best = 0.0_f64; // highest band still below price = nearest support

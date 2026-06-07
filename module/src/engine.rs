@@ -689,16 +689,25 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
     if !has_long && state.fc_open_px > 0.0 {
         if fc_armable {
-            if let Some(support) = fcscalp_support(input, price) {
-                if support < state.fc_open_px && support < price {
-                    update_positions.push(ModuleUpdatePosition {
-                        direction: Direction::Long,
-                        enter_price: Some(support),
-                        take_profit: None,
-                        stop_loss: None,
-                    });
-                    state.fc_open_px = support;
+            // Trail target from the WINDOW/cascade (same as the entry): a small dip clamped
+            // to the window floor. Order book is an opt-in override. Trail DOWN only.
+            let scale = (state.win.scale_pct / 100.0).max(0.0005);
+            let mut target = (price * (1.0 - scale * 0.5)).max(state.win.floor).min(price);
+            if state.cfg.fcscalp_use_ob {
+                if let Some(s) = fcscalp_support(input, price) {
+                    if s > 0.0 && s < price {
+                        target = s;
+                    }
                 }
+            }
+            if target > 0.0 && target < state.fc_open_px && target < price {
+                update_positions.push(ModuleUpdatePosition {
+                    direction: Direction::Long,
+                    enter_price: Some(target),
+                    take_profit: None,
+                    stop_loss: None,
+                });
+                state.fc_open_px = target;
             }
         } else {
             close_positions.push(close(Direction::Long, "fcs-stale"));

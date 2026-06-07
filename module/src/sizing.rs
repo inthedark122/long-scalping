@@ -258,13 +258,20 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         // added as maker buys at lower support walls in compute_limit_orders.
         let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
         if amt <= max {
-            if let Some(support) = fcscalp_support(input, price) {
-                if support < price {
-                    open_positions.push(limit_open(Direction::Long, amt, support, "fcs-l"));
+            // Entry price from the WINDOW/cascade: a small dip (half a typical movement)
+            // into the lower window, clamped to the window floor — a maker buy below
+            // price. Order book is an opt-in override (default off).
+            let scale = (state.win.scale_pct / 100.0).max(0.0005);
+            let mut entry_px = (price * (1.0 - scale * 0.5)).max(state.win.floor).min(price);
+            if state.cfg.fcscalp_use_ob {
+                if let Some(s) = fcscalp_support(input, price) {
+                    if s > 0.0 && s < price {
+                        entry_px = s;
+                    }
                 }
-            } else {
-                // No order book (backtest): MARKET buy now — already in the buy zone.
-                open_positions.push(market_open(Direction::Long, amt, "fcs-l"));
+            }
+            if entry_px > 0.0 && entry_px < price {
+                open_positions.push(limit_open(Direction::Long, amt, entry_px, "fcs-l"));
             }
         }
     }
@@ -473,10 +480,17 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     } else {
                         avg
                     };
-                    let ceil = anchor * (1.0 - gap);
-                    if let Some(&wall) = fcscalp_support_walls(input, ceil, 1).first() {
-                        // single rolling mark → one resting order that trails the wall down.
-                        place_orders.push(limit_order(Direction::Long, rung, wall, "fcs-g"));
+                    // Next rung one movement (gap) below the last fill — pure window/cascade
+                    // spacing. Order book is an opt-in override (snaps to the nearest wall).
+                    let mut rung_px = anchor * (1.0 - gap);
+                    if state.cfg.fcscalp_use_ob {
+                        if let Some(&wall) = fcscalp_support_walls(input, rung_px, 1).first() {
+                            rung_px = wall;
+                        }
+                    }
+                    if rung_px > 0.0 && rung_px < price {
+                        // single rolling mark → one resting order at the next rung level.
+                        place_orders.push(limit_order(Direction::Long, rung, rung_px, "fcs-g"));
                     }
                 }
 

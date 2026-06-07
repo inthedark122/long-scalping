@@ -231,6 +231,7 @@ pub struct Config {
     pub fcscalp_rung_gap: f64,  // 0.003 → next rung ≥0.3% below the last fill (spacing)
     pub fcscalp_tp_band: f64,   // 0.02 → only ladder TPs onto walls within +2% of avg entry
     pub fcscalp_buy_zone: f64,  // 0.5 → scalp-buy when price is in the lower half of the window
+    pub fcscalp_use_ob: bool,   // false → FC uses ONLY window/cascade levels (order book = disabled extension)
 }
 
 impl Default for Config {
@@ -263,6 +264,7 @@ impl Default for Config {
             fcscalp_rung_gap: 0.003,  // next rung ≥0.3% below the last fill
             fcscalp_tp_band: 0.02,    // ladder TPs only onto walls within +2% of avg
             fcscalp_buy_zone: 0.5,    // buy in the lower half of the window
+            fcscalp_use_ob: false,    // window/cascade-only by default; order book is opt-in
         }
     }
 }
@@ -298,6 +300,7 @@ impl Config {
                 "fcscalp_rung_gap" => self.fcscalp_rung_gap = n,
                 "fcscalp_tp_band" => self.fcscalp_tp_band = n,
                 "fcscalp_buy_zone" => self.fcscalp_buy_zone = n,
+                "fcscalp_use_ob" => self.fcscalp_use_ob = n != 0.0,
                 _ => {}
             }
         }
