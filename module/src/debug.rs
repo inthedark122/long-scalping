@@ -2,7 +2,34 @@
 //! from `list_bots` last_debug. Read-only over `State`.
 
 use crate::sizing::uncertainty_damp;
-use crate::state::{State, TfMovState};
+use crate::state::{CascadeState, State, TfMovState};
+
+/// Compact cascade readout: direction, current block size %, size÷avg ratio (how
+/// stretched → exhaustion/window), candle count, avg block %, and break count.
+/// e.g. "L 0.45%/1.2x 3c avg0.38% b2" — long block, 0.45% range, 1.2× the typical move.
+pub(crate) fn cascade_debug(cas: &CascadeState, price: f64) -> String {
+    let dir = match cas.cas_dir {
+        1 => "L",
+        -1 => "S",
+        _ => "-",
+    };
+    let size = cas.cas_high - cas.cas_low;
+    let size_pct = if price > 0.0 { size / price * 100.0 } else { 0.0 };
+    let ratio = if cas.avg_size > 0.0 {
+        size / cas.avg_size
+    } else {
+        0.0
+    };
+    let avg_pct = if price > 0.0 {
+        cas.avg_size / price * 100.0
+    } else {
+        0.0
+    };
+    format!(
+        "{} {:.2}%/{:.1}x {}c avg{:.2}% b{}",
+        dir, size_pct, ratio, cas.cas_candles, avg_pct, cas.break_n
+    )
+}
 
 pub(crate) fn fc_history_debug(history: &[crate::state::FcEvent]) -> String {
     if history.is_empty() {
@@ -105,7 +132,7 @@ pub(crate) fn debug_builder(state: &State, sel: i64) -> String {
         // Movement cascade / current run leg / stair-cross ladder / 5m hard-break.
         parts.push(format!(
             "cas=dir{}/run{}t lc{} b5={}",
-            state.mv_cas_dir, state.run_ticks, state.long_stair_cross, state.mrc5_break,
+            state.cas1.cas_dir, state.run_ticks, state.long_stair_cross, state.mrc5_break,
         ));
     }
     if sel & 16 != 0 {

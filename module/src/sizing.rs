@@ -166,7 +166,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
 
     let long_on_cd = state.long_close_tick > 0
         && state.ticks.saturating_sub(state.long_close_tick) < state.cfg.cooldown_ticks;
-    let cas_allows_long = state.mv_cas_dir >= 0;
+    let cas_allows_long = state.cas1.cas_dir >= 0;
 
     // v0.56: Freshness = recent support test, sourced ONLY from the real-time V-line tracker.
     let now_tick = state.ticks;
@@ -619,7 +619,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
         && has_long
         && !long_on_cd
         && mkt_mode == 2
-        && state.mv_cas_dir == 1
+        && state.cas1.cas_dir == 1
         && long_n < long_max * state.cfg.cap
         && !v_blocks_long_dca
     {

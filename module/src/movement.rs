@@ -15,119 +15,114 @@ use lte_strategy_bridge::abi::Direction;
 // are absorbed: their extreme price is recorded as a break level (support/
 // resistance DCA zone) and the parent cascade block continues.
 
-pub(crate) fn update_movement(state: &mut State, vol_bsg: f64, high: f64, low: f64) {
+pub(crate) fn update_cascade(cas: &mut CascadeState, vol_bsg: f64, high: f64, low: f64) {
     if high <= 0.0 || low <= 0.0 {
         return;
     }
     let dir: i8 = if vol_bsg >= 0.0 { 1 } else { -1 };
 
-    if state.mv_dir == 0 {
-        state.mv_dir = dir;
-        state.mv_high = high;
-        state.mv_low = low;
-        state.mv_candles = 1;
-        state.mv_cas_dir = dir;
-        state.mv_cas_high = high;
-        state.mv_cas_low = low;
-        state.mv_cas_candles = 1;
+    if cas.dir == 0 {
+        cas.dir = dir;
+        cas.high = high;
+        cas.low = low;
+        cas.candles = 1;
+        cas.cas_dir = dir;
+        cas.cas_high = high;
+        cas.cas_low = low;
+        cas.cas_candles = 1;
         return;
     }
 
-    if dir == state.mv_dir {
-        if high > state.mv_high {
-            state.mv_high = high;
+    if dir == cas.dir {
+        if high > cas.high {
+            cas.high = high;
         }
-        if low < state.mv_low {
-            state.mv_low = low;
+        if low < cas.low {
+            cas.low = low;
         }
-        state.mv_candles += 1;
-        if dir == state.mv_cas_dir {
-            if high > state.mv_cas_high {
-                state.mv_cas_high = high;
+        cas.candles += 1;
+        if dir == cas.cas_dir {
+            if high > cas.cas_high {
+                cas.cas_high = high;
             }
-            if low < state.mv_cas_low {
-                state.mv_cas_low = low;
+            if low < cas.cas_low {
+                cas.cas_low = low;
             }
-            state.mv_cas_candles += 1;
+            cas.cas_candles += 1;
         }
         return;
     }
 
-    // Raw block just completed in direction mv_dir — evaluate for cascade absorption.
-    let completed_size = state.mv_high - state.mv_low;
-    let threshold = if state.mv_avg_size > 0.0 {
-        state.mv_avg_size * 0.40
+    // Raw block just completed in direction cas.dir — evaluate for cascade absorption.
+    let completed_size = cas.high - cas.low;
+    let threshold = if cas.avg_size > 0.0 {
+        cas.avg_size * 0.40
     } else {
         f64::MAX
     };
-    let is_counter = state.mv_dir != state.mv_cas_dir;
+    let is_counter = cas.dir != cas.cas_dir;
     let absorb = is_counter && completed_size < threshold;
 
     if absorb {
         // Small counter-move: record break level and extend cascade range.
-        // mv_dir == -1 (short counter in long cascade) → break price = counter LOW (support)
-        // mv_dir == +1 (long counter in short cascade) → break price = counter HIGH (resistance)
-        let break_price = if state.mv_dir == -1 {
-            state.mv_low
+        // dir == -1 (short counter in long cascade) → break price = counter LOW (support)
+        // dir == +1 (long counter in short cascade) → break price = counter HIGH (resistance)
+        let break_price = if cas.dir == -1 { cas.low } else { cas.high };
+        if cas.break_n >= 5 {
+            cas.breaks.rotate_left(1);
+            cas.breaks[4] = break_price;
         } else {
-            state.mv_high
-        };
-        if state.mv_break_n >= 5 {
-            state.mv_breaks.rotate_left(1);
-            state.mv_breaks[4] = break_price;
-        } else {
-            state.mv_breaks[state.mv_break_n] = break_price;
-            state.mv_break_n += 1;
+            cas.breaks[cas.break_n] = break_price;
+            cas.break_n += 1;
         }
-        if state.mv_high > state.mv_cas_high {
-            state.mv_cas_high = state.mv_high;
+        if cas.high > cas.cas_high {
+            cas.cas_high = cas.high;
         }
-        if state.mv_low < state.mv_cas_low {
-            state.mv_cas_low = state.mv_low;
+        if cas.low < cas.cas_low {
+            cas.cas_low = cas.low;
         }
         // First candle of the resuming cascade direction also extends the cascade.
-        if dir == state.mv_cas_dir {
-            if high > state.mv_cas_high {
-                state.mv_cas_high = high;
+        if dir == cas.cas_dir {
+            if high > cas.cas_high {
+                cas.cas_high = high;
             }
-            if low < state.mv_cas_low {
-                state.mv_cas_low = low;
+            if low < cas.cas_low {
+                cas.cas_low = low;
             }
-            state.mv_cas_candles += 1;
+            cas.cas_candles += 1;
         }
     } else {
         // Real reversal: commit current cascade to history, start a new one.
-        let cas_size = state.mv_cas_high - state.mv_cas_low;
+        let cas_size = cas.cas_high - cas.cas_low;
         if cas_size > 0.0 {
-            state.mv_sizes[state.mv_sizes_pos] = cas_size;
-            state.mv_sizes_pos = (state.mv_sizes_pos + 1) % 10;
-            if state.mv_sizes_len < 10 {
-                state.mv_sizes_len += 1;
+            cas.sizes[cas.sizes_pos] = cas_size;
+            cas.sizes_pos = (cas.sizes_pos + 1) % 10;
+            if cas.sizes_len < 10 {
+                cas.sizes_len += 1;
             }
-            state.mv_avg_size = state.mv_sizes[..state.mv_sizes_len].iter().sum::<f64>()
-                / state.mv_sizes_len as f64;
+            cas.avg_size = cas.sizes[..cas.sizes_len].iter().sum::<f64>() / cas.sizes_len as f64;
         }
-        state.mv_cas_dir = dir;
-        state.mv_cas_high = high.max(state.mv_high);
-        state.mv_cas_low = low.min(state.mv_low);
-        state.mv_cas_candles = 1;
-        state.mv_break_n = 0;
-        state.mv_breaks = [0.0; 5];
+        cas.cas_dir = dir;
+        cas.cas_high = high.max(cas.high);
+        cas.cas_low = low.min(cas.low);
+        cas.cas_candles = 1;
+        cas.break_n = 0;
+        cas.breaks = [0.0; 5];
     }
 
-    state.mv_dir = dir;
-    state.mv_high = high;
-    state.mv_low = low;
-    state.mv_candles = 1;
+    cas.dir = dir;
+    cas.high = high;
+    cas.low = low;
+    cas.candles = 1;
 }
 
-/// Rebuild movement cascade from the 10-candle Init history (oldest-first pass).
-pub(crate) fn init_movement(ind: &Indicators, state: &mut State) {
+/// Rebuild a TF's movement cascade from the 10-candle Init history (oldest-first pass).
+pub(crate) fn init_cascade(cas: &mut CascadeState, ind: &Indicators, tf_sec: i64) {
     for offset in (0..10usize).rev() {
-        let bsg = read_float(ind, TF, offset, "volume_50", "BuySellGain").unwrap_or(0.0);
-        let high = read_float(ind, TF, offset, CANDLE_IND, "High").unwrap_or(0.0);
-        let low = read_float(ind, TF, offset, CANDLE_IND, "Low").unwrap_or(0.0);
-        update_movement(state, bsg, high, low);
+        let bsg = read_float(ind, tf_sec, offset, "volume_50", "BuySellGain").unwrap_or(0.0);
+        let high = read_float(ind, tf_sec, offset, CANDLE_IND, "High").unwrap_or(0.0);
+        let low = read_float(ind, tf_sec, offset, CANDLE_IND, "Low").unwrap_or(0.0);
+        update_cascade(cas, bsg, high, low);
     }
 }
 
@@ -150,16 +145,16 @@ pub(crate) fn classify_mode(state: &State) -> i8 {
         return 2;
     }
 
-    if state.mv_sizes_len < 3 || state.mv_avg_size < 0.001 {
+    if state.cas1.sizes_len < 3 || state.cas1.avg_size < 0.001 {
         return 1;
     }
-    let cas_size = state.mv_cas_high - state.mv_cas_low;
-    let size_ratio = cas_size / state.mv_avg_size;
+    let cas_size = state.cas1.cas_high - state.cas1.cas_low;
+    let size_ratio = cas_size / state.cas1.avg_size;
     if size_ratio < 1.2 {
         return 1;
     }
 
-    let dir = state.mv_cas_dir;
+    let dir = state.cas1.cas_dir;
     let agrees = match dir {
         1 => {
             (state.tf1.cross >= 1) as u8

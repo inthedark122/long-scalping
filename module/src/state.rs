@@ -1,6 +1,29 @@
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 use std::collections::{HashMap, HashSet};
 
+// ── Movement cascade state (one instance per timeframe) ────────────────────
+// A "block" = consecutive candles with the same vol_bsg sign. Small counter-moves
+// (< 40% of the rolling avg block size) are absorbed into the parent cascade and
+// their extreme recorded as a break level (support/resistance). Completed cascade
+// block sizes feed a rolling avg = the "typical move" on that timeframe.
+#[derive(Debug, Clone, Default)]
+pub struct CascadeState {
+    pub dir: i8,   // raw block direction: +1 Long, -1 Short, 0=uninit
+    pub high: f64, // raw block price range
+    pub low: f64,
+    pub candles: u32,
+    pub cas_dir: i8, // cascade block (absorbs sub-threshold counter-moves)
+    pub cas_high: f64,
+    pub cas_low: f64,
+    pub cas_candles: u32,
+    pub breaks: [f64; 5], // absorbed counter-move extremes (support/resistance zones)
+    pub break_n: usize,
+    pub sizes: [f64; 10], // ring buffer of completed cascade sizes → avg_size
+    pub sizes_pos: usize,
+    pub sizes_len: usize,
+    pub avg_size: f64, // rolling avg block size = the "typical move" on this TF
+}
+
 // ── Per-timeframe movement state ───────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -362,27 +385,12 @@ pub struct State {
     // live `run_bot_action` config push. Config-only; never touches runtime state.
     pub cfg_loaded: bool,
 
-    // ── Movement cascade tracker ──────────────────────────────────────────────
-    // Raw block: consecutive candles with the same vol_bsg sign.
-    pub mv_dir: i8,   // +1 Long, -1 Short, 0=uninit
-    pub mv_high: f64, // raw block price range
-    pub mv_low: f64,
-    pub mv_candles: u32,
-    // Cascade block: absorbs raw counter-moves < 40% of rolling avg size.
-    pub mv_cas_dir: i8,
-    pub mv_cas_high: f64,
-    pub mv_cas_low: f64,
-    pub mv_cas_candles: u32,
-    // Break levels: extreme of each absorbed counter-move.
-    //   Long cascade → short counter lows  (support / DCA-buy zones)
-    //   Short cascade → long counter highs (resistance / DCA-sell zones)
-    pub mv_breaks: [f64; 5],
-    pub mv_break_n: usize,
-    // Ring buffer of completed cascade block sizes → rolling avg threshold.
-    pub mv_sizes: [f64; 10],
-    pub mv_sizes_pos: usize,
-    pub mv_sizes_len: usize,
-    pub mv_avg_size: f64,
+    // ── Movement cascade trackers (per-TF) ────────────────────────────────────
+    // cas1 (1m) drives the market-mode observer + base sizing, exactly as the single
+    // cascade did before. cas5 (5m) is observe-only for now: larger blocks giving the
+    // bigger move magnitude / window / direction context.
+    pub cas1: CascadeState,
+    pub cas5: CascadeState,
 
     // ── Market mode ───────────────────────────────────────────────────────────
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
@@ -511,21 +519,9 @@ impl Default for State {
             long_tp_idx: -1,
             cfg: Config::default(),
             cfg_loaded: false,
-            // Movement cascade
-            mv_dir: 0,
-            mv_high: 0.0,
-            mv_low: 0.0,
-            mv_candles: 0,
-            mv_cas_dir: 0,
-            mv_cas_high: 0.0,
-            mv_cas_low: 0.0,
-            mv_cas_candles: 0,
-            mv_breaks: [0.0; 5],
-            mv_break_n: 0,
-            mv_sizes: [0.0; 10],
-            mv_sizes_pos: 0,
-            mv_sizes_len: 0,
-            mv_avg_size: 0.0,
+            // Movement cascade (per-TF)
+            cas1: CascadeState::default(),
+            cas5: CascadeState::default(),
             // Market mode
             mkt_mode: 0,
             pos_owner: 0,

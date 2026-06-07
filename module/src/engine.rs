@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
-use crate::debug::{debug_builder, fast_candle_debug, fc_history_debug, tf_debug, vt_debug};
+use crate::debug::{
+    cascade_debug, debug_builder, fast_candle_debug, fc_history_debug, tf_debug, vt_debug,
+};
 use crate::fastcandle::update_fast_candles;
 use crate::indicators::*;
 use crate::movement::{
-    advance_market_mode, advance_tf_from_ind, init_movement, init_tf_from_ind, update_movement,
+    advance_market_mode, advance_tf_from_ind, init_cascade, init_tf_from_ind, update_cascade,
     update_risk_ratchet,
 };
 use crate::orders::{close, market_open, tp_order_with_band};
@@ -219,8 +221,9 @@ fn handle_init(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         init_tf_from_ind(&input.indicators, state, tf_sec);
     }
 
-    // Rebuild movement cascade from last 10 candles and initialise risk ratchet.
-    init_movement(&input.indicators, state);
+    // Rebuild both movement cascades from last 10 candles and initialise risk ratchet.
+    init_cascade(&mut state.cas1, &input.indicators, TF);
+    init_cascade(&mut state.cas5, &input.indicators, TF_5M);
     advance_market_mode(state);
 
     // v0.56 cold-start: seed the V-line tracker from the candle history (sets state.ticks to the
@@ -235,7 +238,7 @@ fn handle_init(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         debug: format!(
             "init t={} rng={:.2} ang={:.4} smc={} mode={} mv_cas={} avg={:.2} | 1m:{} | 5m:{} | 15m:{} | 30m:{} | vt={}{}",
             state.ticks, state.mrc_range, state.angle, state.smc_dir,
-            state.mkt_mode, state.mv_cas_dir, state.mv_avg_size,
+            state.mkt_mode, state.cas1.cas_dir, state.cas1.avg_size,
             tf_debug(&state.tf1), tf_debug(&state.tf5),
             tf_debug(&state.tf15), tf_debug(&state.tf30),
             vt_debug(&state.v_lines),
@@ -262,7 +265,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         // Update movement cascade and re-evaluate market mode on each 1m close.
         let c_high = read_float(&input.indicators, TF, 0, CANDLE_IND, "High").unwrap_or(0.0);
         let c_low = read_float(&input.indicators, TF, 0, CANDLE_IND, "Low").unwrap_or(0.0);
-        update_movement(state, state.vol_bsg, c_high, c_low);
+        update_cascade(&mut state.cas1, state.vol_bsg, c_high, c_low);
         advance_market_mode(state);
 
         // v0.56: a 1m candle just closed — reset the running high/low to the boundary price so the
@@ -283,6 +286,11 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
             };
             let hi5 = read_float(&input.indicators, TF_5M, 0, CANDLE_IND, "High").unwrap_or(ml5);
             let lo5 = read_float(&input.indicators, TF_5M, 0, CANDLE_IND, "Low").unwrap_or(ml5);
+            // Feed the 5m cascade on each 5m close (observe-only): larger blocks for the
+            // bigger move magnitude / window / direction context.
+            let bsg5 =
+                read_float(&input.indicators, TF_5M, 0, "volume_50", "BuySellGain").unwrap_or(0.0);
+            update_cascade(&mut state.cas5, bsg5, hi5, lo5);
             // hard break: the whole 5m candle on one side of its ML (user: "max price under the ML")
             state.mrc5_break = if hi5 < ml5 {
                 -1
@@ -343,8 +351,8 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         debug: format!(
             "ind t={} rng={:.2} smc={} mode={} mv={}/{:.0} | 1m:{} | 5m:{} | fc cnt={} pct={:.1}% dur={:.0}t gain={:.2} calm={:.0}c mom={:.1} pre={}{} | {}{}",
             state.ticks, state.mrc_range, state.smc_dir,
-            state.mkt_mode, state.mv_cas_dir,
-            state.mv_cas_high - state.mv_cas_low,
+            state.mkt_mode, state.cas1.cas_dir,
+            state.cas1.cas_high - state.cas1.cas_low,
             tf_debug(&state.tf1), tf_debug(&state.tf5),
             state.fc.count, state.fc.avg_pct, state.fc.avg_dur, state.fc.avg_gain,
             state.fc.avg_calm, state.fc.momentum, state.fc.prefire,
@@ -788,14 +796,16 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         cancel_orders,
         update_positions,
         debug: format!(
-            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}{} | {} | vt={}{}",
+            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}{} | cas1=[{}] cas5=[{}] | {} | vt={}{}",
             state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
-            state.mkt_mode, state.mv_cas_dir,
-            state.mv_cas_high - state.mv_cas_low, state.mv_avg_size,
-            state.mv_break_n, state.risk_drawdown,
+            state.mkt_mode, state.cas1.cas_dir,
+            state.cas1.cas_high - state.cas1.cas_low, state.cas1.avg_size,
+            state.cas1.break_n, state.risk_drawdown,
             long_n, total_pnl, -(margin * state.cfg.sl_margin_pct),
             margin - long_n / input.leverage.max(1) as f64 + total_pnl,
             ord_count,
+            cascade_debug(&state.cas1, price),
+            cascade_debug(&state.cas5, price),
             run_dbg,
             fast_candle_debug(&fast_candle),
             vt_debug(&state.v_lines),
