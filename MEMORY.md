@@ -12,7 +12,7 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.64-arb21`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  **`0.65-zzbreak`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
   → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
   `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
@@ -41,7 +41,13 @@ window; 5m cascade = confirmation** (safe gate + bias). Per-RUNG TPs (each rung 
 entry × (1+tp_dist)). Rung spacing = fraction (`fcscalp_rung_step`) of last-fill→floor distance
 (clusters near the bottom, widens for a new lower window). Entry capped at the buy-zone line
 (lower window) so it never buys the top. Confirmed downtrend (`mkt_mode == -2`) → tight TP + no
-averaging + bag-exit on pump/wide-window; up/sideways → full accumulate. Sectioned debug via
+averaging + bag-exit on pump/wide-window; up/sideways → full accumulate.
+**Two entry paths (0.65-zzbreak):** (1) dip-buyer — opens in the LOWER half of the window
+(`pos_frac < buy_zone`), maker limit; (2) ZigZag breakout (`fcs-bk`) — opens at the START of an
+up-move when price crosses ABOVE `ZigZagTrend.SellPrice` (the swing-high pivot it broke), MARKET
+entry, 1.5× rung, allowed in the UPPER window, gated on `zz_dir==up && mkt_mode!=-2`. Both route to
+OWN_FC per-rung TPs. Cfg: `fcscalp_zz_breakout`(on), `fcscalp_zz_seed_mult`(1.5). Debug WIN line now
+shows `zz[sell.. buy.. d±.. k.. X]` (X = cross fired this tick). Sectioned debug via
 `debug_info` bitmask: 1 CORE · 2 CAS · 4 WIN · 8 RUN · 16 FC · 32 VT · 64 MRC · 128 DMP (0 = default CORE|CAS|WIN).
 Live (maker fees) is meaningfully better than backtest (taker market opens). Live sim: OPN +,
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
