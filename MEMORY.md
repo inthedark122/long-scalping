@@ -12,7 +12,7 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.68-grid2`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  **`0.70-linebreak`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
   → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
   `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
@@ -22,8 +22,8 @@ MCP tools. OKX live indicator/price API:
 
 | ID | Name | Status | Money | Margin/Lev | Symbols | Notes |
 |----|------|--------|-------|-----------|---------|-------|
-| **29** | Long Scalping | Simulation | **sim** | ~$10 / 20× per start | ETH, HOME, HYPE, ALLO, OPN | FC dev/test group. Bots: 694 ETH, 919 ALLO, 921 OPN (running on arb21); 918 HYPE, 917 HOME (stopped). |
-| **39** | [PROD] Long Scalping | Stopped | **REAL** | $5 / 10× | ETH, HOME, ALLO, OPN | Production. Created 2026-06-07, NOT started. Starting bots here trades REAL money. |
+| **29** | Long Scalping | Simulation | **sim** | $10 / 20× per start | ETH, HOME, HYPE, ALLO, OPN | FC dev/test group. Bots 694 ETH, 919 ALLO, 921 OPN running on **0.70-linebreak**; 918 HYPE, 917 HOME stopped. |
+| **39** | [PROD] Long Scalping | Active | **REAL** | OPN 50× / others 10× | ETH, HOME, ALLO, OPN | Production on **0.70-linebreak**. **OPN LIVE** (bot 923, $0.75 / 50×, budget ~$37.5) since 2026-06-07. ETH/HOME/ALLO 10× NOT started. REAL money. |
 
 - **Start a bot**: `run_bot_group_action(<gid>, "start", <symbol_key>, <price>, leverage, margin, values)`.
   `values` = the start signal_action params (margin_sl, sl_margin_pct, seed, cap, cooldown_ticks,
@@ -42,12 +42,20 @@ entry × (1+tp_dist)). Rung spacing = fraction (`fcscalp_rung_step`) of last-fil
 (clusters near the bottom, widens for a new lower window). Entry capped at the buy-zone line
 (lower window) so it never buys the top. Confirmed downtrend (`mkt_mode == -2`) → tight TP + no
 averaging + bag-exit on pump/wide-window; up/sideways → full accumulate.
-**Two entry paths (0.65-zzbreak):** (1) dip-buyer — opens in the LOWER half of the window
-(`pos_frac < buy_zone`), maker limit; (2) ZigZag breakout (`fcs-bk`) — opens at the START of an
-up-move when price crosses ABOVE `ZigZagTrend.SellPrice` (the swing-high pivot it broke), MARKET
-entry, 1.5× rung, allowed in the UPPER window, gated on `zz_dir==up && mkt_mode!=-2`. Both route to
-OWN_FC per-rung TPs. Cfg: `fcscalp_zz_breakout`(on), `fcscalp_zz_seed_mult`(1.5). Debug WIN line now
-shows `zz[sell.. buy.. d±.. k.. X]` (X = cross fired this tick).
+**Two entry paths:** (1) dip-buyer — opens in the LOWER half of the window (`pos_frac < buy_zone`),
+maker limit; (2) ZigZag LINE-BREAK (`fcs-bk`, fixed 0.70-linebreak) — opens at the START of an up-move
+when a 1m candle CLOSES above the PREVIOUS candle's SellPrice line (`zz_break_up`, detected on_indicator
+in update_zigzag). MUST use the *previous* SellPrice: the zigzag bumps SellPrice up the instant the line
+breaks, so the current value never shows a cross (this was the bug — old code compared LIVE sug price to
+the CURRENT/static-within-candle value and missed every pump). Direction is the "strong move" (HH+HL)
+state and only filters (excludes SHORT) — the line-break LEADS Direction=LONG, so NOT gated on dir==LONG.
+MARKET entry, 1.5× rung, upper window, `mkt_mode!=-2`. Both route to OWN_FC per-rung TPs. Cfg:
+`fcscalp_zz_breakout`(on), `fcscalp_zz_seed_mult`(1.5). Debug WIN: `zz[sell.. buy.. d±.. k.. BRK]`.
+**Orphan/freeze fix (0.69-rearm):** a resting `fcs-l` entry stranded below a relocated (up) window floor
+can't fill AND (fc_open_px>0 gates every FC entry) BLOCKS the dip-buyer + breakout = frozen symbol. Now
+cancelled (`fcs-rearm`) when `fc_open_px < win.floor` → re-arms in the new window. Also `dca-l` (base
+resting buy) now cancelled when flat (was leaking stale entries). Review TODO (not yet done): breakout
+should preempt a resting dip (drop fc_open_px gate on the breakout).
 **Deep-dump hold-for-bounce (0.66-deep):** a SUDDEN dump into the 30m deep bands (`tf30.cross <= -3`)
 is a potential FLIP zone — don't force-cut at the low. Arms on (sudden_dump & 30m-deep & underwater);
 while held it SUPPRESSES the FC cuts (`fcs-sl`/`fcs-dn-exit`), stops averaging, and sizing rests ONE
