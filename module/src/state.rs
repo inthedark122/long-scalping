@@ -458,6 +458,16 @@ pub struct State {
     pub fc_last_fill_px: f64,
     pub fc_rungs: u8,
     pub fc_prev_qty: f64,
+    // STATIC next-rung price: computed ONCE (anchored to the actual rung level + the window floor
+    // at that moment) and held, so the resting `fcs-g` price does NOT wobble tick-to-tick with the
+    // live price/floor (the old per-tick recompute caused same-price / rising rungs). Recomputed
+    // only on (a) a fill → advance to the next rung, or (b) a partial TP while the window shifted →
+    // "restart" the ladder for the new window. fc_grid_floor = the window floor it was anchored to.
+    // fc_grid_dirty / fc_tp_filled are transient per-tick triggers (not serialized).
+    pub fc_grid_px: f64,
+    pub fc_grid_floor: f64,
+    pub fc_grid_dirty: bool,
+    pub fc_tp_filled: bool,
     // Price of the resting (unfilled) FC limit open, trailed via ModuleUpdatePosition.
     // 0 = no pending open. Set when the open is emitted, cleared on fill / stale-cancel.
     pub fc_open_px: f64,
@@ -596,6 +606,10 @@ impl Default for State {
             fc_last_fill_px: 0.0,
             fc_rungs: 0,
             fc_prev_qty: 0.0,
+            fc_grid_px: 0.0,
+            fc_grid_floor: 0.0,
+            fc_grid_dirty: false,
+            fc_tp_filled: false,
             fc_open_px: 0.0,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],

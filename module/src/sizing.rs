@@ -75,25 +75,6 @@ pub(crate) fn fcscalp_support(input: &ModuleInput, price: f64) -> Option<f64> {
     }
 }
 
-/// Up to `n` nearest order-book SUPPORT walls strictly below `ceil`, nearest first
-/// (highest price first). Empty when there's no order book (backtest).
-fn fcscalp_support_walls(input: &ModuleInput, ceil: f64, n: usize) -> Vec<f64> {
-    let ob = match input.sug_info.as_ref().and_then(|s| s.order_book.as_ref()) {
-        Some(ob) => ob,
-        None => return Vec::new(),
-    };
-    let mut v: Vec<f64> = ob
-        .short_levels
-        .iter()
-        .map(|l| l.price)
-        .filter(|&p| p > 0.0 && p < ceil)
-        .collect();
-    v.sort_by(|a, b| b.total_cmp(a)); // descending → nearest-below first
-    v.dedup();
-    v.truncate(n);
-    v
-}
-
 // ── Auto-open: market entries, called once per 1m candle from handle_indicators ──
 
 pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<ModuleOpenPosition> {
@@ -544,21 +525,10 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    re-widens to ~a full movement. Floored by fcscalp_rung_gap so rungs never
                 //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
                 if state.win.safe && !down && !state.fc_deep_active && long_n + rung <= grid_max {
-                    let anchor = if state.fc_last_fill_px > 0.0 {
-                        state.fc_last_fill_px
-                    } else {
-                        price
-                    };
-                    let floor = state.win.floor.max(0.0);
-                    let remaining = (anchor - floor).max(0.0);
-                    let step = (remaining * state.cfg.fcscalp_rung_step)
-                        .max(anchor * state.cfg.fcscalp_rung_gap);
-                    let mut rung_px = anchor - step;
-                    if state.cfg.fcscalp_use_ob {
-                        if let Some(&wall) = fcscalp_support_walls(input, rung_px, 1).first() {
-                            rung_px = wall;
-                        }
-                    }
+                    // STATIC price: the rung level is frozen in state (computed in the engine on a
+                    // fill / window-shift restart), so re-emitting `fcs-g` each tick rests it at the
+                    // SAME price instead of a live-recomputed one — no same-price / rising rungs.
+                    let rung_px = state.fc_grid_px;
                     if rung_px > 0.0 && rung_px < price {
                         place_orders.push(limit_order(Direction::Long, rung, rung_px, "fcs-g"));
                     }

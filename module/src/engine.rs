@@ -498,16 +498,27 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.fc_rung_n = 0;
     } else {
         if long_qty > state.fc_prev_qty + 1e-9 {
-            // A buy filled — record this rung (price + qty) so it gets its OWN TP.
+            // A buy filled — record this rung (price + qty) so it gets its OWN TP. Use the STATIC
+            // level it filled at: the entry (first rung) fills at `price`; a grid rung fills at the
+            // static `fc_grid_px` we had resting. Anchoring to the static level (not the live tick
+            // price) is what keeps the NEXT rung properly spaced (no same-price / rising rungs).
             let delta = long_qty - state.fc_prev_qty;
             state.fc_rungs = state.fc_rungs.saturating_add(1);
-            state.fc_last_fill_px = price;
+            let filled = if state.fc_rung_n == 0 {
+                price
+            } else if state.fc_grid_px > 0.0 {
+                state.fc_grid_px
+            } else {
+                price
+            };
+            state.fc_last_fill_px = filled;
             if state.fc_rung_n < state.fc_rung_px.len() {
                 let n = state.fc_rung_n;
-                state.fc_rung_px[n] = price;
+                state.fc_rung_px[n] = filled;
                 state.fc_rung_qty[n] = delta;
                 state.fc_rung_n += 1;
             }
+            state.fc_grid_dirty = true; // advance the static ladder to the next rung (below)
         } else if long_qty + 1e-9 < state.fc_prev_qty {
             // A per-rung TP filled — the LOWEST rungs (lowest TP target) close first, and
             // they're the most-recently added (end of the array). Drop fully-sold rungs
@@ -523,6 +534,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 }
             }
             state.fc_rung_n = keep;
+            state.fc_tp_filled = true; // partial TP → eligible to RESTART the ladder if window shifted
         }
         state.fc_prev_qty = long_qty;
         state.fc_open_px = 0.0; // open filled into a position — no pending open to trail
@@ -788,6 +800,38 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         && prev_tick_price > 0.0
         && prev_tick_price < state.zz_sell
         && input.price >= state.zz_sell;
+
+    // ── Static FC grid level ────────────────────────────────────────────────────
+    // The resting `fcs-g` price is computed HERE (with the fresh window) and frozen, NOT in
+    // compute_limit_orders each tick — so it stays put while it rests. Recompute only on:
+    //   (a) a fill (fc_grid_dirty) → step the ladder down to the next rung, or
+    //   (b) a partial TP (fc_tp_filled) while the window FLOOR shifted → restart the ladder for the
+    //       new window (user: "restart static price if we hit partial TP and the window changed").
+    if !has_long {
+        state.fc_grid_px = 0.0;
+        state.fc_grid_floor = 0.0;
+    } else {
+        let win_shifted = state.fc_grid_floor > 0.0
+            && (state.win.floor - state.fc_grid_floor).abs() > price * state.cfg.fcscalp_rung_gap;
+        if state.fc_grid_dirty || (state.fc_tp_filled && win_shifted) {
+            // Anchor = the lowest rung currently held (its static price), else the last fill / price.
+            let anchor = if state.fc_rung_n > 0 {
+                state.fc_rung_px[state.fc_rung_n - 1]
+            } else if state.fc_last_fill_px > 0.0 {
+                state.fc_last_fill_px
+            } else {
+                price
+            };
+            let floor = state.win.floor.max(0.0);
+            let remaining = (anchor - floor).max(0.0);
+            let step = (remaining * state.cfg.fcscalp_rung_step)
+                .max(anchor * state.cfg.fcscalp_rung_gap);
+            state.fc_grid_px = (anchor - step).max(0.0);
+            state.fc_grid_floor = state.win.floor;
+        }
+    }
+    state.fc_grid_dirty = false;
+    state.fc_tp_filled = false;
 
     // ── Sug-tick organic entry (Priority Timing 0.1) ────────────────────────
     // compute_auto_open also runs on 1m candle closes; running it here lets entries
