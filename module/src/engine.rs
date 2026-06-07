@@ -994,6 +994,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         // whichever path the platform honors for a pending-limit open.
         cancel_orders.push("fcs-l".to_string());
     }
+    // Base DCA add (dca-l) is a non-reduce-only resting BUY placed while long; it does NOT
+    // auto-cancel when the position closes, so a stale level could fill later and open a surprise
+    // base long. Cancel it whenever flat (it's only ever wanted while a base long is open).
+    if !has_long {
+        cancel_orders.push("dca-l".to_string());
+    }
 
     let run_arrow = if state.run_dir > 0 {
         "^"
