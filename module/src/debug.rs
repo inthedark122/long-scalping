@@ -1,8 +1,42 @@
 //! Debug string formatters: compact per-event diagnostic suffixes read back
 //! from `list_bots` last_debug. Read-only over `State`.
 
-use crate::sizing::uncertainty_damp;
-use crate::state::{CascadeState, State, TfMovState};
+use crate::state::{CascadeState, TfMovState};
+
+// ── Debug section toggles (debug_info bitmask) ──────────────────────────────
+// The whole debug line is assembled from sections, each gated by a bit, so a
+// focused look is one config push (set debug_info → read list_bots → set back).
+// debug_info == 0 means "use the default compact view" (DBG_DEFAULT).
+//   1 CORE · 2 CAS · 4 WIN · 8 RUN · 16 FC · 32 VT · 64 MRC · 128 DMP   (sum to combine)
+pub(crate) const DBG_CORE: i64 = 1; // t, p, mode, ln, pnl, ord — the essentials
+pub(crate) const DBG_CAS: i64 = 2; // cas1 / cas5 movement cascade
+pub(crate) const DBG_WIN: i64 = 4; // window context
+pub(crate) const DBG_RUN: i64 = 8; // run leg / sudden-move / trandm
+pub(crate) const DBG_FC: i64 = 16; // fast-candle + history
+pub(crate) const DBG_VT: i64 = 32; // V-line tracker table
+pub(crate) const DBG_MRC: i64 = 64; // full MRC band price map
+pub(crate) const DBG_DMP: i64 = 128; // uncertainty damp / drawdown
+/// Default compact view when debug_info is left at 0.
+pub(crate) const DBG_DEFAULT: i64 = DBG_CORE | DBG_CAS | DBG_WIN;
+
+/// Resolve the active section mask: 0 → the default compact view.
+pub(crate) fn dbg_sel(debug_info: i64) -> i64 {
+    if debug_info == 0 {
+        DBG_DEFAULT
+    } else {
+        debug_info
+    }
+}
+
+/// Join the selected sections into one space-piped line, prefixed with `tag`.
+pub(crate) fn dbg_join(tag: &str, parts: &[(i64, String)], sel: i64) -> String {
+    let body: Vec<&str> = parts
+        .iter()
+        .filter(|(bit, _)| sel & bit != 0)
+        .map(|(_, s)| s.as_str())
+        .collect();
+    format!("{} {}", tag, body.join(" | "))
+}
 
 /// Compact cascade readout: direction, current block size %, size÷avg ratio (how
 /// stretched → exhaustion/window), candle count, avg block %, and break count.
@@ -97,56 +131,6 @@ pub(crate) fn vt_debug(v_lines: &[crate::state::VLineTracker; 9]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-// v0.57: runtime debug builder. Given a bitmask `sel`, returns the FULL-detail topic blocks for
-// the selected presets, joined into one suffix. Driven by the persistent `debug_info` config —
-// appended to every event line (init/ind/sug) so the API snapshot always carries the chosen view,
-// readable straight from `list_bots` last_debug. Switching is a config push applied on the next
-// tick (context accumulation), so a focused look is two switches: set preset → read → set 0.
-// Reads only `state`, so it is identical on any tick/event — also ready to back a one-shot
-// request action if/when a request→response channel to the bot exists. Empty when `sel == 0`.
-//   1 V · 2 MRC · 4 BIG · 8 CAS · 16 DMP  (add to combine; 31 = ALL)
-pub(crate) fn debug_builder(state: &State, sel: i64) -> String {
-    if sel == 0 {
-        return String::new();
-    }
-    let mut parts: Vec<String> = Vec::new();
-    if sel & 1 != 0 {
-        // V-tracker — same compact per-line table the v-tracker skill parses (`vt=` token).
-        parts.push(format!("vt={}", vt_debug(&state.v_lines)));
-    }
-    if sel & 2 != 0 {
-        // 1m MRC band price map (low→high) + 5m mean-line.
-        parts.push(format!(
-            "mrc=db{:.2} do{:.2} ds{:.2} di{:.2} ml{:.2} ui{:.2} us{:.2} uo{:.2} ub{:.2} | 5ml{:.2}",
-            state.mrc_db, state.mrc_do, state.mrc_ds, state.mrc_di, state.mrc_ml,
-            state.mrc_ui, state.mrc_us, state.mrc_uo, state.mrc_ub, state.mrc5_ml,
-        ));
-    }
-    if sel & 4 != 0 {
-        // Big-line first-reaction bracket + stuck-side exits.
-        parts.push(format!("big=l{}", state.long_big_tested as u8,));
-    }
-    if sel & 8 != 0 {
-        // Movement cascade / current run leg / stair-cross ladder / 5m hard-break.
-        parts.push(format!(
-            "cas=dir{}/run{}t lc{} b5={}",
-            state.cas1.cas_dir, state.run_ticks, state.long_stair_cross, state.mrc5_break,
-        ));
-    }
-    if sel & 16 != 0 {
-        parts.push(format!(
-            "dmp={:.2} dd={:.2}",
-            uncertainty_damp(state),
-            state.risk_drawdown
-        ));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" | sw[{}]", parts.join(" "))
-    }
 }
 
 pub(crate) fn tf_debug(tf: &TfMovState) -> String {

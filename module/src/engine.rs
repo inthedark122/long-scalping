@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::debug::{
-    cascade_debug, debug_builder, fast_candle_debug, fc_history_debug, tf_debug, vt_debug,
+    cascade_debug, dbg_join, dbg_sel, fast_candle_debug, fc_history_debug, tf_debug, vt_debug,
+    DBG_CAS, DBG_CORE, DBG_DMP, DBG_FC, DBG_MRC, DBG_RUN, DBG_VT, DBG_WIN,
 };
 use crate::fastcandle::update_fast_candles;
 use crate::indicators::*;
@@ -237,13 +238,12 @@ fn handle_init(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     ModuleOutput {
         debug: format!(
-            "init t={} rng={:.2} ang={:.4} smc={} mode={} mv_cas={} avg={:.2} | 1m:{} | 5m:{} | 15m:{} | 30m:{} | vt={}{}",
+            "init t={} rng={:.2} ang={:.4} smc={} mode={} mv_cas={} avg={:.2} | 1m:{} | 5m:{} | 15m:{} | 30m:{} | vt={}",
             state.ticks, state.mrc_range, state.angle, state.smc_dir,
             state.mkt_mode, state.cas1.cas_dir, state.cas1.avg_size,
             tf_debug(&state.tf1), tf_debug(&state.tf5),
             tf_debug(&state.tf15), tf_debug(&state.tf30),
             vt_debug(&state.v_lines),
-            debug_builder(state, state.cfg.debug_info & !1),
         ),
         ..Default::default()
     }
@@ -353,19 +353,42 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
 
     ModuleOutput {
         open_positions,
-        debug: format!(
-            "ind t={} rng={:.2} smc={} mode={} mv={}/{:.0} | 1m:{} | 5m:{} | win=[{}] c5=[{}] | fc cnt={} pct={:.1}% dur={:.0}t gain={:.2} calm={:.0}c mom={:.1} pre={}{} | {}{}",
-            state.ticks, state.mrc_range, state.smc_dir,
-            state.mkt_mode, state.cas1.cas_dir,
-            state.cas1.cas_high - state.cas1.cas_low,
-            tf_debug(&state.tf1), tf_debug(&state.tf5),
-            window_debug(&state.win), cascade_debug(&state.cas5, input.price),
-            state.fc.count, state.fc.avg_pct, state.fc.avg_dur, state.fc.avg_gain,
-            state.fc.avg_calm, state.fc.momentum, state.fc.prefire,
-            if state.fc.active { if state.fc.dir > 0 { " [FAST^]" } else { " [FASTv]" } } else { "" },
-            fc_history_debug(&state.fc.history),
-            debug_builder(state, state.cfg.debug_info),
-        ),
+        debug: {
+            let sel = dbg_sel(state.cfg.debug_info);
+            let parts = [
+                (
+                    DBG_CORE,
+                    format!(
+                        "t={} rng={:.2} smc={} mode={} | 1m:{} | 5m:{}",
+                        state.ticks, state.mrc_range, state.smc_dir, state.mkt_mode,
+                        tf_debug(&state.tf1), tf_debug(&state.tf5)
+                    ),
+                ),
+                (
+                    DBG_CAS,
+                    format!(
+                        "cas1=[{}] cas5=[{}]",
+                        cascade_debug(&state.cas1, input.price),
+                        cascade_debug(&state.cas5, input.price)
+                    ),
+                ),
+                (DBG_WIN, format!("win=[{}]", window_debug(&state.win))),
+                (
+                    DBG_FC,
+                    format!(
+                        "fc cnt={} pct={:.1}% gain={:.2}{} {}",
+                        state.fc.count, state.fc.avg_pct, state.fc.avg_gain,
+                        if state.fc.active {
+                            if state.fc.dir > 0 { " [FAST^]" } else { " [FASTv]" }
+                        } else {
+                            ""
+                        },
+                        fc_history_debug(&state.fc.history)
+                    ),
+                ),
+            ];
+            dbg_join("ind", &parts, sel)
+        },
         ..Default::default()
     }
 }
@@ -814,23 +837,48 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         place_orders,
         cancel_orders,
         update_positions,
-        debug: format!(
-            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} | cas1=[{}] cas5=[{}] win=[{}] |{} | {} | vt={}{}",
-            state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
-            state.mkt_mode, state.cas1.cas_dir,
-            state.cas1.cas_high - state.cas1.cas_low, state.cas1.avg_size,
-            state.cas1.break_n, state.risk_drawdown,
-            long_n, total_pnl, -(margin * state.cfg.sl_margin_pct),
-            margin - long_n / input.leverage.max(1) as f64 + total_pnl,
-            ord_count,
-            cascade_debug(&state.cas1, price),
-            cascade_debug(&state.cas5, price),
-            window_debug(&state.win),
-            run_dbg,
-            fast_candle_debug(&fast_candle),
-            vt_debug(&state.v_lines),
-            debug_builder(state, state.cfg.debug_info & !1),
-        ),
+        debug: {
+            let sel = dbg_sel(state.cfg.debug_info);
+            let lev = input.leverage.max(1) as f64;
+            let parts = [
+                (
+                    DBG_CORE,
+                    format!(
+                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}",
+                        state.ticks, price, state.mkt_mode, long_n, total_pnl,
+                        -(margin * state.cfg.sl_margin_pct),
+                        margin - long_n / lev + total_pnl, ord_count,
+                    ),
+                ),
+                (
+                    DBG_CAS,
+                    format!(
+                        "cas1=[{}] cas5=[{}]",
+                        cascade_debug(&state.cas1, price),
+                        cascade_debug(&state.cas5, price)
+                    ),
+                ),
+                (DBG_WIN, format!("win=[{}]", window_debug(&state.win))),
+                (DBG_RUN, run_dbg.trim().to_string()),
+                (DBG_FC, fast_candle_debug(&fast_candle)),
+                (DBG_VT, format!("vt={}", vt_debug(&state.v_lines))),
+                (
+                    DBG_MRC,
+                    format!(
+                        "mrc=db{:.4} ds{:.4} ml{:.4} us{:.4} ub{:.4}",
+                        state.mrc_db, state.mrc_ds, state.mrc_ml, state.mrc_us, state.mrc_ub
+                    ),
+                ),
+                (
+                    DBG_DMP,
+                    format!(
+                        "dmp={:.2} dd={:.2} ntps={}/{:.0}",
+                        uncertainty_damp(state), state.risk_drawdown, ntps, state.ntps_avg
+                    ),
+                ),
+            ];
+            dbg_join("sug", &parts, sel)
+        },
         ..Default::default()
     }
 }
