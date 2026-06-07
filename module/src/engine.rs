@@ -601,6 +601,28 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         close_positions.push(close(Direction::Long, "fcs-sl"));
     }
 
+    // ── FC downtrend bag-exit ───────────────────────────────────────────────────
+    // In a 5m DOWNTREND (bias < 0) don't bag-hold a falling knife: take the exit when
+    // price PUMPS back to the upper window (a bounce to sell into) OR the window is too
+    // wide to safely hold (e.g. a 5% window in a downtrend). Up/sideways never triggers
+    // this — there we accumulate. Owner-routed (FC only).
+    if fc_owner && has_long && long_n > 1.0 && state.win.bias < 0 {
+        let win_pct = if price > 0.0 {
+            (state.win.ceiling - state.win.floor) / price
+        } else {
+            0.0
+        };
+        let pumped = state.win.pos_frac > 0.7; // bounced into the top of the window
+        let too_wide = win_pct > 0.04; // window too big to hold against the trend
+        if (pumped || too_wide)
+            && !close_positions
+                .iter()
+                .any(|c| matches!(c.direction, Direction::Long))
+        {
+            close_positions.push(close(Direction::Long, "fcs-dn-exit"));
+        }
+    }
+
     // ── SL: last-resort margin protection ──────────────────────────────
     if state.cfg.margin_sl && total_pnl < -(margin * state.cfg.sl_margin_pct) {
         if has_long && long_n > 1.0 {

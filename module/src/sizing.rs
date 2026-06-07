@@ -475,7 +475,15 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 // the configured minima. So a volatile token (ALLO ~3%) spaces/targets wide,
                 // a calm one (ETH ~0.16%) tight — never the fixed 0.3%/0.4% for both.
                 let scale = state.win.scale_pct / 100.0;
-                let tp_dist = scale.max(state.cfg.fcscalp_tp_pct);
+                // Trend-adaptive (5m bias): a DOWNTREND exits FAST — TP a SMALLER distance
+                // than the rung/averaging spacing (cut quick, don't hold for a full move and
+                // don't average a falling knife). Up/sideways → the normal one-movement TP.
+                let down = state.win.bias < 0;
+                let tp_dist = if down {
+                    state.cfg.fcscalp_tp_pct.max(scale * 0.3)
+                } else {
+                    scale.max(state.cfg.fcscalp_tp_pct)
+                };
 
                 let _ = avg;
                 // ── Entry grid: ONE resting maker BUY at a time. The gap is a FRACTION of the
@@ -484,7 +492,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    the expected bounce), and a NEW (lower) window drops the floor → the gap
                 //    re-widens to ~a full movement. Floored by fcscalp_rung_gap so rungs never
                 //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
-                if state.win.safe && long_n + rung <= grid_max {
+                if state.win.safe && !down && long_n + rung <= grid_max {
                     let anchor = if state.fc_last_fill_px > 0.0 {
                         state.fc_last_fill_px
                     } else {
