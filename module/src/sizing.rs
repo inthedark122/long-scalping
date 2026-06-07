@@ -475,44 +475,70 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 // the configured minima. So a volatile token (ALLO ~3%) spaces/targets wide,
                 // a calm one (ETH ~0.16%) tight — never the fixed 0.3%/0.4% for both.
                 let scale = state.win.scale_pct / 100.0;
-                let gap = scale.max(state.cfg.fcscalp_rung_gap);
                 let tp_dist = scale.max(state.cfg.fcscalp_tp_pct);
 
-                // ── Entry grid: ONE resting maker BUY at a time, ≥ gap below the last fill
-                //    (sequential + spaced). Adds ONLY while the window is SAFE — when the
-                //    window fails (trend down), the grid stops growing (the bag-hold guard).
+                let _ = avg;
+                // ── Entry grid: ONE resting maker BUY at a time. The gap is a FRACTION of the
+                //    distance from the last fill DOWN to the 1m window floor — so within the
+                //    SAME window it shrinks as fills reach the bottom (rungs cluster → collect
+                //    the expected bounce), and a NEW (lower) window drops the floor → the gap
+                //    re-widens to ~a full movement. Floored by fcscalp_rung_gap so rungs never
+                //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
                 if state.win.safe && long_n + rung <= grid_max {
                     let anchor = if state.fc_last_fill_px > 0.0 {
                         state.fc_last_fill_px
                     } else {
-                        avg
+                        price
                     };
-                    // Next rung one movement (gap) below the last fill — pure window/cascade
-                    // spacing. Order book is an opt-in override (snaps to the nearest wall).
-                    let mut rung_px = anchor * (1.0 - gap);
+                    let floor = state.win.floor.max(0.0);
+                    let remaining = (anchor - floor).max(0.0);
+                    let step = (remaining * state.cfg.fcscalp_rung_step)
+                        .max(anchor * state.cfg.fcscalp_rung_gap);
+                    let mut rung_px = anchor - step;
                     if state.cfg.fcscalp_use_ob {
                         if let Some(&wall) = fcscalp_support_walls(input, rung_px, 1).first() {
                             rung_px = wall;
                         }
                     }
                     if rung_px > 0.0 && rung_px < price {
-                        // single rolling mark → one resting order at the next rung level.
                         place_orders.push(limit_order(Direction::Long, rung, rung_px, "fcs-g"));
                     }
                 }
 
-                // ── Exit: ONE reduce-only maker SELL at +tp_dist above the avg entry — one
-                //    typical 1m movement, NATR-scaled. Lock the small scalp and RE-ENTER on
-                //    the next dip (many small wins). Avg only drops as lower rungs fill, so
-                //    the target moves closer (helps fill), never up away from price.
-                let tp_px = avg * (1.0 + tp_dist);
-                place_orders.push(tp_order_with_band(
-                    Direction::Long,
-                    long_n,
-                    tp_px,
-                    "fcs-tp",
-                    "fcs-tp",
-                ));
+                // ── Exit PER ORDER: each tracked rung gets its OWN reduce-only maker SELL at
+                //    rung_price × (1 + tp_dist) — one typical 1m movement above THAT rung's
+                //    entry, not the position avg. So every rung closes in its own profit and
+                //    re-arms independently. Lowest rungs (lowest target) fill first on a bounce.
+                if state.fc_rung_n > 0 {
+                    for i in 0..state.fc_rung_n {
+                        let q = state.fc_rung_qty[i];
+                        let rpx = state.fc_rung_px[i];
+                        if q <= 0.0 || rpx <= 0.0 {
+                            continue;
+                        }
+                        let tp_px = rpx * (1.0 + tp_dist);
+                        let amt = q * tp_px; // notional for this rung's qty
+                        if amt > 1.0 {
+                            place_orders.push(tp_order_with_band(
+                                Direction::Long,
+                                amt,
+                                tp_px,
+                                "fcs-tp",
+                                &format!("r{}", i),
+                            ));
+                        }
+                    }
+                } else {
+                    // Fallback (no per-rung data yet): a single avg-based TP.
+                    let tp_px = avg * (1.0 + tp_dist);
+                    place_orders.push(tp_order_with_band(
+                        Direction::Long,
+                        long_n,
+                        tp_px,
+                        "fcs-tp",
+                        "fcs-tp",
+                    ));
+                }
             }
         }
         return place_orders;

@@ -478,12 +478,36 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.fc_rungs = 0;
         state.fc_last_fill_px = 0.0;
         state.fc_prev_qty = 0.0;
+        state.fc_rung_n = 0;
     } else {
         if long_qty > state.fc_prev_qty + 1e-9 {
+            // A buy filled — record this rung (price + qty) so it gets its OWN TP.
+            let delta = long_qty - state.fc_prev_qty;
             state.fc_rungs = state.fc_rungs.saturating_add(1);
             state.fc_last_fill_px = price;
+            if state.fc_rung_n < state.fc_rung_px.len() {
+                let n = state.fc_rung_n;
+                state.fc_rung_px[n] = price;
+                state.fc_rung_qty[n] = delta;
+                state.fc_rung_n += 1;
+            }
+        } else if long_qty + 1e-9 < state.fc_prev_qty {
+            // A per-rung TP filled — the LOWEST rungs (lowest TP target) close first, and
+            // they're the most-recently added (end of the array). Drop fully-sold rungs
+            // from the end, keeping the higher rungs (whose cumulative qty still fits).
+            let mut keep = 0usize;
+            let mut acc = 0.0;
+            for i in 0..state.fc_rung_n {
+                if acc + state.fc_rung_qty[i] <= long_qty + 1e-6 {
+                    acc += state.fc_rung_qty[i];
+                    keep = i + 1;
+                } else {
+                    break;
+                }
+            }
+            state.fc_rung_n = keep;
         }
-        state.fc_prev_qty = long_qty; // track adds (up) and TP reductions (down)
+        state.fc_prev_qty = long_qty;
         state.fc_open_px = 0.0; // open filled into a position — no pending open to trail
     }
     // v0.55 (0.C): reset the stair ladder when flat so each new ride builds from scratch.

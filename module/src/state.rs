@@ -232,6 +232,7 @@ pub struct Config {
     pub fcscalp_tp_band: f64,   // 0.02 → only ladder TPs onto walls within +2% of avg entry
     pub fcscalp_buy_zone: f64,  // 0.5 → scalp-buy when price is in the lower half of the window
     pub fcscalp_use_ob: bool,   // false → FC uses ONLY window/cascade levels (order book = disabled extension)
+    pub fcscalp_rung_step: f64, // 0.4 → next rung is this fraction of the distance from the last fill to the floor
 }
 
 impl Default for Config {
@@ -265,6 +266,7 @@ impl Default for Config {
             fcscalp_tp_band: 0.02,    // ladder TPs only onto walls within +2% of avg
             fcscalp_buy_zone: 0.5,    // buy in the lower half of the window
             fcscalp_use_ob: false,    // window/cascade-only by default; order book is opt-in
+            fcscalp_rung_step: 0.4,   // next rung 40% of the way to the floor (tighter near the bottom)
         }
     }
 }
@@ -301,6 +303,7 @@ impl Config {
                 "fcscalp_tp_band" => self.fcscalp_tp_band = n,
                 "fcscalp_buy_zone" => self.fcscalp_buy_zone = n,
                 "fcscalp_use_ob" => self.fcscalp_use_ob = n != 0.0,
+                "fcscalp_rung_step" => self.fcscalp_rung_step = n,
                 _ => {}
             }
         }
@@ -415,6 +418,11 @@ pub struct State {
     // Price of the resting (unfilled) FC limit open, trailed via ModuleUpdatePosition.
     // 0 = no pending open. Set when the open is emitted, cleared on fill / stale-cancel.
     pub fc_open_px: f64,
+    // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
+    // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
+    pub fc_rung_px: [f64; 8],
+    pub fc_rung_qty: [f64; 8],
+    pub fc_rung_n: usize,
     pub mkt_mode_candles: u32, // consecutive candles in current confirmed mode
     pub mkt_cand: i8,          // pending mode candidate
     pub mkt_cand_candles: u32, // candles confirming candidate (commit at >= 2)
@@ -539,6 +547,9 @@ impl Default for State {
             fc_rungs: 0,
             fc_prev_qty: 0.0,
             fc_open_px: 0.0,
+            fc_rung_px: [0.0; 8],
+            fc_rung_qty: [0.0; 8],
+            fc_rung_n: 0,
             mkt_mode_candles: 0,
             mkt_cand: 0,
             mkt_cand_candles: 0,
