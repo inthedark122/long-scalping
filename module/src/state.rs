@@ -247,6 +247,17 @@ pub struct Config {
     pub fcscalp_deep_cross: f64,       // -3 → "30m big deep" = tf30.cross <= this
     pub fcscalp_deep_neg_pct: f64,     // 0.005 → hold-exit TP at avg × (1 - this) (small negative ok)
     pub fcscalp_deep_hold_candles: f64, // 6 → hold this many candles for the bounce, then cut
+    // Mean-line zone gate (the "when to scalp vs wait" rule). FC scalp is risky below the mean in a
+    // downtrend (small TPs get trapped while price keeps falling — it bags). So FC only scalps:
+    //   1. ABOVE the mean in an uptrend ("on the stairs"),
+    //   2. on a PULLBACK to the mean (price sliding down from the top to ~the mean) — one bigger
+    //      conviction entry (pullback_frac of grid_max) at the mean instead of dribbling in above it,
+    //   3. BELOW the mean only in a clean SIDEWAYS range (mean-reversion works).
+    // It WAITS otherwise (below-mean downtrend, or above-mean with no trend). Trend/stairs own the
+    // below-mean zone (they can ride the recovery; the scalp can't).
+    pub fcscalp_zone_gate: bool,    // true → enable the mean-line zone gate
+    pub fcscalp_mean_band: f64,     // 0.10 → "around the mean" = within this × MRC range of mrc_ml
+    pub fcscalp_pullback_frac: f64, // 0.5 → pullback-to-mean first order = this × grid_max (half position)
 }
 
 impl Default for Config {
@@ -287,6 +298,9 @@ impl Default for Config {
             fcscalp_deep_cross: -3.0,       // 30m deep = bottom bands (DownOuter/DownBig)
             fcscalp_deep_neg_pct: 0.005,    // exit at ≤0.5% below avg entry (breakeven / small loss)
             fcscalp_deep_hold_candles: 6.0, // ~6 candles to bounce, else cut
+            fcscalp_zone_gate: true,     // mean-line zone gate on (scalp only in favourable zones)
+            fcscalp_mean_band: 0.10,     // ±10% of MRC range around the mean = "around the mean"
+            fcscalp_pullback_frac: 0.5,  // pullback-to-mean first order = half the full position
         }
     }
 }
@@ -330,6 +344,9 @@ impl Config {
                 "fcscalp_deep_cross" => self.fcscalp_deep_cross = n,
                 "fcscalp_deep_neg_pct" => self.fcscalp_deep_neg_pct = n,
                 "fcscalp_deep_hold_candles" => self.fcscalp_deep_hold_candles = n,
+                "fcscalp_zone_gate" => self.fcscalp_zone_gate = n != 0.0,
+                "fcscalp_mean_band" => self.fcscalp_mean_band = n,
+                "fcscalp_pullback_frac" => self.fcscalp_pullback_frac = n,
                 _ => {}
             }
         }

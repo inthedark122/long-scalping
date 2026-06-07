@@ -378,7 +378,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{}",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{}",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
@@ -387,6 +387,8 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                         if state.zz_break_up { " BRK" } else { "" },
                         if state.fc_deep_active { 1 } else { 0 },
                         state.tf30.cross,
+                        state.mrc_ml,
+                        if input.price >= state.mrc_ml { "^" } else { "v" },
                     ),
                 ),
                 (
@@ -1055,7 +1057,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{}",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{}",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
@@ -1064,6 +1066,8 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         if state.zz_break_up { " BRK" } else { "" },
                         if state.fc_deep_active { 1 } else { 0 },
                         state.tf30.cross,
+                        state.mrc_ml,
+                        if input.price >= state.mrc_ml { "^" } else { "v" },
                     ),
                 ),
                 (DBG_RUN, run_dbg.trim().to_string()),

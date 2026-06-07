@@ -223,10 +223,82 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     // the first rung — NO fast-flush required, so it actually fires in a quiet range.
     // Entry = nearest order-book support wall (live) / MARKET in the buy zone (backtest).
     // It coexists with base (no early-return); base owns trend, FC owns the safe window.
+    // ── FC scalp zone gate (mean-line + regime) ─────────────────────────────────
+    // Decide WHICH zone we're in before scalping. The scalp's small TPs only pay in favourable
+    // zones; below the mean in a downtrend it bags (the 4-rung OPN loss). So:
+    //   Momentum (above mean + uptrend) / Range (below mean + clean sideways) → normal dip-buy
+    //   Pullback (price slid from the top down to ~the mean, no trend, no dump) → ONE half-position
+    //     conviction entry at the mean (better avg than dribbling rungs above it)
+    //   else (below-mean downtrend / above-mean no-trend) → WAIT (trend/stairs own that zone).
+    let mean = state.mrc_ml;
+    let have_mean = mean > 0.0 && state.mrc_range > 0.0;
+    let above_mean = price >= mean;
+    let mean_band = state.mrc_range * state.cfg.fcscalp_mean_band;
+    let near_mean = have_mean && (price - mean).abs() <= mean_band;
+    // 5m down pressure: confirmed down-mode/regime, or a 5m down-block stretched past its average.
+    let cas5_sz = state.cas5.cas_high - state.cas5.cas_low;
+    let cas5_down = state.cas5.cas_dir == -1
+        && state.cas5.avg_size > 0.0
+        && cas5_sz > state.cas5.avg_size * 1.3;
+    let downish = state.mkt_mode == -2 || state.tf5.regime == -2 || cas5_down;
+    let uptrend = state.mkt_mode == 2 || state.tf5.regime == 2;
+    let came_from_above = state.cas1.cas_high > mean; // the 1m window reached above the mean
+    let zone_pullback =
+        have_mean && near_mean && above_mean && came_from_above && !uptrend && !downish;
+    let zone_momentum = have_mean && above_mean && uptrend;
+    let zone_range = have_mean && !above_mean && state.mkt_mode == 1 && !downish;
+    // Gate off, or no mean yet → legacy behaviour (scalp the safe window regardless of zone).
+    let scalp_ok = !state.cfg.fcscalp_zone_gate || !have_mean || zone_momentum || zone_range;
+
+    // ── Pullback-to-mean conviction entry (half the full position, at the mean) ──
+    if state.cfg.enable_fcscalp
+        && state.cfg.fcscalp_zone_gate
+        && zone_pullback
+        && !has_long
+        && !long_on_cd
+        && state.fc_open_px <= 0.0
+        && open_positions.is_empty()
+    {
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        let grid_max = max * state.cfg.fcscalp_grid_frac;
+        // Half (pullback_frac) of the FULL intended position in ONE order — we skipped the above-mean
+        // rungs, so we commit a bigger chunk at the better price; the rest adds on further dips.
+        let amt = (grid_max * state.cfg.fcscalp_pullback_frac)
+            .max(min_n)
+            .max(1.0);
+        if amt <= max {
+            // Enter AT the mean: a maker limit at mrc_ml (just below price) when above it; else market.
+            let entry_px = if price > mean { mean } else { price };
+            let note = format!(
+                "fcs-mean m{:.4} p{:.4} {:.0}%pos",
+                mean,
+                price,
+                state.cfg.fcscalp_pullback_frac * 100.0
+            );
+            let has_ob = input
+                .sug_info
+                .as_ref()
+                .and_then(|s| s.order_book.as_ref())
+                .is_some();
+            if has_ob && entry_px > 0.0 && entry_px < price {
+                open_positions.push(limit_open(Direction::Long, amt, entry_px, &note));
+            } else {
+                open_positions.push(market_open(Direction::Long, amt, &note));
+            }
+        }
+    }
+
+    // ── Dip-buyer (Momentum / Range zones only) ─────────────────────────────────
     if state.cfg.enable_fcscalp
         && !has_long
         && !long_on_cd
         && state.fc_open_px <= 0.0
+        && open_positions.is_empty()
+        && scalp_ok
         && state.win.safe
         && state.win.pos_frac < state.cfg.fcscalp_buy_zone
     {
@@ -509,6 +581,18 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 // constantly (cutting good sideways scalps short). Downtrend → exit FAST
                 // (smaller TP), no averaging. Up/sideways → normal one-movement TP + grid.
                 let down = state.mkt_mode == -2;
+                // Zone gate (same as entry): don't GROW the bag below the mean once 5m turns down —
+                // that's the trap that piled 4 rungs into OPN's fall. Stop adding; hold for the TP.
+                let cas5_sz_g = state.cas5.cas_high - state.cas5.cas_low;
+                let downish_g = state.mkt_mode == -2
+                    || state.tf5.regime == -2
+                    || (state.cas5.cas_dir == -1
+                        && state.cas5.avg_size > 0.0
+                        && cas5_sz_g > state.cas5.avg_size * 1.3);
+                let zone_no_add = state.cfg.fcscalp_zone_gate
+                    && state.mrc_ml > 0.0
+                    && price < state.mrc_ml
+                    && downish_g;
                 let tp_dist = if down {
                     state.cfg.fcscalp_tp_pct.max(scale * 0.3)
                 } else {
@@ -524,6 +608,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    stack on one price. Adds ONLY while SAFE (the bag-hold guard).
                 if state.win.safe
                     && !down
+                    && !zone_no_add
                     && !state.fc_deep_active
                     && !state.fc_grid_placed
                     && long_n + rung <= grid_max
