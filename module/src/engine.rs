@@ -16,6 +16,7 @@ use crate::sizing::{
 };
 use crate::vlines::{seed_v_lines, update_v_lines};
 use crate::state::State;
+use crate::window::{detect_window, window_debug};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleEvent, ModuleInput, ModuleOpenPosition, ModuleOutput,
     ModuleUpdatePosition, OrderRole,
@@ -752,6 +753,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     let ord_count = place_orders.len();
 
+    // Window context (Layer 1, observe-only): is it safe to scalp + the bounds/scale.
+    // Computed and surfaced in the debug; FC does not consume it yet.
+    let win = detect_window(input, state);
+
     // ── FC grid cancel-on-stale ─────────────────────────────────────────────────
     // Standing limit orders persist by mark until cancelled (they are NOT auto-pulled
     // when we stop emitting them). When FLAT and the FC setup is stale, cancel any
@@ -796,7 +801,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         cancel_orders,
         update_positions,
         debug: format!(
-            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} | cas1=[{}] cas5=[{}] |{} | {} | vt={}{}",
+            "sug t={} p={:.2} ntps={} avg={:.0} x{:.1} mode={} mv={}/{:.0}(a={:.0}) brk={} drf={:.2} | ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} | cas1=[{}] cas5=[{}] win=[{}] |{} | {} | vt={}{}",
             state.ticks, price, ntps, state.ntps_avg, state.ntps_mult,
             state.mkt_mode, state.cas1.cas_dir,
             state.cas1.cas_high - state.cas1.cas_low, state.cas1.avg_size,
@@ -806,6 +811,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             ord_count,
             cascade_debug(&state.cas1, price),
             cascade_debug(&state.cas5, price),
+            window_debug(&win),
             run_dbg,
             fast_candle_debug(&fast_candle),
             vt_debug(&state.v_lines),

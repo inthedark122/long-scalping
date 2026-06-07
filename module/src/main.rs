@@ -9,6 +9,7 @@ mod orders;
 mod sizing;
 mod state;
 mod vlines;
+mod window;
 
 use lte_strategy_bridge::run_loop;
 
