@@ -340,7 +340,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                 state.pos_owner = owner_from_mark(&op.note);
             }
             // Record the FC limit open's price so it can be trailed (not re-emitted).
-            if op.note == "fcs-l" {
+            if op.note.starts_with("fcs-l") {
                 if let Some(px) = op.enter_price {
                     state.fc_open_px = px;
                 }
@@ -690,7 +690,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 state.pos_owner = owner_from_mark(&op.note);
             }
             // Record the FC limit open's price so it can be trailed (not re-emitted).
-            if op.note == "fcs-l" {
+            if op.note.starts_with("fcs-l") {
                 if let Some(px) = op.enter_price {
                     state.fc_open_px = px;
                 }
@@ -713,10 +713,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
     if !has_long && state.fc_open_px > 0.0 {
         if fc_armable {
-            // Trail target from the WINDOW/cascade (same as the entry): a small dip clamped
-            // to the window floor. Order book is an opt-in override. Trail DOWN only.
+            // Trail target from the 1m window/cascade (same as the entry): a small dip,
+            // capped at the buy-zone line so it never trails up into the top. OB opt-in.
             let scale = (state.win.scale_pct / 100.0).max(0.0005);
-            let mut target = (price * (1.0 - scale * 0.5)).max(state.win.floor).min(price);
+            let bz_line = state.win.floor
+                + (state.win.ceiling - state.win.floor) * state.cfg.fcscalp_buy_zone;
+            let mut target = (price * (1.0 - scale * 0.25)).min(bz_line).min(price);
             if state.cfg.fcscalp_use_ob {
                 if let Some(s) = fcscalp_support(input, price) {
                     if s > 0.0 && s < price {

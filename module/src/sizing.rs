@@ -258,11 +258,13 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         // added as maker buys at lower support walls in compute_limit_orders.
         let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
         if amt <= max {
-            // Entry price from the WINDOW/cascade: a small dip (half a typical movement)
-            // into the lower window, clamped to the window floor — a maker buy below
-            // price. Order book is an opt-in override (default off).
+            // Entry price from the 1m window/cascade: a small dip below price, CAPPED at the
+            // buy-zone line (floor + buy_zone × range) so FC can never buy above mid-window
+            // even if the window shifts after arming. Order book is an opt-in override.
             let scale = (state.win.scale_pct / 100.0).max(0.0005);
-            let mut entry_px = (price * (1.0 - scale * 0.5)).max(state.win.floor).min(price);
+            let bz_line = state.win.floor
+                + (state.win.ceiling - state.win.floor) * state.cfg.fcscalp_buy_zone;
+            let mut entry_px = (price * (1.0 - scale * 0.25)).min(bz_line).min(price);
             if state.cfg.fcscalp_use_ob {
                 if let Some(s) = fcscalp_support(input, price) {
                     if s > 0.0 && s < price {
@@ -271,7 +273,12 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
                 }
             }
             if entry_px > 0.0 && entry_px < price {
-                open_positions.push(limit_open(Direction::Long, amt, entry_px, "fcs-l"));
+                // Descriptive note: the window the scalp was opened in (floor-ceiling, pos, scale).
+                let note = format!(
+                    "fcs-l w[{:.4}-{:.4}] pos{:.2} scl{:.1}%",
+                    state.win.floor, state.win.ceiling, state.win.pos_frac, state.win.scale_pct
+                );
+                open_positions.push(limit_open(Direction::Long, amt, entry_px, &note));
             }
         }
     }

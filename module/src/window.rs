@@ -102,10 +102,10 @@ pub(crate) fn detect_window(input: &ModuleInput, state: &State) -> WindowContext
     }
 }
 
-/// Nearest support below price: live order-book wall first, then the nearest MRC band
-/// below, then the 5m cascade low.
+/// Window FLOOR — the bottom of the ENTRY range = the 1m cascade block low (the live 1m
+/// movement we scalp). 5m is used for confirmation/safety (active_dump, bias), NOT the
+/// entry bounds. Falls back to an MRC band. Order book is an opt-in override.
 fn window_floor(input: &ModuleInput, state: &State, price: f64) -> f64 {
-    // Order book is an opt-in extension (default off) — window/cascade levels are primary.
     if state.cfg.fcscalp_use_ob {
         if let Some(s) = fcscalp_support(input, price) {
             if s > 0.0 && s < price {
@@ -113,48 +113,35 @@ fn window_floor(input: &ModuleInput, state: &State, price: f64) -> f64 {
             }
         }
     }
+    if state.cas1.cas_low > 0.0 && state.cas1.cas_low < price {
+        return state.cas1.cas_low;
+    }
     let mut best = 0.0_f64; // highest band still below price = nearest support
-    for b in [
-        state.mrc_di,
-        state.mrc_ds,
-        state.mrc_do,
-        state.mrc_db,
-        state.mrc_ml,
-    ] {
+    for b in [state.mrc_di, state.mrc_ds, state.mrc_do, state.mrc_db] {
         if b > 0.0 && b < price && b > best {
             best = b;
         }
     }
-    if best > 0.0 {
-        return best;
-    }
-    if state.cas5.cas_low > 0.0 && state.cas5.cas_low < price {
-        return state.cas5.cas_low;
-    }
-    0.0
+    best
 }
 
-/// Nearest resistance above price: nearest MRC band above, then the 5m cascade high.
+/// Window CEILING — the top of the ENTRY range = the 1m cascade block high, fall back to
+/// an MRC band.
 fn window_ceiling(state: &State, price: f64) -> f64 {
+    if state.cas1.cas_high > price {
+        return state.cas1.cas_high;
+    }
     let mut best = f64::MAX; // lowest band still above price = nearest resistance
-    for b in [
-        state.mrc_ui,
-        state.mrc_us,
-        state.mrc_uo,
-        state.mrc_ub,
-        state.mrc_ml,
-    ] {
+    for b in [state.mrc_ui, state.mrc_us, state.mrc_uo, state.mrc_ub] {
         if b > price && b < best {
             best = b;
         }
     }
     if best < f64::MAX {
-        return best;
+        best
+    } else {
+        price
     }
-    if state.cas5.cas_high > price {
-        return state.cas5.cas_high;
-    }
-    price
 }
 
 /// Compact debug readout, e.g. "SAFE f1550.2 c1599.1 bi+1 scl0.18% pos0.42"
