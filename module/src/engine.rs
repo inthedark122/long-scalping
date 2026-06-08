@@ -885,6 +885,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         && state.win.safe
         && state.win.pos_frac < state.cfg.fcscalp_buy_zone;
     let mut update_positions: Vec<ModuleUpdatePosition> = Vec::new();
+    let mut cancel_orders: Vec<String> = Vec::new();
     // ORPHANED entry: the window relocated UP and left the resting buy below the new floor. It can
     // no longer fill AND — because fc_open_px > 0 gates every FC entry — it silently BLOCKS both the
     // dip-buyer and the ZigZag breakout, freezing the symbol. Cancel it so the next tick re-arms in
@@ -916,10 +917,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 state.fc_open_px = target;
             }
         } else {
-            // Cancel the pending open: window went unsafe / left the buy zone, OR it's orphaned
-            // below the relocated window. Either way clear fc_open_px so a fresh entry can re-arm.
-            let why = if orphaned { "fcs-rearm" } else { "fcs-stale" };
-            close_positions.push(close(Direction::Long, why));
+            // Cancel the pending OPEN order: window went unsafe / left the buy zone, OR it's orphaned
+            // below the relocated window. A pending fcs-l is a LIMIT BUY — it MUST be cancelled via the
+            // order-cancel path (cancel_orders), NOT close_positions: close(Long) is a no-op when flat
+            // (no position to reduce), which left the order stranded and fc_open_px desynced → the
+            // resting buy blocked every re-arm = the 3h freeze. Clear fc_open_px so a fresh entry
+            // re-arms next tick.
+            let _ = orphaned; // (orphan vs stale: same action — cancel the pending open)
+            cancel_orders.push("fcs-l".to_string());
             state.fc_open_px = 0.0;
         }
     }
@@ -987,14 +992,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // ── FC grid cancel-on-stale ─────────────────────────────────────────────────
     // Standing limit orders persist by mark until cancelled (they are NOT auto-pulled
     // when we stop emitting them). When FLAT and the FC setup is stale, cancel any
-    // leftover grid rungs (fcs-g, real place-orders) so they can't fill on an unrelated
-    // dip. The pending OPEN (fcs-l) is handled above via trail / close, not here.
-    let mut cancel_orders: Vec<String> = Vec::new();
+    // leftover grid rungs (fcs-g) so they can't fill on an unrelated dip. The pending
+    // OPEN (fcs-l) is cancelled in the trail/orphan block above (via cancel_orders).
     if !has_long && !fc_armable {
         cancel_orders.push("fcs-g".to_string());
-        // belt-and-suspenders for the pending open (also closed via close_positions above) —
-        // whichever path the platform honors for a pending-limit open.
-        cancel_orders.push("fcs-l".to_string());
+        cancel_orders.push("fcs-l".to_string()); // belt-and-suspenders for the pending open
     }
     // Base DCA add (dca-l) is a non-reduce-only resting BUY placed while long; it does NOT
     // auto-cancel when the position closes, so a stale level could fill later and open a surprise
