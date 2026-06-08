@@ -12,7 +12,7 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.73-unfreeze`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
+  **`0.74-rearm2`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
   → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
   `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
