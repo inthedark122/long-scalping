@@ -918,15 +918,13 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             }
         } else {
             // Clear the pending OPEN: window went unsafe / left the buy zone, OR it's orphaned below
-            // the relocated window. The fcs-l open is a CREATED position (by direction). Do BOTH, so
-            // whichever the platform honors for a pending open clears it:
-            //   • close_positions(close(Long)) — a position-close DOES cancel the tied pending entry
-            //     order (verified live: force_close_long cancelled the resting fcs-g BUY), and
-            //   • cancel_orders("fcs-l") — belt-and-suspenders by mark.
-            // Then clear fc_open_px so a fresh entry re-arms next tick (fixes the orphan freeze).
+            // the relocated window. The fcs-l open is a CREATED position (markless, by direction), so
+            // close(Long) is the correct cancel — VERIFIED live: force_close_long on a 0-fill Created
+            // position (entry 0, qty 0, 1 pending order) cancelled its order and the position went
+            // Completed, then the symbol re-armed. (Mark-cancel can't reliably hit a markless open.)
+            // Clear fc_open_px so a fresh entry re-arms next tick (fixes the orphan freeze).
             let _ = orphaned; // orphan vs stale: same action
             close_positions.push(close(Direction::Long, "fcs-rearm"));
-            cancel_orders.push("fcs-l".to_string());
             state.fc_open_px = 0.0;
         }
     }
