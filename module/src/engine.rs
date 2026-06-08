@@ -947,6 +947,35 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     if place_orders.iter().any(|o| o.mark.starts_with("fcs-g")) {
         state.fc_grid_placed = true;
     }
+    // Keep ONE coherent FC TP set resting. The TP set flips per tick (deep breakeven · stairs scale-out
+    // s1/s2/s3 · per-rung r0..) but standing orders persist by mark — so the OLD set lingers and the two
+    // over-cover the position: the lowest sell closes it fully while the rest sit for nothing (user
+    // 2026-06-08: ALLO had r0(-50)+s1/s2/s3(-60) on a 50q pos). Cancel the marks of whichever set is NOT
+    // active this tick. (Cancelling already-gone marks is a no-op, so no churn on the active set.)
+    {
+        const RUNG_TP: [&str; 8] = [
+            "fcs-tp:r0", "fcs-tp:r1", "fcs-tp:r2", "fcs-tp:r3", "fcs-tp:r4", "fcs-tp:r5", "fcs-tp:r6",
+            "fcs-tp:r7",
+        ];
+        const STAIR_TP: [&str; 3] = ["fcs-tp:s1", "fcs-tp:s2", "fcs-tp:s3"];
+        let has_s = place_orders.iter().any(|o| o.mark.starts_with("fcs-tp:s"));
+        let has_r = place_orders.iter().any(|o| o.mark.starts_with("fcs-tp:r"));
+        let has_deep = place_orders.iter().any(|o| o.mark == "fcs-tp:deep");
+        if has_deep {
+            // only the single breakeven TP is active → drop both ladders
+            for m in RUNG_TP.iter().chain(STAIR_TP.iter()) {
+                cancel_orders.push((*m).to_string());
+            }
+        } else if has_s {
+            for m in RUNG_TP.iter() {
+                cancel_orders.push((*m).to_string());
+            }
+        } else if has_r {
+            for m in STAIR_TP.iter() {
+                cancel_orders.push((*m).to_string());
+            }
+        }
+    }
 
     // ── Trend mode: gradual transition close for a long caught in a confirmed downtrend ────
     // Stage 0→1: 25% after 2 candles · 1→2: 25% after 5 · 2→3: 50% after 8.
