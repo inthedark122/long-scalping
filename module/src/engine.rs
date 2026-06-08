@@ -917,13 +917,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 state.fc_open_px = target;
             }
         } else {
-            // Cancel the pending OPEN order: window went unsafe / left the buy zone, OR it's orphaned
-            // below the relocated window. A pending fcs-l is a LIMIT BUY — it MUST be cancelled via the
-            // order-cancel path (cancel_orders), NOT close_positions: close(Long) is a no-op when flat
-            // (no position to reduce), which left the order stranded and fc_open_px desynced → the
-            // resting buy blocked every re-arm = the 3h freeze. Clear fc_open_px so a fresh entry
-            // re-arms next tick.
-            let _ = orphaned; // (orphan vs stale: same action — cancel the pending open)
+            // Clear the pending OPEN: window went unsafe / left the buy zone, OR it's orphaned below
+            // the relocated window. The fcs-l open is a CREATED position (by direction). Do BOTH, so
+            // whichever the platform honors for a pending open clears it:
+            //   • close_positions(close(Long)) — a position-close DOES cancel the tied pending entry
+            //     order (verified live: force_close_long cancelled the resting fcs-g BUY), and
+            //   • cancel_orders("fcs-l") — belt-and-suspenders by mark.
+            // Then clear fc_open_px so a fresh entry re-arms next tick (fixes the orphan freeze).
+            let _ = orphaned; // orphan vs stale: same action
+            close_positions.push(close(Direction::Long, "fcs-rearm"));
             cancel_orders.push("fcs-l".to_string());
             state.fc_open_px = 0.0;
         }
