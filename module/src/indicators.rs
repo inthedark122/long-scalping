@@ -51,6 +51,44 @@ pub(crate) fn read_smc_dir(ind: &Indicators) -> i8 {
     }
 }
 
+/// Candles within which a fresh new low/high keeps us in a stair (else the stair has stalled → Normal).
+const STAIR_FRESH: u32 = 3;
+
+/// Update the SMC local low/high (the "stairs" anchor) and the 3-stage FC regime. Call on each 1m
+/// close. SMC LowPrice/HighPrice are the running local extremes — they step to each new low/high the
+/// moment it prints, then hold when the move stalls. fc_stage: -1 DownStairs · 0 Normal · +1 UpStairs.
+pub(crate) fn update_smc_levels(ind: &Indicators, state: &mut State) {
+    if let Some(low) = read_float(ind, TF, 0, SMC_IND, "LowPrice") {
+        if low > 0.0 {
+            if state.smc_low > 0.0 && low < state.smc_low - 1e-9 {
+                state.smc_low_age = 0; // a NEW lower-low printed
+            } else {
+                state.smc_low_age = state.smc_low_age.saturating_add(1);
+            }
+            state.smc_low = low;
+        }
+    }
+    if let Some(high) = read_float(ind, TF, 0, SMC_IND, "HighPrice") {
+        if high > 0.0 {
+            if state.smc_high > 0.0 && high > state.smc_high + 1e-9 {
+                state.smc_high_age = 0; // a NEW higher-high printed
+            } else {
+                state.smc_high_age = state.smc_high_age.saturating_add(1);
+            }
+            state.smc_high = high;
+        }
+    }
+    // DownStairs while a new low printed recently (and more recently than a new high); UpStairs the
+    // mirror; else the stair has stalled → Normal.
+    state.fc_stage = if state.smc_low_age <= STAIR_FRESH && state.smc_low_age <= state.smc_high_age {
+        -1
+    } else if state.smc_high_age <= STAIR_FRESH && state.smc_high_age < state.smc_low_age {
+        1
+    } else {
+        0
+    };
+}
+
 /// Read the 1m ZigZagTrend pivots and detect the LINE BREAK (call on each 1m close only — the
 /// zigzag is static within a candle). The entry signal is a candle CLOSE that breaks above the
 /// swing-high line (SellPrice). Crucially we compare to the PREVIOUS candle's SellPrice (the value

@@ -399,6 +399,14 @@ pub struct State {
     pub tm_side: i8,
     pub smc_dir: i8,
     pub smc_dir_prev: i8,
+    // SMC local swing low/high (the running local extreme — verified to track promptly, beats DP/ZZ).
+    // smc_low_age / smc_high_age = candles since each last printed a NEW extreme. fc_stage = the 3-stage
+    // FC regime from the low/high trend: -1 DownStairs · 0 Normal · +1 UpStairs.
+    pub smc_low: f64,
+    pub smc_high: f64,
+    pub smc_low_age: u32,
+    pub smc_high_age: u32,
+    pub fc_stage: i8,
     // Interest line: the last MRC cross level broken — high-priority entry zone
     pub interest_cross: i8,  // which cross level was just broken through
     pub interest_dir: i8,    // +1=bullish break (add longs), -1=bearish (add shorts), 0=none
@@ -591,6 +599,11 @@ impl Default for State {
             tm_side: 0,
             smc_dir: 0,
             smc_dir_prev: 0,
+            smc_low: 0.0,
+            smc_high: 0.0,
+            smc_low_age: 9999,
+            smc_high_age: 9999,
+            fc_stage: 0,
             interest_cross: 0,
             interest_dir: 0,
             interest_tests: 0,

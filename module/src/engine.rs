@@ -261,6 +261,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         }
         state.smc_dir_prev = state.smc_dir;
         state.smc_dir = read_smc_dir(&input.indicators);
+        update_smc_levels(&input.indicators, state);
         update_volume_spike(&input.indicators, state);
         update_zigzag(&input.indicators, state);
 
@@ -378,7 +379,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{}",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{} {} smc[L{:.4} H{:.4} a{}/{}]",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
@@ -389,6 +390,11 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                         state.tf30.cross,
                         state.mrc_ml,
                         if input.price >= state.mrc_ml { "^" } else { "v" },
+                        match state.fc_stage { -1 => "DN", 1 => "UP", _ => "--" },
+                        state.smc_low,
+                        state.smc_high,
+                        state.smc_low_age,
+                        state.smc_high_age,
                     ),
                 ),
                 (
@@ -1059,7 +1065,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 (
                     DBG_WIN,
                     format!(
-                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{}",
+                        "win=[{}] zz[sell{:.4} buy{:.4} d{:+} k{:.0}{}] dh{} t30c{} ml{:.4}{} {} smc[L{:.4} H{:.4} a{}/{}]",
                         window_debug(&state.win),
                         state.zz_sell,
                         state.zz_buy,
@@ -1070,6 +1076,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         state.tf30.cross,
                         state.mrc_ml,
                         if input.price >= state.mrc_ml { "^" } else { "v" },
+                        match state.fc_stage { -1 => "DN", 1 => "UP", _ => "--" },
+                        state.smc_low,
+                        state.smc_high,
+                        state.smc_low_age,
+                        state.smc_high_age,
                     ),
                 ),
                 (DBG_RUN, run_dbg.trim().to_string()),

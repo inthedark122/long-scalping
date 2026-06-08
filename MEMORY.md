@@ -82,6 +82,20 @@ same-price pairs / 50 positions remain from the restart edge case (refinable). S
 Live (maker fees) is meaningfully better than backtest (taker market opens). Live sim: OPN +,
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
 
+### FC FUTURE PLANS (don't forget)
+- **3-stage FC (in progress):** FC keyed on local price structure (the "stairs"), not the mean line:
+  **DownStairs** (local low making lower-lows → counter-trend *liquidation-catch*: predict the next
+  sweep low via `fc.avg_pct`/`avg_size` and PRE-PLACE maker buys to fill the spike at the best price —
+  the fast candle is a LAGGING confirmation, so we must be predictive), **Normal** (ranging → current
+  FC), **UpStairs** (local high making higher-highs → the 0.72 stairs-TP scale-out). Anchor/stage signal:
+  **SMC `LowPrice`/`HighPrice`** — verified live (ETH down-stairs) to track the running local low promptly
+  (1651.58→1646.16, then holds), beating DP `Zee` (identical but `Direction` unreliable) and ZigZag (lags ~3c).
+- **DPSignal directional-strength (future idea, user 2026-06-08):** use DP `Zee`/`Zee1`/`Zee2` levels vs
+  price to tell if we're *expecting to move to a zone* vs *already over it*. E.g. if DP `Direction`=LONG,
+  price moving up, and `Zee1` (a higher DP level — verify which) is ABOVE current price → there's room /
+  we're STRONG in the breaking direction (target not yet reached). If price is already past the Zee target
+  → the move is exhausting. A move-strength / exhaustion gauge to layer on later.
+
 ## Module Architecture
 
 - **Type**: DynamicModule (WASM via `lte_strategy_bridge::run_loop`)
