@@ -83,6 +83,15 @@ Live (maker fees) is meaningfully better than backtest (taker market opens). Liv
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
 
 ### FC FUTURE PLANS (don't forget)
+- **Unified DENSE TP ladder (user 2026-06-08, "old orders were good"):** the over-coverage bug (0.76-tptidy
+  fixed it by cancelling the inactive set) had a silver lining — having TPs at MANY price levels (the per-rung
+  r0..rN spread + the stairs s1/s2/s3 spread, ~0.377→0.397 on ALLO) was actually GOOD placement: as price
+  oscillates it picks off level after level. ALLO ran +1.33 WITH the over-cover. The bug was only that the two
+  sets OVER-covered (lowest sell closed the whole position, rest wasted). FEATURE: replace the either/or
+  (per-rung XOR stairs) with ONE coherent DENSE ladder — N exit levels from the near scalp TP up to the high
+  (window ceiling / zz_sell / UpBig), each sized = position/N so they SUM to the position (scale out, no
+  over-cover). Preserves the wide spread of good exit prices without the waste. 0.76 is the interim (one set,
+  fewer levels); the dense ladder is the richer version.
 - **3-stage FC (in progress):** FC keyed on local price structure (the "stairs"), not the mean line:
   **DownStairs** (local low making lower-lows → counter-trend *liquidation-catch*: predict the next
   sweep low via `fc.avg_pct`/`avg_size` and PRE-PLACE maker buys to fill the spike at the best price —
