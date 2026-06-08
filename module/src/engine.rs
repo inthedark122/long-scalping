@@ -672,7 +672,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     // Hold window elapsed without the bounce → the "if not, stop": cut now.
     if fc_owner && has_long && long_n > 1.0 && deep_hold_expired {
-        close_positions.push(close(Direction::Long, "fcs-deep-stop"));
+        close_positions.push(close(
+            Direction::Long,
+            &format!(
+                "fcs-deep-stop | bounce never came: held {}t>{}t hold-window | {}",
+                state.ticks.saturating_sub(state.fc_deep_tick),
+                hold_ticks,
+                state.ctx(price, total_pnl)
+            ),
+        ));
         state.fc_deep_tick = 0;
     }
 
@@ -694,7 +702,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             .iter()
             .any(|c| matches!(c.direction, Direction::Long))
     {
-        close_positions.push(close(Direction::Long, "fcs-sl"));
+        close_positions.push(close(
+            Direction::Long,
+            &format!(
+                "fcs-sl | price breached DownBig & no re-buy setup: {:.4}<=db{:.4} | {}",
+                price,
+                state.mrc_db,
+                state.ctx(price, total_pnl)
+            ),
+        ));
     }
 
     // ── FC downtrend bag-exit ───────────────────────────────────────────────────
@@ -716,14 +732,30 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
         {
-            close_positions.push(close(Direction::Long, "fcs-dn-exit"));
+            let why = if pumped {
+                format!("5m-DOWN & price pumped to top: posf {:.2}>0.70", state.win.pos_frac)
+            } else {
+                format!("5m-DOWN & window tooWide to hold: win {:.1}%>4.0%", win_pct * 100.0)
+            };
+            close_positions.push(close(
+                Direction::Long,
+                &format!("fcs-dn-exit | {} | {}", why, state.ctx(price, total_pnl)),
+            ));
         }
     }
 
     // ── SL: last-resort margin protection ──────────────────────────────
     if state.cfg.margin_sl && total_pnl < -(margin * state.cfg.sl_margin_pct) {
         if has_long && long_n > 1.0 {
-            close_positions.push(close(Direction::Long, "MARGIN SL"));
+            close_positions.push(close(
+                Direction::Long,
+                &format!(
+                    "MARGIN SL | loss hit margin stop: pnl {:.3}< -{:.3} | {}",
+                    total_pnl,
+                    margin * state.cfg.sl_margin_pct,
+                    state.ctx(price, total_pnl)
+                ),
+            ));
         }
     }
 
@@ -754,7 +786,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             .iter()
             .any(|c| matches!(c.direction, Direction::Long))
     {
-        close_positions.push(close(Direction::Long, "trend-sl"));
+        close_positions.push(close(
+            Direction::Long,
+            &format!(
+                "trend-sl | 1m reversed past entry zone: cross {}<=stop-zone {} | {}",
+                state.tf1.cross,
+                state.trend_long_sl_cross,
+                state.ctx(price, total_pnl)
+            ),
+        ));
     }
 
     // ── Sudden-move panic close (Priority 0.3) ──────────────────────────────
@@ -775,7 +815,13 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
         {
-            close_positions.push(close(Direction::Long, "sudden-down"));
+            close_positions.push(close(
+                Direction::Long,
+                &format!(
+                    "sudden-down | sharp adverse drop (run_dir-1, no sweep/trandm hold) | {}",
+                    state.ctx(price, total_pnl)
+                ),
+            ));
         }
     }
 
@@ -799,7 +845,15 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
         {
-            close_positions.push(close(Direction::Long, "tm-exit"));
+            close_positions.push(close(
+                Direction::Long,
+                &format!(
+                    "tm-exit | buy-side regime neutralized: trandm {:.0} fell below +{:.0} | {}",
+                    trandm,
+                    TRANDM_MILD,
+                    state.ctx(price, total_pnl)
+                ),
+            ));
         }
         state.tm_side = 0;
     }
@@ -929,8 +983,19 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             // position (entry 0, qty 0, 1 pending order) cancelled its order and the position went
             // Completed, then the symbol re-armed. (Mark-cancel can't reliably hit a markless open.)
             // Clear fc_open_px so a fresh entry re-arms next tick (fixes the orphan freeze).
-            let _ = orphaned; // orphan vs stale: same action
-            close_positions.push(close(Direction::Long, "fcs-rearm"));
+            // orphan vs stale: same action, different cause — record which.
+            let why = if orphaned {
+                format!(
+                    "pending fcs-l orphaned below relocated window: open {:.4}<floor {:.4}",
+                    state.fc_open_px, state.win.floor
+                )
+            } else {
+                "pending fcs-l stale: window unsafe / left buy-zone".to_string()
+            };
+            close_positions.push(close(
+                Direction::Long,
+                &format!("fcs-rearm | {} | {}", why, state.ctx(price, 0.0)),
+            ));
             state.fc_open_px = 0.0;
         }
     }

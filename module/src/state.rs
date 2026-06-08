@@ -369,6 +369,35 @@ impl Config {
 
 // ── State ───────────────────────────────────────────────────────────────────
 
+impl State {
+    /// Compact decision-context string stamped onto EVERY FC order note (entry + exit), so the
+    /// order itself records WHY it fired — no more reading source to explain a fill. Fields:
+    ///   m{mkt_mode} r5{5m regime} posf{position-in-window 0..1} win{window width %}
+    ///   pnl{total position PnL $} tdm{trandm side -100..100} {+/-}ml(price above/below mean) dh{deep-hold}
+    pub fn ctx(&self, price: f64, total_pnl: f64) -> String {
+        let win_pct = if price > 0.0 {
+            (self.win.ceiling - self.win.floor) / price * 100.0
+        } else {
+            0.0
+        };
+        format!(
+            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{}",
+            self.mkt_mode,
+            self.tf5.regime,
+            self.win.pos_frac,
+            win_pct,
+            total_pnl,
+            self.trandm,
+            if self.mrc_ml > 0.0 && price >= self.mrc_ml {
+                "+"
+            } else {
+                "-"
+            },
+            if self.fc_deep_active { 1 } else { 0 },
+        )
+    }
+}
+
 pub struct State {
     pub ticks: u64,
     pub ntps: i64,

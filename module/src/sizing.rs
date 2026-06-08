@@ -291,10 +291,11 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
             // Enter AT the mean: a maker limit at mrc_ml (just below price) when above it; else market.
             let entry_px = if price > mean { mean } else { price };
             let note = format!(
-                "fcs-mean m{:.4} p{:.4} {:.0}%pos",
+                "fcs-mean | pullback to mean (no trend, came from above): m{:.4} p{:.4} {:.0}%pos | {}",
                 mean,
                 price,
-                state.cfg.fcscalp_pullback_frac * 100.0
+                state.cfg.fcscalp_pullback_frac * 100.0,
+                state.ctx(price, 0.0)
             );
             let has_ob = input
                 .sug_info
@@ -344,10 +345,23 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
                 }
             }
             if entry_px > 0.0 && entry_px < price {
-                // Descriptive note: the window the scalp was opened in (floor-ceiling, pos, scale).
+                // Note leads with WHY this dip-buy was allowed (which zone passed the gate), then the
+                // window it opened in (floor-ceiling, pos, scale), then full context.
+                let zone = if !state.cfg.fcscalp_zone_gate || !have_mean {
+                    "gate-off"
+                } else if zone_momentum {
+                    "Momentum(above-mean uptrend)"
+                } else {
+                    "Range(below-mean sideways)"
+                };
                 let note = format!(
-                    "fcs-l w[{:.4}-{:.4}] pos{:.2} scl{:.1}%",
-                    state.win.floor, state.win.ceiling, state.win.pos_frac, state.win.scale_pct
+                    "fcs-l | dip-buy {} | w[{:.4}-{:.4}] pos{:.2} scl{:.1}% | {}",
+                    zone,
+                    state.win.floor,
+                    state.win.ceiling,
+                    state.win.pos_frac,
+                    state.win.scale_pct,
+                    state.ctx(price, 0.0)
                 );
                 // Live (order book present) → maker LIMIT at the window dip. Backtest (no order
                 // book) → MARKET so the open actually fills (limit opens don't fill in backtest);
@@ -395,8 +409,11 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
             .max(1.0);
         if amt <= max {
             let note = format!(
-                "fcs-bk zz{:.4} p{:.4} pos{:.2}",
-                state.zz_sell, price, state.win.pos_frac
+                "fcs-bk | 1m closed above swing-high line (breakout): p{:.4}>zz{:.4} pos{:.2} | {}",
+                price,
+                state.zz_sell,
+                state.win.pos_frac,
+                state.ctx(price, 0.0)
             );
             open_positions.push(market_open(Direction::Long, amt, &note));
         }
