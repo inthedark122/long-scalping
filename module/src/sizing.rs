@@ -245,15 +245,32 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let came_from_above = state.cas1.cas_high > mean; // the 1m window reached above the mean
     let zone_pullback =
         have_mean && near_mean && above_mean && came_from_above && !uptrend && !downish;
-    let zone_momentum = have_mean && above_mean && uptrend;
+    // Genuine uptrend only (0.77 gate): mkt_mode==2 (confirmed up), OR a 5m TUP that is BACKED by a
+    // RISING mean and a non-sideway 1m (mkt_mode != 1). A lagging 5m TUP on a token oscillating around
+    // the mean (1m SWY, flat mean) is NOT momentum — that was the trap that bought ALLO above the mean
+    // right before it reverted to the mean. Without this, above-mean dip-buys fire on chop.
+    let uptrend_strong =
+        state.mkt_mode == 2 || (state.tf5.regime == 2 && state.mkt_mode != 1 && state.angle > 0.0);
+    let zone_momentum = have_mean && above_mean && uptrend_strong;
     let zone_range = have_mean && !above_mean && state.mkt_mode == 1 && !downish;
     // Gate off, or no mean yet → legacy behaviour (scalp the safe window regardless of zone).
     let scalp_ok = !state.cfg.fcscalp_zone_gate || !have_mean || zone_momentum || zone_range;
+
+    // No-worse-price re-entry guard (0.77 anti-churn): for REENTRY_WINDOW ticks after an FC long exit,
+    // block ANY re-open unless price is fcscalp_reentry_gap BELOW the exit price. The time cooldown alone
+    // let the breakout re-fire at the same price it just sold (close 0.3996 → re-buy 0.4000) — a pointless
+    // round-trip that pays taker fees and re-enters on a WORSE basis. After the window a fresh setup is
+    // free to re-enter at any price (a genuine later move isn't punished).
+    const REENTRY_WINDOW: u64 = 30;
+    let reentry_block = state.fc_exit_px > 0.0
+        && state.ticks.saturating_sub(state.fc_exit_tick) < REENTRY_WINDOW
+        && price >= state.fc_exit_px * (1.0 - state.cfg.fcscalp_reentry_gap);
 
     // ── Pullback-to-mean conviction entry (half the full position, at the mean) ──
     if state.cfg.enable_fcscalp
         && state.cfg.fcscalp_zone_gate
         && zone_pullback
+        && !reentry_block
         && !has_long
         && !long_on_cd
         && state.fc_open_px <= 0.0
@@ -296,6 +313,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     if state.cfg.enable_fcscalp
         && !has_long
         && !long_on_cd
+        && !reentry_block
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && scalp_ok
@@ -360,6 +378,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && state.cfg.fcscalp_zz_breakout
         && !has_long
         && !long_on_cd
+        && !reentry_block
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && state.zz_break_up

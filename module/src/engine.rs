@@ -1146,6 +1146,9 @@ fn handle_finish(input: &ModuleInput, state: &mut State, direction: Direction) -
     // LONG-ONLY: only the long position lifecycle exists.
     if let Direction::Long = direction {
         state.long_close_tick = state.ticks;
+        // Record the exit price+tick for the no-worse-price re-entry guard (anti-churn, see sizing.rs).
+        state.fc_exit_px = input.price;
+        state.fc_exit_tick = state.ticks;
         state
             .filled
             .retain(|k| !k.starts_with("l-") && !k.starts_with("t-l") && !k.starts_with("tc-cl"));

@@ -12,9 +12,20 @@ MCP tools. OKX live indicator/price API:
 `https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23<SYM>%23<TYPE>&timeframe=<sec>`.
 
 - **Module**: `20dd415e-a179-4cc1-a7eb-a42cbcfd9f1e` (DynamicModule). Latest version:
-  **`0.74-rearm2`**. Branch `test/fastcandle-scalp`. Deploy = build server-side (get_module_upload_url
-  → curl PUT → submit_module_build → poll Success) then update_bot_group BOTH
-  `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
+  **`0.77-antichurn`** (deployed sim grp29 2026-06-08, $10/20x). Branch `test/fastcandle-scalp`. Deploy =
+  build server-side (get_module_upload_url → curl PUT → submit_module_build → poll Success) then
+  update_bot_group BOTH `strategy.module_version` and `strategy.professional.dynamic_module.module_version`.
+  **LEVERAGE GOTCHA (0.77 hit this):** the group's INNER `settings.margin_leverage` is **100**, separate
+  from the top-level `margin_leverage:20`. `run_bot_group_action(start)` uses the INNER one unless you pass
+  `leverage=20` EXPLICITLY → otherwise bots start 10×100=$1000 budget (auto_max 1000), not $200. ALWAYS pass
+  BOTH `margin=10` AND `leverage=20` on every start; verify `auto_max_amount==200` after.
+  - **0.77-antichurn** = 3 fixes for the close-then-rebuy churn + above-mean entries: (1) above-mean
+    Momentum gate now needs mkt_mode==2 OR (5m TUP AND mkt_mode!=1 AND angle>0) — a lagging 5m TUP on a
+    token chopping around the mean no longer authorizes above-mean dip-buys; (2) no-worse-price re-entry
+    guard: `fc_exit_px`/`fc_exit_tick` set in handle_finish; within 30 ticks of an exit, block re-open unless
+    price ≥ `fcscalp_reentry_gap`(0.003) BELOW the exit (kills close 0.3996→rebuy 0.4000). STILL TODO (deferred,
+    risky): the stairs within-set qty fix (s1 swept the whole position instead of 1/3 riding; allocate tiers
+    from realized/peak qty, tier done when filled) + smart TP price recompute (deadband, near-lock, stage ratchet).
 - **API keys** (`list_api_keys`): **8 = OKX "inthedark1"** (used by both groups), 3 = BingX, 1 = Binance.
 - **User manages bot STATUS + API_KEY MANUALLY** — do NOT change a group's status/api_key; create/configure structure only.
 
@@ -83,6 +94,18 @@ Live (maker fees) is meaningfully better than backtest (taker market opens). Liv
 ALLO green on bounces; base stairs/trend (auto-l) is the main loss source.
 
 ### FC FUTURE PLANS (don't forget)
+- **Multi-TF ZigZag confluence (user 2026-06-08):** today we only read the 1m ZigZag buy/sell pivot lines.
+  Plan: ALSO read the 5m / 15m / 30m ZigZag Buy/SellPrice and COMPARE them against the 1m line (and the
+  live price/klines). Logic: if the same price level shows up across multiple TFs → that's a BIG
+  support/resistance (high-conviction level — strong entry/TP/stop anchor). If a level appears only on 1m
+  (or only 1m+5m) → it's a weak LOCAL level, the real bigger level is elsewhere. If a TF returns NO
+  buy/sell line at all → the system is still building/updating trading levels for that TF (we collect
+  ~9 days of klines for the nearest lines, so "no line returned" = not enough confirmed structure yet =
+  treat as "no bigger-TF info, don't lean on it"). Use the confluence score to: (a) size up / prefer
+  entries that sit on a multi-TF level, (b) place TP/runner targets at the next higher-TF level, (c) gate
+  breakouts (a 1m-only break into empty higher-TF space is weaker than a break that clears a 5m/15m line).
+  Indicators available: ZigZagTrend per TF (we already read 1m Buy/SellPrice/Direction/KLines); just add
+  the 5m/15m/30m reads + a confluence comparator. NOT to build yet — plan only.
 - **Unified DENSE TP ladder (user 2026-06-08, "old orders were good"):** the over-coverage bug (0.76-tptidy
   fixed it by cancelling the inactive set) had a silver lining — having TPs at MANY price levels (the per-rung
   r0..rN spread + the stairs s1/s2/s3 spread, ~0.377→0.397 on ALLO) was actually GOOD placement: as price

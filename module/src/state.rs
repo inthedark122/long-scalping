@@ -263,6 +263,11 @@ pub struct Config {
     // scalp TP, the current high (window ceiling), and a RUNNER at the expected new high (zz_sell,
     // capped at UpBig). Only while the stairs read holds; if it fades the per-rung small TPs resume.
     pub fcscalp_stairs_tp: bool, // true → enable the stairs-zone scale-out TP
+    // No-worse-price re-entry guard (0.77): after an FC long closes, the time cooldown (cooldown_ticks)
+    // alone let the breakout re-fire at the SAME price it just sold (close 0.3996 → re-buy 0.4000 = pointless
+    // churn + taker fees). Within a short window after the exit, only re-open if price is at least this
+    // fraction BELOW the exit price (a real dip); else WAIT. After the window a fresh setup re-enters freely.
+    pub fcscalp_reentry_gap: f64, // 0.003 → re-entry must be ≥0.3% below the last exit within the window
 }
 
 impl Default for Config {
@@ -307,6 +312,7 @@ impl Default for Config {
             fcscalp_mean_band: 0.10,     // ±10% of MRC range around the mean = "around the mean"
             fcscalp_pullback_frac: 0.5,  // pullback-to-mean first order = half the full position
             fcscalp_stairs_tp: true,     // stairs-zone scale-out TP on (ride the higher highs)
+            fcscalp_reentry_gap: 0.003,  // re-entry must be ≥0.3% below the last exit (anti-churn)
         }
     }
 }
@@ -354,6 +360,7 @@ impl Config {
                 "fcscalp_mean_band" => self.fcscalp_mean_band = n,
                 "fcscalp_pullback_frac" => self.fcscalp_pullback_frac = n,
                 "fcscalp_stairs_tp" => self.fcscalp_stairs_tp = n != 0.0,
+                "fcscalp_reentry_gap" => self.fcscalp_reentry_gap = n,
                 _ => {}
             }
         }
@@ -512,6 +519,11 @@ pub struct State {
     // Price of the resting (unfilled) FC limit open, trailed via ModuleUpdatePosition.
     // 0 = no pending open. Set when the open is emitted, cleared on fill / stale-cancel.
     pub fc_open_px: f64,
+    // Last FC long EXIT price + tick (set in handle_finish). Feeds the no-worse-price re-entry guard:
+    // within REENTRY_WINDOW ticks of the exit, an entry is blocked unless price is fcscalp_reentry_gap
+    // below fc_exit_px (anti-churn — stops the close-then-rebuy-at-same-price round-trip).
+    pub fc_exit_px: f64,
+    pub fc_exit_tick: u64,
     // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
     // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
     pub fc_rung_px: [f64; 8],
@@ -659,6 +671,8 @@ impl Default for State {
             fc_tp_filled: false,
             fc_grid_placed: false,
             fc_open_px: 0.0,
+            fc_exit_px: 0.0,
+            fc_exit_tick: 0,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],
             fc_rung_n: 0,
