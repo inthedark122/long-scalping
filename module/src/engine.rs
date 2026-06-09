@@ -349,8 +349,10 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
             if state.pos_owner == OWN_NONE {
                 state.pos_owner = owner_from_mark(&op.note);
             }
-            // Record the FC limit open's price so it can be trailed (not re-emitted).
-            if op.note.starts_with("fcs-l") {
+            // Record the FC limit open's price so it can be trailed / orphan-cancelled. Covers fcs-l AND
+            // fcs-mean — both are resting limit-opens; an untracked one (fc_open_px=0) strands as a frozen
+            // Created position the re-arm block never fires for (manual-restart-only). (verified ALLO 24648)
+            if op.note.starts_with("fcs-l") || op.note.starts_with("fcs-mean") {
                 if let Some(px) = op.enter_price {
                     state.fc_open_px = px;
                 }
@@ -983,8 +985,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             if state.pos_owner == OWN_NONE {
                 state.pos_owner = owner_from_mark(&op.note);
             }
-            // Record the FC limit open's price so it can be trailed (not re-emitted).
-            if op.note.starts_with("fcs-l") {
+            // Record the FC limit open's price so it can be trailed / orphan-cancelled. Covers fcs-l AND
+            // fcs-mean — both are resting limit-opens; an untracked one (fc_open_px=0) strands as a frozen
+            // Created position the re-arm block never fires for (manual-restart-only). (verified ALLO 24648)
+            if op.note.starts_with("fcs-l") || op.note.starts_with("fcs-mean") {
                 if let Some(px) = op.enter_price {
                     state.fc_open_px = px;
                 }
