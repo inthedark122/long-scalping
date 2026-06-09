@@ -271,6 +271,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && state.cfg.fcscalp_zone_gate
         && zone_pullback
         && !reentry_block
+        && !state.risk_high
         && !has_long
         && !long_on_cd
         && state.fc_open_px <= 0.0
@@ -315,6 +316,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && !has_long
         && !long_on_cd
         && !reentry_block
+        && !state.risk_high
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && scalp_ok
@@ -393,6 +395,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && !has_long
         && !long_on_cd
         && !reentry_block
+        && !state.risk_high
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && state.zz_break_up

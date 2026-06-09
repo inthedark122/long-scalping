@@ -268,6 +268,17 @@ pub struct Config {
     // churn + taker fees). Within a short window after the exit, only re-open if price is at least this
     // fraction BELOW the exit price (a real dip); else WAIT. After the window a fresh setup re-enters freely.
     pub fcscalp_reentry_gap: f64, // 0.003 → re-entry must be ≥0.3% below the last exit within the window
+    // ── Fast-return risk tracker (0.79 foundation) ──────────────────────────────
+    // The strategy's edge = "sharp dips revert fast". MEASURE whether that holds right now and make it
+    // the master risk gate. A SHARP down = a single candle that crosses >=2 MRC bands OR breaches below
+    // DownBig (out of the channel). After one, track whether price returns to the pre-drop level within
+    // fr_window candles. fr_consec_fail returns-that-didn't-come-back in a row → risk HIGH → stop new
+    // entries + allow the cuts. While risk LOW we DON'T sell into the dip (suppress the cuts), letting the
+    // resting TP catch the fast return. Band logic is trusted only when the MRC channel width is sane.
+    pub fr_enable: bool,       // true → enable the fast-return risk tracker
+    pub fr_window: f64,        // 3 → candles for a "fast" return to the pre-drop price
+    pub fr_consec_fail: f64,   // 2 → this many non-returns in a row flips risk to HIGH
+    pub mrc_max_width: f64,    // 0.10 → MRC bands trusted only when (UpBig-DownBig)/price < this
 }
 
 impl Default for Config {
@@ -313,6 +324,10 @@ impl Default for Config {
             fcscalp_pullback_frac: 0.5,  // pullback-to-mean first order = half the full position
             fcscalp_stairs_tp: true,     // stairs-zone scale-out TP on (ride the higher highs)
             fcscalp_reentry_gap: 0.003,  // re-entry must be ≥0.3% below the last exit (anti-churn)
+            fr_enable: true,        // fast-return risk tracker on
+            fr_window: 3.0,         // 3 candles for a "fast" return
+            fr_consec_fail: 2.0,    // 2 non-returns in a row → risk HIGH
+            mrc_max_width: 0.10,    // trust MRC bands only when channel width < 10% of price
         }
     }
 }
@@ -361,6 +376,10 @@ impl Config {
                 "fcscalp_pullback_frac" => self.fcscalp_pullback_frac = n,
                 "fcscalp_stairs_tp" => self.fcscalp_stairs_tp = n != 0.0,
                 "fcscalp_reentry_gap" => self.fcscalp_reentry_gap = n,
+                "fr_enable" => self.fr_enable = n != 0.0,
+                "fr_window" => self.fr_window = n,
+                "fr_consec_fail" => self.fr_consec_fail = n,
+                "mrc_max_width" => self.mrc_max_width = n,
                 _ => {}
             }
         }
@@ -381,7 +400,7 @@ impl State {
             0.0
         };
         format!(
-            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{}",
+            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{} | risk{} sharp{} cf{} fr{}/{} mv{}",
             self.mkt_mode,
             self.tf5.regime,
             self.win.pos_frac,
@@ -394,7 +413,34 @@ impl State {
                 "-"
             },
             if self.fc_deep_active { 1 } else { 0 },
+            if self.risk_high { "HI" } else { "lo" },
+            if self.sharp_active { 1 } else { 0 },
+            self.fr_consec_fail_n,
+            self.fr_returns,
+            self.fr_fails,
+            if self.mrc_valid { 1 } else { 0 },
         )
+    }
+
+    /// Which MRC band-zone a price sits in: 0 = below DownBig, 1 = [DownBig,DownOuter), … 9 = above UpBig.
+    /// = the count of band lines at-or-below the price. Used to count how many bands a candle crossed.
+    /// Bands are strictly ascending (db<do<…<ub); returns 0 if bands aren't set.
+    pub fn mrc_zone(&self, px: f64) -> i32 {
+        if !(self.mrc_ub > self.mrc_db) {
+            return 0;
+        }
+        let bands = [
+            self.mrc_db,
+            self.mrc_do,
+            self.mrc_ds,
+            self.mrc_di,
+            self.mrc_ml,
+            self.mrc_ui,
+            self.mrc_us,
+            self.mrc_uo,
+            self.mrc_ub,
+        ];
+        bands.iter().filter(|&&b| px >= b).count() as i32
     }
 }
 
@@ -553,6 +599,18 @@ pub struct State {
     // below fc_exit_px (anti-churn — stops the close-then-rebuy-at-same-price round-trip).
     pub fc_exit_px: f64,
     pub fc_exit_tick: u64,
+    // ── Fast-return risk tracker runtime ────────────────────────────────────────
+    pub mrc_valid: bool,        // MRC channel width sane → band-crossing logic is trustworthy
+    pub prev_close: f64,        // previous 1m candle close — the pre-drop reference for a sharp move
+    pub sharp_active: bool,     // a sharp-down is armed and we're awaiting its return / expiry
+    pub sharp_tick: u64,        // tick the sharp-down armed (for the fr_window timeout)
+    pub sharp_ref_px: f64,      // price to climb back to for a "return" (the pre-drop close)
+    pub sharp_bands: i32,       // how many MRC bands that sharp candle crossed down (for the note)
+    pub fr_consec_fail_n: u32,  // consecutive sharp-downs that did NOT return in time
+    pub fr_last_fail_px: f64,   // the breakdown level of the last non-return; price recovering above it clears risk
+    pub fr_returns: u32,        // lifetime fast-returns (monitoring)
+    pub fr_fails: u32,          // lifetime non-returns (monitoring)
+    pub risk_high: bool,        // derived gate: reversion is failing → stop entries, allow cuts
     // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
     // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
     pub fc_rung_px: [f64; 8],
@@ -702,6 +760,17 @@ impl Default for State {
             fc_open_px: 0.0,
             fc_exit_px: 0.0,
             fc_exit_tick: 0,
+            mrc_valid: false,
+            prev_close: 0.0,
+            sharp_active: false,
+            sharp_tick: 0,
+            sharp_ref_px: 0.0,
+            sharp_bands: 0,
+            fr_consec_fail_n: 0,
+            fr_last_fail_px: 0.0,
+            fr_returns: 0,
+            fr_fails: 0,
+            risk_high: false,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],
             fc_rung_n: 0,

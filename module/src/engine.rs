@@ -271,6 +271,10 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         update_cascade(&mut state.cas1, state.vol_bsg, c_high, c_low);
         advance_market_mode(state);
 
+        // Fast-return risk tracker: detect a SHARP down (>=2 MRC bands / below DownBig) on this close
+        // and arm the return watch. Bands are freshly applied above, so crossings are measured correctly.
+        detect_sharp_move(&input.indicators, state, input.price);
+
         // v0.56: a 1m candle just closed — reset the running high/low to the boundary price so the
         // trend-DCA anchor tracks the NEW forming candle (sug ticks extend it from here).
         state.cur_hi = input.price;
@@ -439,6 +443,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     // Fast candle: real-time price delta detection on every SugInfo tick
     update_fast_candles(state, input.price);
+
+    // Fast-return risk tracker: resolve any armed sharp-down (did price climb back in time?) and refresh
+    // the risk gate. Runs every tick so a fast return is caught promptly and risk is fresh for the
+    // entry/exit decisions below.
+    update_fast_return(input.price, state);
 
     // V-movement: per-line crossing detection and V power/exhaustion tracking
     update_v_lines(state, input.price);
@@ -670,6 +679,33 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     state.fc_deep_active = state.fc_deep_tick > 0 && !deep_hold_expired;
     let deep_hold_active = state.fc_deep_active;
 
+    // Fast-return suppression: a SHARP down is armed and risk is still LOW (reversion hasn't failed) →
+    // DON'T sell into the wick; hold and let the resting TP catch the fast return. Lifts the moment the
+    // return resolves (TP fills the win) OR risk flips HIGH (consec non-returns = a real decline → cut).
+    let suppress_sell = state.cfg.fr_enable && state.sharp_active && !state.risk_high;
+
+    // Fast-return risk HIGH = consec sharp-downs did NOT return = a real decline, not a wick. Exit the
+    // FC bag now (and entries are blocked while HIGH). This is the empirical "the thesis broke" cut —
+    // it only fires after fr_consec_fail confirmed non-returns, never on a single heuristic flicker.
+    if state.cfg.fr_enable
+        && state.risk_high
+        && fc_owner
+        && has_long
+        && long_n > 1.0
+        && !close_positions
+            .iter()
+            .any(|c| matches!(c.direction, Direction::Long))
+    {
+        close_positions.push(close(
+            Direction::Long,
+            &format!(
+                "fr-risk-exit | {} sharp-downs in a row didn't return -> real decline, not a wick | {}",
+                state.fr_consec_fail_n,
+                state.ctx(price, total_pnl)
+            ),
+        ));
+    }
+
     // Hold window elapsed without the bounce → the "if not, stop": cut now.
     if fc_owner && has_long && long_n > 1.0 && deep_hold_expired {
         close_positions.push(close(
@@ -698,6 +734,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         && price <= state.mrc_db
         && !fc_would_reopen
         && !deep_hold_active
+        && !suppress_sell
         && !close_positions
             .iter()
             .any(|c| matches!(c.direction, Direction::Long))
@@ -724,7 +761,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         } else {
             0.0
         };
-        let pumped = state.win.pos_frac > 0.7; // bounced into the top of the window
+        // Only sell into a bounce that's actually GREEN — never market-cut at break-even/loss here
+        // (that was the SPCX bleed: open→instant close at zero profit). Losers are left to the TP /
+        // fast-return hold / margin-SL backstop.
+        let pumped = state.win.pos_frac > 0.7 && total_pnl > 0.0; // green bounce into the window top
         let too_wide = win_pct > 0.04; // window too big to hold against the trend
         if (pumped || too_wide)
             && !deep_hold_active
@@ -811,6 +851,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             && long_n > 1.0
             && !long_sweep_hold
             && !trandm_hold_long
+            && !suppress_sell
             && !close_positions
                 .iter()
                 .any(|c| matches!(c.direction, Direction::Long))
@@ -1142,10 +1183,16 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 (
                     DBG_CORE,
                     format!(
-                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={}",
+                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} risk{} sh{}b{} cf{} fr{}/{} mv{}",
                         state.ticks, price, state.mkt_mode, long_n, total_pnl,
                         -(margin * state.cfg.sl_margin_pct),
                         margin - long_n / lev + total_pnl, ord_count,
+                        if state.risk_high { "HI" } else { "lo" },
+                        if state.sharp_active { 1 } else { 0 },
+                        state.sharp_bands,
+                        state.fr_consec_fail_n,
+                        state.fr_returns, state.fr_fails,
+                        if state.mrc_valid { 1 } else { 0 },
                     ),
                 ),
                 (

@@ -124,6 +124,73 @@ pub(crate) fn update_zigzag(ind: &Indicators, state: &mut State) {
     }
 }
 
+/// Detect a SHARP down candle on each 1m close and arm the fast-return tracker. SHARP = a candle that
+/// crosses >=2 MRC bands downward, OR breaches below DownBig (out of the channel). The move is measured
+/// from the PREVIOUS candle's close (the pre-drop reference) down to THIS candle's low, counting how many
+/// band lines lie between them with the current bands. We only trust band-crossings when the MRC channel
+/// width is sane (mrc_valid) — degenerate bands on a thin-history symbol (e.g. SPCX at ~100% width) make
+/// crossings meaningless. NOTE: there is no indicator for band-crossing — it is computed here from scratch.
+pub(crate) fn detect_sharp_move(ind: &Indicators, state: &mut State, price: f64) {
+    // Band-validity gate: channel set, ascending, and not absurdly wide vs price.
+    let chan = state.mrc_ub - state.mrc_db;
+    state.mrc_valid = chan > 0.0 && price > 0.0 && (chan / price) < state.cfg.mrc_max_width;
+
+    let low = read_float(ind, TF, 0, CANDLE_IND, "Low").unwrap_or(0.0);
+    let start = state.prev_close; // prior candle close = the pre-drop reference
+
+    if state.cfg.fr_enable && state.mrc_valid && !state.sharp_active && start > 0.0 && low > 0.0 {
+        let z_start = state.mrc_zone(start);
+        let z_low = state.mrc_zone(low);
+        let crossed = z_start - z_low; // > 0 = moved DOWN this many band lines this candle
+        // SHARP = crossed >=2 bands, OR started inside the channel and the low pierced below DownBig.
+        let breached_db = z_start >= 1 && z_low == 0;
+        if crossed >= 2 || breached_db {
+            state.sharp_active = true;
+            state.sharp_tick = state.ticks;
+            state.sharp_ref_px = start; // a "return" = price climbing back to this pre-drop level
+            state.sharp_bands = crossed.max(1);
+        }
+    }
+
+    // Roll the reference forward for the next candle.
+    if price > 0.0 {
+        state.prev_close = price;
+    }
+}
+
+/// Resolve an armed sharp-down on each tick: a FAST RETURN = live price climbs back to the pre-drop
+/// reference within fr_window candles (the wick reverted — thesis held, reset the fail streak). If the
+/// window elapses with no return, it was a real decline (a non-return). fr_consec_fail_n non-returns in a
+/// row → risk HIGH (stop new entries + allow the cuts). risk LOW → suppress the cuts, hold for the TP.
+pub(crate) fn update_fast_return(price: f64, state: &mut State) {
+    if !state.cfg.fr_enable {
+        state.risk_high = false;
+        state.sharp_active = false;
+        return;
+    }
+    if state.sharp_active {
+        let window_ticks = (state.cfg.fr_window.max(1.0) * TICKS_PER_CANDLE as f64) as u64;
+        if price > 0.0 && price >= state.sharp_ref_px {
+            state.fr_returns = state.fr_returns.saturating_add(1);
+            state.fr_consec_fail_n = 0; // a return clears the streak → back to risk LOW
+            state.fr_last_fail_px = 0.0;
+            state.sharp_active = false;
+        } else if state.ticks.saturating_sub(state.sharp_tick) > window_ticks {
+            state.fr_fails = state.fr_fails.saturating_add(1);
+            state.fr_consec_fail_n = state.fr_consec_fail_n.saturating_add(1);
+            state.fr_last_fail_px = state.sharp_ref_px; // breakdown level to recover above
+            state.sharp_active = false;
+        }
+    }
+    // Recovery reset: price climbed back above the level where the dips were failing → the decline is
+    // over, even if no new sharp-down has armed (calm recovery). Clears the streak → risk LOW.
+    if state.fr_last_fail_px > 0.0 && price >= state.fr_last_fail_px {
+        state.fr_consec_fail_n = 0;
+        state.fr_last_fail_px = 0.0;
+    }
+    state.risk_high = state.fr_consec_fail_n >= (state.cfg.fr_consec_fail.max(1.0) as u32);
+}
+
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {
     let gain = read_float(ind, TF, 0, "volume_50", "Gain").unwrap_or(0.0);
     let gain_min = read_float(ind, TF, 0, "volume_50", "GainMin").unwrap_or(-1.0);
