@@ -191,6 +191,59 @@ pub(crate) fn update_fast_return(price: f64, state: &mut State) {
     state.risk_high = state.fr_consec_fail_n >= (state.cfg.fr_consec_fail.max(1.0) as u32);
 }
 
+const VOL_HIST_N: usize = 10;
+
+/// Classify the volatility REGIME on each 1m close (also Phase-2's stage detector). Two dimensions:
+///   MAGNITUDE  = average per-candle move % over the last N closes.
+///   DIRECTION  = efficiency ratio = |net move| / total path (≈1 one-way trend, ≈0 choppy flip).
+/// Regimes: Quiet (low magnitude) · Chop (high magnitude, flipping) · TrendUp · TrendDown. Quiet & Chop
+/// are scalp-friendly (dips revert) → HOLD for the TP; only TrendDown is a real one-way fall → allow cuts.
+pub(crate) fn update_vol_regime(state: &mut State, price: f64) {
+    if price <= 0.0 {
+        return;
+    }
+    state.close_hist[state.close_hist_pos] = price;
+    state.close_hist_pos = (state.close_hist_pos + 1) % VOL_HIST_N;
+    if state.close_hist_len < VOL_HIST_N {
+        state.close_hist_len += 1;
+    }
+    let n = state.close_hist_len;
+    if n < 3 {
+        state.vol_regime = 0; // not enough history → treat as Quiet
+        return;
+    }
+    // Walk the ring oldest→newest; sum the path and capture first/last.
+    let mut path = 0.0;
+    let mut prev = 0.0;
+    let mut first = 0.0;
+    for i in 0..n {
+        let idx = (state.close_hist_pos + VOL_HIST_N - n + i) % VOL_HIST_N;
+        let c = state.close_hist[idx];
+        if i == 0 {
+            first = c;
+        } else {
+            path += (c - prev).abs();
+        }
+        prev = c;
+    }
+    let last = prev;
+    let net = (last - first).abs();
+    let avg_move = path / (n as f64 - 1.0);
+    state.vol_pct = avg_move / price * 100.0; // % per candle
+    state.vol_er = if path > 0.0 { net / path } else { 0.0 };
+    state.vol_regime = if state.vol_pct < state.cfg.vol_lowvol_pct {
+        0 // Quiet — too slow for a real move
+    } else if state.vol_er >= state.cfg.vol_er_trend {
+        if last < first {
+            -2 // one-way TrendDown
+        } else {
+            2 // one-way TrendUp
+        }
+    } else {
+        1 // Chop — high magnitude but mean-reverting (good scalp regime)
+    };
+}
+
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {
     let gain = read_float(ind, TF, 0, "volume_50", "Gain").unwrap_or(0.0);
     let gain_min = read_float(ind, TF, 0, "volume_50", "GainMin").unwrap_or(-1.0);

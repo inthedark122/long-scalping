@@ -279,6 +279,15 @@ pub struct Config {
     pub fr_window: f64,        // 3 → candles for a "fast" return to the pre-drop price
     pub fr_consec_fail: f64,   // 2 → this many non-returns in a row flips risk to HIGH
     pub mrc_max_width: f64,    // 0.10 → MRC bands trusted only when (UpBig-DownBig)/price < this
+    // ── Volatility / move-probability gate (0.80) ───────────────────────────────
+    // Don't fire the discretionary cuts when a real fall isn't plausible. Two dimensions: MAGNITUDE
+    // (avg per-candle move %) and DIRECTIONALITY (efficiency ratio = |net move|/total path over a window;
+    // ~1 = one-way trend, ~0 = choppy flip). Regimes: Quiet (low mag) / Chop (high mag, flips) / TrendUp /
+    // TrendDown. HOLD for the TP in Quiet+Chop (slow or mean-reverting → dips revert); allow the cuts only
+    // in TrendDown (a real one-way fall), where dip-entries also pause (falling knife).
+    pub vol_gate_enable: bool, // true → enable the volatility regime gate
+    pub vol_lowvol_pct: f64,   // 0.15 → avg per-candle move below this % = Quiet (no real move expected)
+    pub vol_er_trend: f64,     // 0.5 → efficiency ratio at/above this = one-way trend (else Chop)
 }
 
 impl Default for Config {
@@ -328,6 +337,9 @@ impl Default for Config {
             fr_window: 3.0,         // 3 candles for a "fast" return
             fr_consec_fail: 2.0,    // 2 non-returns in a row → risk HIGH
             mrc_max_width: 0.10,    // trust MRC bands only when channel width < 10% of price
+            vol_gate_enable: true,  // volatility regime gate on
+            vol_lowvol_pct: 0.15,   // avg per-candle move < 0.15% = Quiet
+            vol_er_trend: 0.5,      // efficiency ratio >= 0.5 = one-way trend (else Chop)
         }
     }
 }
@@ -380,6 +392,9 @@ impl Config {
                 "fr_window" => self.fr_window = n,
                 "fr_consec_fail" => self.fr_consec_fail = n,
                 "mrc_max_width" => self.mrc_max_width = n,
+                "vol_gate_enable" => self.vol_gate_enable = n != 0.0,
+                "vol_lowvol_pct" => self.vol_lowvol_pct = n,
+                "vol_er_trend" => self.vol_er_trend = n,
                 _ => {}
             }
         }
@@ -400,7 +415,7 @@ impl State {
             0.0
         };
         format!(
-            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{} | risk{} sharp{} cf{} fr{}/{} mv{}",
+            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{} | risk{} sharp{} cf{} fr{}/{} mv{} vol{}e{:.2}",
             self.mkt_mode,
             self.tf5.regime,
             self.win.pos_frac,
@@ -419,6 +434,13 @@ impl State {
             self.fr_returns,
             self.fr_fails,
             if self.mrc_valid { 1 } else { 0 },
+            match self.vol_regime {
+                -2 => "D",
+                2 => "U",
+                1 => "C",
+                _ => "Q",
+            },
+            self.vol_er,
         )
     }
 
@@ -611,6 +633,13 @@ pub struct State {
     pub fr_returns: u32,        // lifetime fast-returns (monitoring)
     pub fr_fails: u32,          // lifetime non-returns (monitoring)
     pub risk_high: bool,        // derived gate: reversion is failing → stop entries, allow cuts
+    // ── Volatility regime runtime (0.80) — also Phase-2's stage detector ─────────
+    pub close_hist: [f64; 10],  // recent 1m closes for the efficiency-ratio / vol-regime calc
+    pub close_hist_pos: usize,
+    pub close_hist_len: usize,
+    pub vol_pct: f64,           // avg per-candle move % (magnitude)
+    pub vol_er: f64,            // efficiency ratio 0..1 (1 = one-way trend, 0 = choppy flip)
+    pub vol_regime: i8,         // 0=Quiet  1=Chop  2=TrendUp  -2=TrendDown
     // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
     // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
     pub fc_rung_px: [f64; 8],
@@ -771,6 +800,12 @@ impl Default for State {
             fr_returns: 0,
             fr_fails: 0,
             risk_high: false,
+            close_hist: [0.0; 10],
+            close_hist_pos: 0,
+            close_hist_len: 0,
+            vol_pct: 0.0,
+            vol_er: 0.0,
+            vol_regime: 0,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],
             fc_rung_n: 0,
