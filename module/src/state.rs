@@ -621,6 +621,9 @@ pub struct State {
     // below fc_exit_px (anti-churn — stops the close-then-rebuy-at-same-price round-trip).
     pub fc_exit_px: f64,
     pub fc_exit_tick: u64,
+    // Tick a Created/unfilled long was first seen — robust freeze backstop: force-cancel it if it lingers
+    // past FC_CREATED_MAX ticks regardless of fc_open_px (which can be stale and miss the orphan-cancel).
+    pub fc_created_tick: u64,
     // ── Fast-return risk tracker runtime ────────────────────────────────────────
     pub mrc_valid: bool,        // MRC channel width sane → band-crossing logic is trustworthy
     pub prev_close: f64,        // previous 1m candle close — the pre-drop reference for a sharp move
@@ -791,6 +794,7 @@ impl Default for State {
             fc_open_px: 0.0,
             fc_exit_px: 0.0,
             fc_exit_tick: 0,
+            fc_created_tick: 0,
             mrc_valid: false,
             prev_close: 0.0,
             sharp_active: false,

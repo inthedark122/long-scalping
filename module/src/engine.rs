@@ -1068,6 +1068,36 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         }
     }
 
+    // ── Robust freeze backstop (0.84) ───────────────────────────────────────────
+    // The orphan-cancel above relies on fc_open_px being set/correct — which can be 0/stale and MISS a
+    // stranded open, leaving a Created/unfilled long latched forever (verified SLX 24660: orphaned but
+    // never cancelled, 22min). A Created long blocks ALL entries = freeze. So independently: any Created
+    // long (has_long && long_qty<=0) that lingers past FC_CREATED_MAX ticks is force-cancelled to re-arm.
+    const FC_CREATED_MAX: u64 = 45; // ~3 candles a Created may rest before forced re-arm
+    if has_long && long_qty <= 0.0 {
+        if state.fc_created_tick == 0 {
+            state.fc_created_tick = state.ticks;
+        } else if state.ticks.saturating_sub(state.fc_created_tick) > FC_CREATED_MAX
+            && !close_positions
+                .iter()
+                .any(|c| matches!(c.direction, Direction::Long))
+        {
+            close_positions.push(close(
+                Direction::Long,
+                &format!(
+                    "fcs-rearm | Created stranded {}t>{}t, force re-arm | {}",
+                    state.ticks.saturating_sub(state.fc_created_tick),
+                    FC_CREATED_MAX,
+                    state.ctx(price, 0.0)
+                ),
+            ));
+            state.fc_created_tick = 0;
+            state.fc_open_px = 0.0;
+        }
+    } else {
+        state.fc_created_tick = 0;
+    }
+
     let tick = input.symbol_info.price_tick_size.max(f64::EPSILON);
 
     let mut place_orders = if state.has_mrc {
