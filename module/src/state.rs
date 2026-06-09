@@ -640,6 +640,8 @@ pub struct State {
     pub vol_pct: f64,           // avg per-candle move % (magnitude)
     pub vol_er: f64,            // efficiency ratio 0..1 (1 = one-way trend, 0 = choppy flip)
     pub vol_regime: i8,         // 0=Quiet  1=Chop  2=TrendUp  -2=TrendDown
+    pub fc_phase: i8,           // Phase-2 stage: -1=DownStairs  0=Normal  1=UpStairs (from vol_regime)
+    pub fc_stair_placed: bool,  // UpStairs runner ladder emitted & resting (emit-once, like fc_grid_placed)
     // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
     // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
     pub fc_rung_px: [f64; 8],
@@ -806,6 +808,8 @@ impl Default for State {
             vol_pct: 0.0,
             vol_er: 0.0,
             vol_regime: 0,
+            fc_phase: 0,
+            fc_stair_placed: false,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],
             fc_rung_n: 0,

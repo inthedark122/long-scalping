@@ -928,6 +928,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.fc_grid_px = 0.0;
         state.fc_grid_floor = 0.0;
         state.fc_grid_placed = false;
+        state.fc_stair_placed = false; // flat → next UpStairs position re-plans its runner ladder
     } else {
         let win_shifted = state.fc_grid_floor > 0.0
             && (state.win.floor - state.fc_grid_floor).abs() > price * state.cfg.fcscalp_rung_gap;
@@ -947,10 +948,16 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             state.fc_grid_px = (anchor - step).max(0.0);
             state.fc_grid_floor = state.win.floor;
             state.fc_grid_placed = false; // new rung level → allow one emission of it
+            state.fc_stair_placed = false; // position grew → re-plan the runner ladder for the new peak
         }
     }
     state.fc_grid_dirty = false;
     state.fc_tp_filled = false;
+    // Leaving UpStairs clears the runner-ladder guard so a later UpStairs re-plans+re-emits it (the
+    // per-rung tidy cancels the stairs while we're in Normal, so the guard must not stay latched).
+    if state.vol_regime != 2 {
+        state.fc_stair_placed = false;
+    }
 
     // ── Sug-tick organic entry (Priority Timing 0.1) ────────────────────────
     // compute_auto_open also runs on 1m candle closes; running it here lets entries
@@ -1064,6 +1071,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // (one resting order per rung; recompute on the next fill/restart re-opens emission).
     if place_orders.iter().any(|o| o.mark.starts_with("fcs-g")) {
         state.fc_grid_placed = true;
+    }
+    // UpStairs runner ladder emitted → mark placed so it isn't re-emitted (which re-thirds & sweeps).
+    if place_orders.iter().any(|o| o.mark.starts_with("fcs-tp:s")) {
+        state.fc_stair_placed = true;
     }
     // Keep ONE coherent FC TP set resting. The TP set flips per tick (deep breakeven · stairs scale-out
     // s1/s2/s3 · per-rung r0..) but standing orders persist by mark — so the OLD set lingers and the two
@@ -1195,7 +1206,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 (
                     DBG_CORE,
                     format!(
-                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} risk{} sh{}b{} cf{} fr{}/{} mv{} vol{}e{:.2}",
+                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} risk{} sh{}b{} cf{} fr{}/{} mv{} vol{}e{:.2} ph{}",
                         state.ticks, price, state.mkt_mode, long_n, total_pnl,
                         -(margin * state.cfg.sl_margin_pct),
                         margin - long_n / lev + total_pnl, ord_count,
@@ -1207,6 +1218,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         if state.mrc_valid { 1 } else { 0 },
                         match state.vol_regime { -2 => "D", 2 => "U", 1 => "C", _ => "Q" },
                         state.vol_er,
+                        match state.fc_phase { -1 => "D", 1 => "U", _ => "N" },
                     ),
                 ),
                 (

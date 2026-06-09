@@ -242,6 +242,12 @@ pub(crate) fn update_vol_regime(state: &mut State, price: f64) {
     } else {
         1 // Chop — high magnitude but mean-reverting (good scalp regime)
     };
+    // Phase-2 stage from the regime: one-way down = DownStairs, one-way up = UpStairs, else Normal.
+    state.fc_phase = match state.vol_regime {
+        -2 => -1,
+        2 => 1,
+        _ => 0,
+    };
 }
 
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {

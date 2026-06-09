@@ -254,7 +254,12 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let zone_momentum = have_mean && above_mean && uptrend_strong;
     let zone_range = have_mean && !above_mean && state.mkt_mode == 1 && !downish;
     // Gate off, or no mean yet → legacy behaviour (scalp the safe window regardless of zone).
-    let scalp_ok = !state.cfg.fcscalp_zone_gate || !have_mean || zone_momentum || zone_range;
+    // UpStairs (a confirmed one-way TrendUp) is also a scalp-OK zone — we want aboard the uptrend.
+    let scalp_ok = !state.cfg.fcscalp_zone_gate
+        || !have_mean
+        || zone_momentum
+        || zone_range
+        || state.vol_regime == 2;
 
     // No-worse-price re-entry guard (0.77 anti-churn): for REENTRY_WINDOW ticks after an FC long exit,
     // block ANY re-open unless price is fcscalp_reentry_gap BELOW the exit price. The time cooldown alone
@@ -323,7 +328,15 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && open_positions.is_empty()
         && scalp_ok
         && state.win.safe
-        && state.win.pos_frac < state.cfg.fcscalp_buy_zone
+        && state.win.pos_frac
+            < if state.vol_regime == 2 {
+                // UpStairs (Phase 2): catch a SHALLOW pullback in the upper window too (the entry is
+                // still a maker limit BELOW price, so it only fills on a dip — not a top-chase), so we
+                // actually get aboard the uptrend instead of sitting flat through it.
+                state.cfg.fcscalp_buy_zone.max(0.7)
+            } else {
+                state.cfg.fcscalp_buy_zone
+            }
     {
         let min_n = input
             .symbol_info
@@ -680,55 +693,50 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                         ));
                     }
                 }
-                // ── Stairs-zone scale-out: in the Momentum/stairs zone (above mean + uptrend) we
-                //    EXPECT higher highs, so split the position 1/3·1/3·1/3 — a quick scalp TP, the
-                //    current high (window ceiling = the override line), and a RUNNER at the expected
-                //    NEW high (zz_sell, capped at UpBig). Recomputed each tick: if the stairs read
-                //    FADES (below mean / mkt_mode flips / 5m down) it drops to the per-rung small TPs
-                //    below, so a far runner can't strand into a reversal.
-                else if {
-                    let above_mean_t = state.mrc_ml > 0.0 && price >= state.mrc_ml;
-                    let cas5_sz_t = state.cas5.cas_high - state.cas5.cas_low;
-                    let downish_t = state.mkt_mode == -2
-                        || state.tf5.regime == -2
-                        || (state.cas5.cas_dir == -1
-                            && state.cas5.avg_size > 0.0
-                            && cas5_sz_t > state.cas5.avg_size * 1.3);
-                    let stairs_zone = above_mean_t
-                        && (state.mkt_mode == 2 || state.tf5.regime == 2)
-                        && !downish_t;
-                    let min_n_t = input
-                        .symbol_info
-                        .min_notional
-                        .unwrap_or(0.0)
-                        .max(state.cfg.min_order)
-                        .max(1.0);
-                    state.cfg.fcscalp_stairs_tp && stairs_zone && long_n >= min_n_t * 3.0 && p.qty > 0.0
-                } {
-                    // Ascending ladder, all strictly above price.
-                    let t1 = (avg * (1.0 + tp_dist)).max(price * 1.001); // quick scalp
-                    let t2 = state.win.ceiling.max(t1 * 1.001); // current high (override line)
-                    let mut t3 = if state.zz_sell > 0.0 {
-                        state.zz_sell
-                    } else {
-                        state.mrc_ub
-                    };
-                    if state.mrc_ub > 0.0 {
-                        t3 = t3.min(state.mrc_ub); // cap at the channel top (UpBig)
-                    }
-                    t3 = t3.max(t2 * 1.001); // expected NEW high (runner)
-                    let q3 = p.qty / 3.0;
-                    let tiers = [(t1, q3, "s1"), (t2, q3, "s2"), (t3, p.qty - 2.0 * q3, "s3")];
-                    for (px, q, mark) in tiers.iter() {
-                        let amt = q * px; // notional for this tier's qty
-                        if *q > 0.0 && amt > 1.0 {
-                            place_orders.push(tp_order_with_band(
-                                Direction::Long,
-                                amt,
-                                *px,
-                                "fcs-tp",
-                                mark,
-                            ));
+                // ── UpStairs runner (Phase 2): in a one-way TrendUp (vol_regime==2) we EXPECT higher
+                //    highs, so scale out 1/3·1/3·1/3 — a quick partial (s1), the current high (s2 =
+                //    window ceiling), and a RUNNER (s3) at the expected NEW high (zz_sell, capped UpBig).
+                //    FROZEN, peak-sized, emit-ONCE (mirrors the grid): planned once from the current qty
+                //    so s1 takes only its third and s3 RIDES — never re-thirds the shrinking qty (the bug
+                //    that made s1 sweep the whole position). The engine sets fc_stair_placed after the
+                //    emit and clears it on a fill/flat so the ladder re-plans for the new peak.
+                else if state.cfg.fcscalp_stairs_tp
+                    && state.vol_regime == 2
+                    && p.qty > 0.0
+                    && long_n
+                        >= input
+                            .symbol_info
+                            .min_notional
+                            .unwrap_or(0.0)
+                            .max(state.cfg.min_order)
+                            .max(1.0)
+                            * 3.0
+                {
+                    if !state.fc_stair_placed {
+                        let t1 = (avg * (1.0 + tp_dist)).max(price * 1.001); // quick partial
+                        let t2 = state.win.ceiling.max(t1 * 1.001); // current high
+                        let mut t3 = if state.zz_sell > 0.0 {
+                            state.zz_sell
+                        } else {
+                            state.mrc_ub
+                        };
+                        if state.mrc_ub > 0.0 {
+                            t3 = t3.min(state.mrc_ub); // cap at the channel top (UpBig)
+                        }
+                        t3 = t3.max(t2 * 1.001); // runner: expected NEW high
+                        let q3 = p.qty / 3.0;
+                        let tiers = [(t1, q3, "s1"), (t2, q3, "s2"), (t3, p.qty - 2.0 * q3, "s3")];
+                        for (px, q, mark) in tiers.iter() {
+                            let amt = q * px; // notional for this tier's qty
+                            if *q > 0.0 && amt > 1.0 {
+                                place_orders.push(tp_order_with_band(
+                                    Direction::Long,
+                                    amt,
+                                    *px,
+                                    "fcs-tp",
+                                    mark,
+                                ));
+                            }
                         }
                     }
                 }
