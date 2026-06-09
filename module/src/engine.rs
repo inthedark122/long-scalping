@@ -1016,7 +1016,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     // the current window (the entry analogue of the grid "restart on window change"). The trail only
     // moves DOWN (never chase up within a window), so it can't self-correct this; we must cancel.
     let orphaned = state.win.floor > 0.0 && state.fc_open_px < state.win.floor;
-    if !has_long && state.fc_open_px > 0.0 {
+    // Gate on FILLED qty, NOT position-existence: a Created/unfilled open (qty 0) still makes has_long
+    // TRUE (positions.long.is_some()), which used to skip this whole block → the stranded open was never
+    // trailed OR cancelled = the freeze (verified ALLO 24650 latched 'Created' 48min on 0.82). Using
+    // long_qty (the FILLED amount) makes a pending Created open eligible for trail/orphan-cancel again.
+    if long_qty <= 0.0 && state.fc_open_px > 0.0 {
         if fc_armable && !orphaned {
             // Trail target from the 1m window/cascade (same as the entry): a small dip,
             // capped at the buy-zone line so it never trails up into the top. OB opt-in.
