@@ -8,6 +8,10 @@ mod movement;
 mod orders;
 mod sizing;
 mod state;
+mod trend;
+mod trend_efficiency;
+mod trend_mtf;
+mod trend_structure;
 mod vlines;
 mod window;
 

@@ -51,12 +51,10 @@ pub(crate) fn read_smc_dir(ind: &Indicators) -> i8 {
     }
 }
 
-/// Candles within which a fresh new low/high keeps us in a stair (else the stair has stalled → Normal).
-const STAIR_FRESH: u32 = 3;
-
-/// Update the SMC local low/high (the "stairs" anchor) and the 3-stage FC regime. Call on each 1m
-/// close. SMC LowPrice/HighPrice are the running local extremes — they step to each new low/high the
-/// moment it prints, then hold when the move stalls. fc_stage: -1 DownStairs · 0 Normal · +1 UpStairs.
+/// Update the SMC local low/high (the swing-structure anchor). Call on each 1m close. SMC
+/// LowPrice/HighPrice are the running local extremes — they step to each new low/high the moment it
+/// prints, then hold when the move stalls. The swing-structure TREND is derived from the resulting
+/// smc_low_age / smc_high_age in trend_structure::structure_dir.
 pub(crate) fn update_smc_levels(ind: &Indicators, state: &mut State) {
     if let Some(low) = read_float(ind, TF, 0, SMC_IND, "LowPrice") {
         if low > 0.0 {
@@ -78,15 +76,6 @@ pub(crate) fn update_smc_levels(ind: &Indicators, state: &mut State) {
             state.smc_high = high;
         }
     }
-    // DownStairs while a new low printed recently (and more recently than a new high); UpStairs the
-    // mirror; else the stair has stalled → Normal.
-    state.fc_stage = if state.smc_low_age <= STAIR_FRESH && state.smc_low_age <= state.smc_high_age {
-        -1
-    } else if state.smc_high_age <= STAIR_FRESH && state.smc_high_age < state.smc_low_age {
-        1
-    } else {
-        0
-    };
 }
 
 /// Read the 1m ZigZagTrend pivots and detect the LINE BREAK (call on each 1m close only — the
@@ -189,65 +178,6 @@ pub(crate) fn update_fast_return(price: f64, state: &mut State) {
         state.fr_last_fail_px = 0.0;
     }
     state.risk_high = state.fr_consec_fail_n >= (state.cfg.fr_consec_fail.max(1.0) as u32);
-}
-
-const VOL_HIST_N: usize = 10;
-
-/// Classify the volatility REGIME on each 1m close (also Phase-2's stage detector). Two dimensions:
-///   MAGNITUDE  = average per-candle move % over the last N closes.
-///   DIRECTION  = efficiency ratio = |net move| / total path (≈1 one-way trend, ≈0 choppy flip).
-/// Regimes: Quiet (low magnitude) · Chop (high magnitude, flipping) · TrendUp · TrendDown. Quiet & Chop
-/// are scalp-friendly (dips revert) → HOLD for the TP; only TrendDown is a real one-way fall → allow cuts.
-pub(crate) fn update_vol_regime(state: &mut State, price: f64) {
-    if price <= 0.0 {
-        return;
-    }
-    state.close_hist[state.close_hist_pos] = price;
-    state.close_hist_pos = (state.close_hist_pos + 1) % VOL_HIST_N;
-    if state.close_hist_len < VOL_HIST_N {
-        state.close_hist_len += 1;
-    }
-    let n = state.close_hist_len;
-    if n < 3 {
-        state.vol_regime = 0; // not enough history → treat as Quiet
-        return;
-    }
-    // Walk the ring oldest→newest; sum the path and capture first/last.
-    let mut path = 0.0;
-    let mut prev = 0.0;
-    let mut first = 0.0;
-    for i in 0..n {
-        let idx = (state.close_hist_pos + VOL_HIST_N - n + i) % VOL_HIST_N;
-        let c = state.close_hist[idx];
-        if i == 0 {
-            first = c;
-        } else {
-            path += (c - prev).abs();
-        }
-        prev = c;
-    }
-    let last = prev;
-    let net = (last - first).abs();
-    let avg_move = path / (n as f64 - 1.0);
-    state.vol_pct = avg_move / price * 100.0; // % per candle
-    state.vol_er = if path > 0.0 { net / path } else { 0.0 };
-    state.vol_regime = if state.vol_pct < state.cfg.vol_lowvol_pct {
-        0 // Quiet — too slow for a real move
-    } else if state.vol_er >= state.cfg.vol_er_trend {
-        if last < first {
-            -2 // one-way TrendDown
-        } else {
-            2 // one-way TrendUp
-        }
-    } else {
-        1 // Chop — high magnitude but mean-reverting (good scalp regime)
-    };
-    // Phase-2 stage from the regime: one-way down = DownStairs, one-way up = UpStairs, else Normal.
-    state.fc_phase = match state.vol_regime {
-        -2 => -1,
-        2 => 1,
-        _ => 0,
-    };
 }
 
 pub(crate) fn update_volume_spike(ind: &Indicators, state: &mut State) {

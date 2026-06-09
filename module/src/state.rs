@@ -504,13 +504,12 @@ pub struct State {
     pub smc_dir: i8,
     pub smc_dir_prev: i8,
     // SMC local swing low/high (the running local extreme — verified to track promptly, beats DP/ZZ).
-    // smc_low_age / smc_high_age = candles since each last printed a NEW extreme. fc_stage = the 3-stage
-    // FC regime from the low/high trend: -1 DownStairs · 0 Normal · +1 UpStairs.
+    // smc_low_age / smc_high_age = candles since each last printed a NEW extreme; the swing-structure
+    // trend is derived from these in trend_structure::structure_dir.
     pub smc_low: f64,
     pub smc_high: f64,
     pub smc_low_age: u32,
     pub smc_high_age: u32,
-    pub fc_stage: i8,
     // Interest line: the last MRC cross level broken — high-priority entry zone
     pub interest_cross: i8,  // which cross level was just broken through
     pub interest_dir: i8,    // +1=bullish break (add longs), -1=bearish (add shorts), 0=none
@@ -642,8 +641,7 @@ pub struct State {
     pub close_hist_len: usize,
     pub vol_pct: f64,           // avg per-candle move % (magnitude)
     pub vol_er: f64,            // efficiency ratio 0..1 (1 = one-way trend, 0 = choppy flip)
-    pub vol_regime: i8,         // 0=Quiet  1=Chop  2=TrendUp  -2=TrendDown
-    pub fc_phase: i8,           // Phase-2 stage: -1=DownStairs  0=Normal  1=UpStairs (from vol_regime)
+    pub vol_regime: i8,         // 0=Quiet  1=Chop  2=TrendUp  -2=TrendDown (efficiency regime)
     pub fc_stair_placed: bool,  // UpStairs runner ladder emitted & resting (emit-once, like fc_grid_placed)
     // Per-rung tracking for PER-ORDER FC exits: each fill records its price + qty so each
     // rung gets its own TP at rung_price × (1 + tp_dist). Reset when flat.
@@ -736,7 +734,6 @@ impl Default for State {
             smc_high: 0.0,
             smc_low_age: 9999,
             smc_high_age: 9999,
-            fc_stage: 0,
             interest_cross: 0,
             interest_dir: 0,
             interest_tests: 0,
@@ -812,7 +809,6 @@ impl Default for State {
             vol_pct: 0.0,
             vol_er: 0.0,
             vol_regime: 0,
-            fc_phase: 0,
             fc_stair_placed: false,
             fc_rung_px: [0.0; 8],
             fc_rung_qty: [0.0; 8],

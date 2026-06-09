@@ -5,6 +5,7 @@ use crate::consts::*;
 use crate::interest::compute_entry_scale;
 use crate::orders::{limit_open, limit_order, market_open, tp_order_with_band};
 use crate::state::State;
+use crate::trend::compute_trend;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
 pub(crate) fn risk_sized_notional(max_amount: f64, leverage: f64, risk_pct: f64, stop_pct: f64) -> f64 {
@@ -241,25 +242,24 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && state.cas5.avg_size > 0.0
         && cas5_sz > state.cas5.avg_size * 1.3;
     let downish = state.mkt_mode == -2 || state.tf5.regime == -2 || cas5_down;
-    let uptrend = state.mkt_mode == 2 || state.tf5.regime == 2;
+    // Unified trend signal (trend.rs): combines the multi-TF, efficiency-ratio and SMC-structure
+    // calculators by majority vote. Replaces the old mkt_mode/tf5-only `uptrend`/`uptrend_strong` AND
+    // the separate `vol_regime==2` checks, so "up/down" means ONE thing across the zone gate + UpStairs.
+    let trend = compute_trend(state);
     let came_from_above = state.cas1.cas_high > mean; // the 1m window reached above the mean
     let zone_pullback =
-        have_mean && near_mean && above_mean && came_from_above && !uptrend && !downish;
-    // Genuine uptrend only (0.77 gate): mkt_mode==2 (confirmed up), OR a 5m TUP that is BACKED by a
-    // RISING mean and a non-sideway 1m (mkt_mode != 1). A lagging 5m TUP on a token oscillating around
-    // the mean (1m SWY, flat mean) is NOT momentum — that was the trap that bought ALLO above the mean
-    // right before it reverted to the mean. Without this, above-mean dip-buys fire on chop.
-    let uptrend_strong =
-        state.mkt_mode == 2 || (state.tf5.regime == 2 && state.mkt_mode != 1 && state.angle > 0.0);
-    let zone_momentum = have_mean && above_mean && uptrend_strong;
+        have_mean && near_mean && above_mean && came_from_above && !trend.is_up() && !downish;
+    // Above the mean + a confirmed uptrend = Momentum (the 0.77 falling-knife guard is now baked into the
+    // combined Trend, which rejects a lagging 5m flag unless price action / structure agree).
+    let zone_momentum = have_mean && above_mean && trend.is_up();
     let zone_range = have_mean && !above_mean && state.mkt_mode == 1 && !downish;
     // Gate off, or no mean yet → legacy behaviour (scalp the safe window regardless of zone).
-    // UpStairs (a confirmed one-way TrendUp) is also a scalp-OK zone — we want aboard the uptrend.
+    // A confirmed uptrend (Trend up) is also a scalp-OK zone — we want aboard the uptrend.
     let scalp_ok = !state.cfg.fcscalp_zone_gate
         || !have_mean
         || zone_momentum
         || zone_range
-        || state.vol_regime == 2;
+        || trend.is_up();
 
     // No-worse-price re-entry guard (0.77 anti-churn): for REENTRY_WINDOW ticks after an FC long exit,
     // block ANY re-open unless price is fcscalp_reentry_gap BELOW the exit price. The time cooldown alone
@@ -277,7 +277,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && zone_pullback
         && !reentry_block
         && !state.risk_high
-        && state.vol_regime != -2
+        && !trend.is_down()
         && !has_long
         && !long_on_cd
         && state.fc_open_px <= 0.0
@@ -323,13 +323,13 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && !long_on_cd
         && !reentry_block
         && !state.risk_high
-        && state.vol_regime != -2
+        && !trend.is_down()
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && scalp_ok
         && state.win.safe
         && state.win.pos_frac
-            < if state.vol_regime == 2 {
+            < if trend.is_up() {
                 // UpStairs (Phase 2): catch a SHALLOW pullback in the upper window too (the entry is
                 // still a maker limit BELOW price, so it only fills on a dip — not a top-chase), so we
                 // actually get aboard the uptrend instead of sitting flat through it.
@@ -701,7 +701,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 //    that made s1 sweep the whole position). The engine sets fc_stair_placed after the
                 //    emit and clears it on a fill/flat so the ladder re-plans for the new peak.
                 else if state.cfg.fcscalp_stairs_tp
-                    && state.vol_regime == 2
+                    && compute_trend(state).is_up()
                     && p.qty > 0.0
                     && long_n
                         >= input

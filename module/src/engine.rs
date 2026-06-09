@@ -6,6 +6,9 @@ use crate::debug::{
 };
 use crate::fastcandle::update_fast_candles;
 use crate::indicators::*;
+use crate::trend::compute_trend;
+use crate::trend_efficiency::update_efficiency_trend;
+use crate::trend_structure::structure_dir;
 use crate::movement::{
     advance_market_mode, advance_tf_from_ind, init_cascade, init_tf_from_ind, update_cascade,
     update_risk_ratchet,
@@ -275,7 +278,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         // and arm the return watch. Bands are freshly applied above, so crossings are measured correctly.
         detect_sharp_move(&input.indicators, state, input.price);
         // Volatility regime (also Phase-2 stage detector): Quiet / Chop / TrendUp / TrendDown.
-        update_vol_regime(state, input.price);
+        update_efficiency_trend(state, input.price);
 
         // v0.56: a 1m candle just closed — reset the running high/low to the boundary price so the
         // trend-DCA anchor tracks the NEW forming candle (sug ticks extend it from here).
@@ -398,7 +401,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                         state.tf30.cross,
                         state.mrc_ml,
                         if input.price >= state.mrc_ml { "^" } else { "v" },
-                        match state.fc_stage { -1 => "DN", 1 => "UP", _ => "--" },
+                        match structure_dir(state) { -1 => "DN", 1 => "UP", _ => "--" },
                         state.smc_low,
                         state.smc_high,
                         state.smc_low_age,
@@ -957,7 +960,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     state.fc_tp_filled = false;
     // Leaving UpStairs clears the runner-ladder guard so a later UpStairs re-plans+re-emits it (the
     // per-rung tidy cancels the stairs while we're in Normal, so the guard must not stay latched).
-    if state.vol_regime != 2 {
+    if !compute_trend(state).is_up() {
         state.fc_stair_placed = false;
     }
 
@@ -1240,11 +1243,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         debug: {
             let sel = dbg_sel(state.cfg.debug_info);
             let lev = input.leverage.max(1) as f64;
+            let trend = compute_trend(state);
             let parts = [
                 (
                     DBG_CORE,
                     format!(
-                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} risk{} sh{}b{} cf{} fr{}/{} mv{} vol{}e{:.2} ph{}",
+                        "t={} p={:.2} mode={} ln={:.1} pnl={:.4} sl={:.2} fm={:.3} ord={} risk{} sh{}b{} cf{} fr{}/{} mv{} vol{}e{:.2} trd{}{}",
                         state.ticks, price, state.mkt_mode, long_n, total_pnl,
                         -(margin * state.cfg.sl_margin_pct),
                         margin - long_n / lev + total_pnl, ord_count,
@@ -1256,7 +1260,8 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         if state.mrc_valid { 1 } else { 0 },
                         match state.vol_regime { -2 => "D", 2 => "U", 1 => "C", _ => "Q" },
                         state.vol_er,
-                        match state.fc_phase { -1 => "D", 1 => "U", _ => "N" },
+                        match trend.dir { -1 => "D", 1 => "U", _ => "N" },
+                        trend.strength,
                     ),
                 ),
                 (
@@ -1281,7 +1286,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                         state.tf30.cross,
                         state.mrc_ml,
                         if input.price >= state.mrc_ml { "^" } else { "v" },
-                        match state.fc_stage { -1 => "DN", 1 => "UP", _ => "--" },
+                        match structure_dir(state) { -1 => "DN", 1 => "UP", _ => "--" },
                         state.smc_low,
                         state.smc_high,
                         state.smc_low_age,
