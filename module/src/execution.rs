@@ -51,17 +51,42 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     )
 }
 
+fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
+    if candle.close <= 0.0 {
+        return 0.0;
+    }
+    ((candle.high - candle.low).abs() / candle.close) * 100.0
+}
+
 fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
     let fc = snapshot.fast_candle?;
     let phase = fc.phase(&snapshot.tf1m.candle);
+    let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
+    let fc_pct = fc.range_pct();
+    let small_candle = candle_pct <= 0.40;
     match phase {
         FastCandlePhase::Building | FastCandlePhase::Tiring => Some(format!(
-            "fc-phase={:?} gain_zone={:?} gain_prog={:.2}",
+            "fc-phase={:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
             phase,
+            fc_pct,
+            candle_pct,
             snapshot.tf1m.gain_zone(),
             snapshot.tf1m.gain_progress_pct()
         )),
-        FastCandlePhase::Cooling | FastCandlePhase::Absent => None,
+        FastCandlePhase::Cooling => {
+            if small_candle {
+                None
+            } else {
+                Some(format!(
+                    "fc-phase=Cooling candle-not-small fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
+                    fc_pct,
+                    candle_pct,
+                    snapshot.tf1m.gain_zone(),
+                    snapshot.tf1m.gain_progress_pct()
+                ))
+            }
+        }
+        FastCandlePhase::Absent => None,
     }
 }
 
@@ -287,6 +312,43 @@ mod tests {
     }
 
     #[test]
+    fn tiring_fast_candle_blocks_entries() {
+        let mut state = EngineState::default();
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.fast_candle = Some(crate::model::FastCandleSnapshot {
+            candle: crate::model::Candle {
+                open: 100.0,
+                high: 110.0,
+                low: 100.0,
+                close: 110.0,
+            },
+            active: true,
+        });
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 110.0,
+            high: 110.1,
+            low: 109.8,
+            close: 110.0,
+        };
+        snapshot.tf1m.volume_gain = 18.0;
+        snapshot.tf1m.volume_gain_min = 1.0;
+        snapshot.tf1m.volume_gain_max = 20.0;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("fc-phase=Tiring"));
+    }
+
+    #[test]
     fn entry_budget_uses_cap_init_and_min_notional() {
         let mut state = EngineState::default();
         state.cfg.cap_init = 2.0;
@@ -339,6 +401,43 @@ mod tests {
             },
         );
         assert_eq!(result.open_positions.len(), 1);
+    }
+
+    #[test]
+    fn cooling_fast_candle_with_large_candle_waits() {
+        let mut state = EngineState::default();
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.fast_candle = Some(crate::model::FastCandleSnapshot {
+            candle: crate::model::Candle {
+                open: 100.0,
+                high: 106.0,
+                low: 100.0,
+                close: 105.0,
+            },
+            active: false,
+        });
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.0,
+            high: 104.5,
+            low: 99.5,
+            close: 104.0,
+        };
+        snapshot.tf1m.volume_gain = 2.0;
+        snapshot.tf1m.volume_gain_min = 1.0;
+        snapshot.tf1m.volume_gain_max = 20.0;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("candle-not-small"));
     }
 
     #[test]
