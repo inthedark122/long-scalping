@@ -1,14 +1,18 @@
 use crate::model::IndicatorSnapshot;
 use crate::model::{MarketState, TradeDecision};
 use crate::orders::{close, limit_open};
+use crate::exit;
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState};
-use lte_strategy_bridge::abi::{Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition};
+use lte_strategy_bridge::abi::{
+    Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModuleUpdatePosition,
+};
 
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
     pub close_positions: Vec<ModuleClosePosition>,
+    pub update_positions: Vec<ModuleUpdatePosition>,
     pub note: String,
 }
 
@@ -81,17 +85,23 @@ pub fn evaluate(
     }
 
     if input.positions.long.is_some() {
-        let _ = snapshot;
+        let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Long);
         return ExecutionResult {
-            note: "hold-long".to_string(),
+            update_positions: plan
+                .map(|plan| vec![exit::update_position(crate::model::PositionState::Long, plan)])
+                .unwrap_or_default(),
+            note: format!("hold-long {}", exit::describe(plan)),
             ..Default::default()
         };
     }
 
     if input.positions.short.is_some() {
-        let _ = snapshot;
+        let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Short);
         return ExecutionResult {
-            note: "hold-short".to_string(),
+            update_positions: plan
+                .map(|plan| vec![exit::update_position(crate::model::PositionState::Short, plan)])
+                .unwrap_or_default(),
+            note: format!("hold-short {}", exit::describe(plan)),
             ..Default::default()
         };
     }
@@ -314,5 +324,58 @@ mod tests {
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn active_long_emits_exit_update() {
+        let mut state = EngineState::default();
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.5,
+            qty: 0.1,
+        });
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot {
+                tf1m: crate::model::TimeframeSnapshot {
+                    candle: crate::model::Candle {
+                        open: 100.0,
+                        high: 101.0,
+                        low: 99.0,
+                        close: 100.0,
+                    },
+                    mrc: crate::model::MrcBands {
+                        down_big: 80.0,
+                        down_outer: 85.0,
+                        down_small: 90.0,
+                        down_inner: 95.0,
+                        mean_line: 100.0,
+                        up_inner: 105.0,
+                        up_small: 110.0,
+                        up_outer: 115.0,
+                        up_big: 120.0,
+                        current_cross: 0.0,
+                        mean_line_slope: 0.0,
+                    },
+                    dp_dir: 0,
+                    zz_dir: 0,
+                    ..Default::default()
+                },
+                tf5m: Default::default(),
+                tf15m: Default::default(),
+                tf1h: Default::default(),
+            },
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.update_positions.len(), 1);
+        assert!(result.note.contains("tp="));
+        assert!(result.note.contains("sl="));
     }
 }

@@ -3,6 +3,7 @@ use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
 use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
+use std::collections::{BTreeMap, HashMap};
 
 const TF_1M: TimeframeSec = TimeframeSec::Tf1m;
 const TF_5M: TimeframeSec = TimeframeSec::Tf5m;
@@ -44,8 +45,30 @@ fn read_dir(history: &IndicatorHistory, timeframe: TimeframeSec, indicator: Indi
     }
 }
 
+type RawIndicators = BTreeMap<i64, Vec<HashMap<String, HashMap<String, ModuleIndicatorValue>>>>;
+
+fn read_raw_float(
+    indicators: &RawIndicators,
+    timeframe: TimeframeSec,
+    indicator: &str,
+    field: &str,
+) -> f64 {
+    indicators
+        .get(&timeframe.as_i64())
+        .and_then(|candles| candles.first())
+        .and_then(|by_ind| by_ind.get(indicator))
+        .and_then(|fields| fields.get(field))
+        .and_then(|value| match value {
+            ModuleIndicatorValue::Float(v) => Some(*v),
+            ModuleIndicatorValue::String(v) => v.parse::<f64>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0.0)
+}
+
 fn build_timeframe(
     history: &IndicatorHistory,
+    raw: &RawIndicators,
     timeframe: TimeframeSec,
     live_price: Option<f64>,
 ) -> TimeframeSnapshot {
@@ -169,15 +192,20 @@ fn build_timeframe(
         mrc,
         dp_dir: read_dir(history, timeframe, IndicatorKey::DPSignal),
         zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
+        dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee"),
+        dp_zee1: read_raw_float(raw, timeframe, "dpsignal", "Zee1"),
+        zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
+        zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
+        zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice"),
     }
 }
 
-pub fn build_snapshot(history: &IndicatorHistory, live_price: f64) -> IndicatorSnapshot {
+pub fn build_snapshot(history: &IndicatorHistory, raw: &RawIndicators, live_price: f64) -> IndicatorSnapshot {
     IndicatorSnapshot {
-        tf1m: build_timeframe(history, TF_1M, Some(live_price)),
-        tf5m: build_timeframe(history, TF_5M, None),
-        tf15m: build_timeframe(history, TF_15M, None),
-        tf1h: build_timeframe(history, TF_1H, None),
+        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price)),
+        tf5m: build_timeframe(history, raw, TF_5M, None),
+        tf15m: build_timeframe(history, raw, TF_15M, None),
+        tf1h: build_timeframe(history, raw, TF_1H, None),
     }
 }
 
@@ -187,7 +215,7 @@ mod tests {
     use lte_strategy_bridge::abi::ModuleIndicatorValue;
     use std::collections::{BTreeMap, HashMap};
 
-    fn mk_history() -> IndicatorHistory {
+    fn mk_history() -> (IndicatorHistory, RawIndicators) {
         let mut history = IndicatorHistory::default();
         let mut snapshot: BTreeMap<
             i64,
@@ -241,13 +269,14 @@ mod tests {
         }
 
         history.init(&snapshot);
-        history
+        (history, snapshot)
     }
 
     #[test]
     fn missing_fields_degrade_to_neutral() {
         let history = IndicatorHistory::default();
-        let snap = build_snapshot(&history, 101.0);
+        let raw = BTreeMap::new();
+        let snap = build_snapshot(&history, &raw, 101.0);
         assert_eq!(snap.tf1m.dp_dir, 0);
         assert_eq!(snap.tf1m.zz_dir, 0);
         assert_eq!(snap.tf1m.mrc.range(), 0.0);
@@ -256,8 +285,8 @@ mod tests {
 
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
-        let history = mk_history();
-        let snap = build_snapshot(&history, 106.0);
+        let (history, raw) = mk_history();
+        let snap = build_snapshot(&history, &raw, 106.0);
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
@@ -266,8 +295,8 @@ mod tests {
 
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
-        let history = mk_history();
-        let snap = build_snapshot(&history, 106.0);
+        let (history, raw) = mk_history();
+        let snap = build_snapshot(&history, &raw, 106.0);
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
         assert_eq!(snap.tf5m.mrc.down_big, 80.0);

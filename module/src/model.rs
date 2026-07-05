@@ -103,6 +103,11 @@ pub struct TimeframeSnapshot {
     pub mrc: MrcBands,
     pub dp_dir: i8,
     pub zz_dir: i8,
+    pub dp_zee: f64,
+    pub dp_zee1: f64,
+    pub zz_buy_price: f64,
+    pub zz_sell_price: f64,
+    pub zz_break_price: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

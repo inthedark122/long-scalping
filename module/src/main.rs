@@ -3,6 +3,7 @@ mod decision;
 mod detection;
 mod engine;
 mod execution;
+mod exit;
 mod market_data;
 mod model;
 mod risk;

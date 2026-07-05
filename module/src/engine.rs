@@ -1,10 +1,11 @@
 use crate::debug;
 use crate::decision;
 use crate::detection::{cascade, mrc, regime, sharp_return, vlines};
+use crate::exit;
 use crate::execution;
 use crate::market_data;
 use crate::model::{MarketState, RiskSnapshot, TradeDecision};
-use crate::orders::{close, limit_open};
+use crate::orders::limit_open;
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput};
@@ -67,28 +68,6 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                     debug: format!("action {} short {}", name, amount),
                     ..Default::default()
                 },
-                "force_close_long" => ModuleOutput {
-                    close_positions: vec![close(
-                        Direction::Long,
-                        &format!(
-                            "manual close long via {} price={:.4} amount={:.4}",
-                            name, input.price, amount
-                        ),
-                    )],
-                    debug: "action force_close_long".to_string(),
-                    ..Default::default()
-                },
-                "force_close_short" => ModuleOutput {
-                    close_positions: vec![close(
-                        Direction::Short,
-                        &format!(
-                            "manual close short via {} price={:.4} amount={:.4}",
-                            name, input.price, amount
-                        ),
-                    )],
-                    debug: "action force_close_short".to_string(),
-                    ..Default::default()
-                },
                 _ => ModuleOutput {
                     debug: format!("action {} ignored", name),
                     ..Default::default()
@@ -106,8 +85,17 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 peak_price: input.price.max(*entry_price),
                 trough_price: input.price.min(*entry_price),
             };
+            let side = dir_to_position(*direction);
+            let plan = exit::plan(
+                &market_data::build_snapshot(&state.history, &input.indicators, input.price),
+                input.price,
+                side,
+            );
             ModuleOutput {
-                debug: format!("new-position {:?}", direction),
+                update_positions: plan
+                    .map(|plan| vec![exit::update_position(side, plan)])
+                    .unwrap_or_default(),
+                debug: format!("new-position {:?} {}", direction, exit::describe(plan)),
                 ..Default::default()
             }
         }
@@ -159,7 +147,7 @@ fn process(
         input.price,
     );
 
-    let snapshot = market_data::build_snapshot(&state.history, input.price);
+    let snapshot = market_data::build_snapshot(&state.history, &input.indicators, input.price);
     vlines::update(
         &mut state.vlines,
         snapshot.tf1m.mrc.lines(),
@@ -251,6 +239,7 @@ fn process(
     ModuleOutput {
         open_positions: execution.open_positions,
         close_positions: execution.close_positions,
+        update_positions: execution.update_positions,
         debug: debug::render(state, &snapshot, &regime, &risk, &decision, &execution.note),
         ..Default::default()
     }

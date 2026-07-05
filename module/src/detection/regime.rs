@@ -75,6 +75,7 @@ mod tests {
             },
             dp_dir: dp,
             zz_dir: zz,
+            ..Default::default()
         }
     }
 
