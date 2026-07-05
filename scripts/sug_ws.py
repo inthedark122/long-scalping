@@ -1,114 +1,52 @@
 #!/usr/bin/env python3
-"""Subscribe to the LivTorgEx Projection (sug_info) WebSocket and print a compact
-market-condition snapshot.
-
-Usage:
-  python3 scripts/sug_ws.py                 # one-shot: grab latest projection, print, exit
-  python3 scripts/sug_ws.py --stream        # keep printing each projection (Ctrl-C to stop)
-  python3 scripts/sug_ws.py --symbol ETH-USDT-SWAP --raw   # dump raw JSON
-
-Source: wss://okx.tg.trading.sinvoid.me/ws
-Subscribe msg: {"event":"Subscribe","param":{"event":"Projection","symbol":"<SYM>"}}
 """
+Print live projection price and candle data without legacy feeds.
+"""
+
 import argparse
 import json
 import sys
 
-from websocket import create_connection  # websocket-client (sync)
+from websocket import create_connection
 
 WS_URL = "wss://okx.tg.trading.sinvoid.me/ws"
 
 
-def fmt_usd(x):
-    try:
-        x = float(x)
-    except (TypeError, ValueError):
-        return str(x)
-    a = abs(x)
-    if a >= 1e9:
-        return f"{x/1e9:.2f}B"
-    if a >= 1e6:
-        return f"{x/1e6:.2f}M"
-    if a >= 1e3:
-        return f"{x/1e3:.1f}k"
-    return f"{x:.1f}"
-
-
-def summarize(m):
-    price = m.get("price")
-    ind = m.get("indicator", {}) or {}
-    ntps = ind.get("ntps")
-    direction = m.get("direction")
-    kl = m.get("klines", {}) or {}
-
-    def k(tf):
-        c = kl.get(tf)
-        if not c:
-            return "-"
-        return f"{c.get('low')}-{c.get('high')}(o{c.get('open')} c{c.get('close')})"
-
-    ob = m.get("order_book", {}) or {}
-    longs = ob.get("long_levels", []) or []   # levels above price (resistance/sell walls)
-    shorts = ob.get("short_levels", []) or []  # levels below price (support/buy walls)
-
-    def top_wall(levels):
-        if not levels:
-            return "-"
-        best = max(levels, key=lambda l: l.get("total_amount", 0))
-        return f"{best.get('price')}@{fmt_usd(best.get('total_amount'))}"
-
-    oi = m.get("oi", {}) or {}
-    cdl = m.get("candle", {}) or {}
-
-    lines = []
-    lines.append(f"price={price} dir={direction} | ntps={ntps}")
-    lines.append(
-        f"  px% 1h={ind.get('price_1h')} 4h={ind.get('price_4h')} "
-        f"8h={ind.get('price_8h')} 24h={ind.get('price_24h')}"
+def summarize(message: dict) -> str:
+    kl = message.get("klines", {}) or {}
+    candle = message.get("candle", {}) or {}
+    one_min = kl.get("60", {}) or {}
+    return "\n".join(
+        [
+            f"price={message.get('price')} direction={message.get('direction')}",
+            f"1m open={one_min.get('open')} high={one_min.get('high')} low={one_min.get('low')} close={one_min.get('close')}",
+            f"projection candle qty={candle.get('qty')} qtym={candle.get('qtym')}",
+        ]
     )
-    lines.append(f"  kl 1m={k('60')}")
-    lines.append(f"     1h={k('3600')}  4h={k('14400')}  30m={k('1800')}")
-    lines.append(
-        f"  OB resist(up)={top_wall(longs)}  support(dn)={top_wall(shorts)}  "
-        f"buy={fmt_usd(ob.get('buy_amount'))} sell={fmt_usd(ob.get('sell_amount'))}"
-    )
-    lines.append(
-        f"  OI={fmt_usd(oi.get('usd'))} chg={oi.get('change')}%  "
-        f"net_flow(qtym_asset)={fmt_usd(cdl.get('qtym_asset'))}"
-    )
-    return "\n".join(lines)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--symbol", default="ETH-USDT-SWAP")
-    ap.add_argument("--stream", action="store_true")
-    ap.add_argument("--raw", action="store_true")
-    ap.add_argument("--timeout", type=float, default=15.0)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", default="ETH-USDT-SWAP")
+    parser.add_argument("--stream", action="store_true")
+    parser.add_argument("--raw", action="store_true")
+    parser.add_argument("--timeout", type=float, default=15.0)
+    args = parser.parse_args()
 
     ws = create_connection(WS_URL, timeout=args.timeout)
-    ws.send(json.dumps({"event": "Subscribe",
-                        "param": {"event": "Projection", "symbol": args.symbol}}))
+    ws.send(json.dumps({"event": "Subscribe", "param": {"event": "Projection", "symbol": args.symbol}}))
 
-    got = 0
+    received = 0
     try:
         while True:
             raw = ws.recv()
             if not raw:
                 continue
-            try:
-                m = json.loads(raw)
-            except json.JSONDecodeError:
+            payload = json.loads(raw)
+            if payload.get("event") != "Projection":
                 continue
-            # skip subscription acks / non-projection frames
-            if m.get("event") != "Projection" or "indicator" not in m:
-                continue
-            if args.raw:
-                print(json.dumps(m))
-            else:
-                print(summarize(m))
-            got += 1
+            print(json.dumps(payload) if args.raw else summarize(payload))
+            received += 1
             if not args.stream:
                 break
     except KeyboardInterrupt:
@@ -116,7 +54,7 @@ def main():
     finally:
         ws.close()
 
-    if got == 0:
+    if received == 0:
         print("no projection received within timeout", file=sys.stderr)
         sys.exit(1)
 

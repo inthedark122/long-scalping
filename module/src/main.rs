@@ -1,32 +1,21 @@
-mod consts;
 mod debug;
+mod decision;
+mod detection;
 mod engine;
-mod fastcandle;
-mod indicators;
-mod interest;
-mod movement;
+mod execution;
+mod market_data;
+mod model;
 mod orders;
-mod sizing;
 mod state;
-mod trend;
-mod trend_efficiency;
-mod trend_mtf;
-mod trend_structure;
-mod vlines;
-mod window;
 
 use lte_strategy_bridge::run_loop;
 
 fn main() {
-    eprintln!("[module] started");
-
-    let mut st = state::State::default();
+    let mut state = state::EngineState::default();
 
     run_loop(|input| {
-        eprintln!("[module] event: {:?}, price: {}", input.event, input.price);
-        let mut out = engine::run(&input, &mut st);
-        out.state = state::save(&st);
-        eprintln!("[module] debug: {}", out.debug);
+        let mut out = engine::run(&input, &mut state);
+        out.state = state::save(&state);
         out
     });
 }

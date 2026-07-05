@@ -1,137 +1,21 @@
-# Module Changelog
+# Changelog
 
-## v0.61-long — 2026-05-31 (built — LONG-ONLY rewrite; NOT deployed, unvalidated pending sim fix)
-Removed **ALL** short-side and hedge logic to produce a clean long-only module. Branch `v0.61-long`; the hedge version is preserved on branch `v0.61-hedge`. Compiles clean on wasm32, **zero warnings**. Per user: *"use only Long without any hedging … remove hedge and short code at all, we should have clear version without possible issue."*
-- **Removed — hedge:** market hedge open (`hedge-l/hedge-s`), `invalid_side`/`hedge_side` episode state, best-negative exit (`neg_exit_l/neg_exit_s`, `neg-l/neg-s` orders), `enable_hedge`/`hedge_ntps_mult` config, and the `!enable_hedge` guards on the transition close.
-- **Removed — short:** every short entry, every short exit/TP, the `SHORT_ENTRY_BANDS`/`SHORT_TP_BANDS` tables, all short state, and short manual actions. `handle_finish`/`update_fill_idx`/`save`/`StateSerde`/debug strings all reduced to long-only.
-- **Kept (market-direction analytics, NOT positions):** the `smc_dir` Short *signal*, `compute_allocation`/`classify` short-*trend* detection, the V-line `short_side` (support-test tracking used by the long DCA block), the `tp_is_profitable(is_short)` helper param, and `bearish_spike` volume analytics — these describe market direction, not a short position.
-- **Verified:** every emitted order is `Direction::Long`. `cargo check` zero warnings.
-- **NOT deployed / unvalidated:** the backtest PnL bug (`issues/001`) means this can't be backtest-validated yet — relied on `cargo check` + line-for-line preservation of the long logic. `cargo fmt` reformatted the whole file (rustfmt-standard), so the diff is large.
+## 1.0.0
 
-## v0.61-signal — 2026-05-31 (built + ABI-proof — module side ready, backtest producer gap; NOT deployed)
-Wire the bot-group **Start SIGNAL** to load config params into the module via the new ABI that carries values on the signal. Branch `v0.61-signal` off clean v0.61. Compiles clean on wasm32, zero warnings. See `docs/signal-config-load.md`.
-- **Why.** `action_config.action_params` were never honored in backtest (every sweep byte-identical) because the Start SIGNAL carried no values and the module ignored it (`_ => default`); only `ModuleEvent::Action` (which the backtest never emits) reached `cfg.apply`. The team extended `lte_strategy_bridge` (`22e8c3cf`→`b6f8fad2`) so `ModuleEvent::Signal` now carries `values`.
-- **Change.** Added `ModuleEvent::Signal { code, values, .. } => handle_signal`: on `code == "start"` and `!cfg_loaded`, `cfg.apply(values)` then set the new `State.cfg_loaded` flag — applied **once** (the Start signal re-fires on Infinity / re-issue; re-applying would reset `cfg` to the Start values and clobber a later live `run_bot_action` config push). Config-only; never resets runtime state (per user: *"cfg.apply() for action is wrong, it will reset state"* + *"use code to check the signal"*). Removed the now-dead `_` catch-all (all 8 `ModuleEvent` variants matched → a future ABI variant now forces a compile error). Pinned the ABI rev in `Cargo.toml` for a reproducible build.
-- **Result — params STILL ignored in backtest.** Built `0.61-signal` (server Success vs pinned ABI). Ran A (defaults, v84/run102) vs B (`enable_stairs=0, enable_trend=0`, v85/run103), same 28d window (Apr30→May28, m10, trigger Infinity): **byte-identical** (profit 3.39761, fee 1.68954, vol 6867.71, net +$1.708). B's *recorded* `action_config` held `stairs=0/trend=0`, yet its orders still show `dca-l` / `l-ext-t1/t2` / `l-bk1/bk2` (stairs+trend ran) → module executed `Config::default()`. **The backtest records `action_params` but does not forward them into `Signal.values`** — the producer (backtest engine / bridge that constructs the Signal) still needs wiring. Module side is correct and ready.
-- **Not deployed.** Live stays `0.61.0`. Branch kept; revisit once the backtest producer populates `Signal.values` (then B should collapse to hedge-only), or validate via the LIVE Start path.
+Fresh baseline reset.
 
-## v0.61.0 — 2026-05-30 (built + backtesting — NOT deployed)
-Hedge entry restored to v0.56 MARKET after v0.60's pullback-limit hedge never filled. See `docs/hedge-protection.md`. Compiles clean on wasm32, zero warnings.
-- **Why.** Run 21 (v0.60) self-calc: NET **−$0.62**, position_total 42, **ZERO hedges** — byte-identical to no-hedge v0.58. A buy-limit *below* market can't enter a hedge *during an uptrend* (price moves away from it), so the pullback-limit never filled. The "best-price" pullback entry is fundamentally incompatible with a hedge, which must enter INTO the adverse move. (Also learned: margin 0.5 vs 10 doesn't change backtest results — sizing is `max_amount`-driven.)
-- **Change.** The hedge opens at **MARKET** again (v0.56): in `compute_auto_open`, when we hold exactly one side and `mkt_mode` has flipped against it (and `invalid_side == 0`, cooldown ok), `market_open` the hedge (size = stuck × (1 + 5m-mom excess), margin-room capped) and short-circuit. The open-note loop sets `invalid_side` (old side → best-negative exit) and `hedge_side` (for `hs=`). The hedge **rides as the net trade / persists**; one hedge per episode (gated on `invalid_side == 0`), cleared when the invalid side closes. Removed the v0.58–v0.60 pullback-limit, arm, fallback, and `hedge_arm`/`hedge_arm_amt`/`hedge_arm_tick`/`HEDGE_FALLBACK_TICKS`. Net result ≈ the profitable v0.56 hedge (Run 15 +$1.60).
-- **Validation:** Run 22 (version 67, v0.61, action_config m10 trigger Infinity) launched vs Run 15 (+$1.60) / Run 20 (v0.59 −$2.20) / Run 21 (v0.60 −$0.62).
-
-## v0.60.0 — 2026-05-30 (built + backtesting — NOT deployed)
-Hedge persistence restored after v0.59 backtested net-negative from churn. See `docs/hedge-protection.md`. Compiles clean on wasm32, zero warnings.
-- **Why.** Backtest Run 20 (v0.59, action_config m10, 182 pos, self-calc): NET **−$2.20** (Run 15 +$1.60). The core was fine — one short path +$0.84, auto-l +$0.51 — but the hedge **churned 116× for $3.03 in fees** (hedge-l NET −$2.65), sinking it. Two causes: the market fallback + a still-resting pullback-limit **double-filled** (78/116 over-hedged), and "primary stays primary + close-on-resolution" made the hedge **open/close on every mkt_mode flip**. Run 15's profit came from the hedge **persisting** (v0.56 rescue).
-- **Change (back to v0.56's profitable shape, keep best price).** On hedge FILL, set `invalid_side` so the OLD side exits at its best-negative target and the hedge **rides as the net trade — persists** (removed the v0.58/v0.59 close-on-resolution `hedge-cl`/`hedge-cs`). **Removed the market fallback** (and `hedge_arm_tick`, `HEDGE_FALLBACK_TICKS`) — the hedge now fills ONLY via the best-price pullback-limit, so no double-fill. One hedge per episode: armed only while `invalid_side == 0`; cleared when the old (invalid) side closes. The v0.56 `neg_exit` best-negative machinery (left inert since v0.58) re-activates. `hedge_side` kept for the `hs=` debug.
-- **Net effect:** v0.56 hedge frequency + persistence + rescue, with a best-price pullback-limit entry instead of v0.56's market open. Trade-off: in a one-way trend with no retrace the pullback-limit may miss (no fallback) — acceptable vs the over-hedge; revisit a race-free fallback in v0.61 if coverage is short.
-- **Validation:** Run 21 (version 66, v0.60, action_config m10 trigger Infinity) launched vs Run 15 (+$1.60) / Run 20 (−$2.20).
-
-## v0.59.0 — 2026-05-30 (built + backtesting — NOT deployed)
-Hedge frequency restored after v0.58 backtested much worse. See `docs/hedge-protection.md`. Compiles clean on wasm32, zero warnings.
-- **Why.** Backtest self-calc (Σ position profit − Σ fee, NOT the hourly chart): Run 15 (old hedge, margin 10, full month) NET **+$1.60** with the hedge as the #1 contributor (+$1.50 of +$3.32 gross, ~29% of trades); Run 17 (v0.58, margin 0.5, 62%) NET **−$1.96** with the hedge firing **0×** (the strict `ntps_mult ≥ 1.6` + fast-candle gate suppressed it) and the unrescued primaries (`auto-s`/`auto-l`) flipping net-negative. Over-fit to a few live chop re-fires was wrong; the hedge is the edge.
-- **Change.** Drop the NTPS/fast-candle gate — arm on the `mkt_mode` flip against the held side (v0.56 frequency). Keep the v0.58 best-price **pullback-limit** entry, but add a **market fallback** (`HEDGE_FALLBACK_TICKS=3`): if the resting limit hasn't filled in 3 sug ticks, take the hedge at market so it still gets on in a one-way trend (a resting limit can miss). New state `hedge_arm_tick` (arm age). `hedge_ntps_mult` kept but inactive (possible future size-tilt). Role unchanged from v0.58 (primary stays primary, `hedge_side` temp leg, `hedge-cl`/`hedge-cs` close) — pending Run 18 backtest; if it doesn't recover Run 15's profit, restore the v0.56 role-flip (old-side best-negative rescue) next.
-- **Validation:** Run 18 (version 62, v0.59, margin 10, Apr30–May28) launched to compare against Run 15.
-
-## v0.58.0 — 2026-05-30 (built, NOT deployed — awaiting user)
-Hedge-as-insurance redesign — keep the hedge, fix WHEN and HOW it opens. See `docs/hedge-protection.md`. Compiles clean on wasm32, zero warnings.
-- **Why.** The v0.49 market hedge fired twice live on transient `mkt_mode` blips (NTPS ~20): it market-bought the range top against a strong sell-side read and demoted the aligned short to "invalid," then the blip reverted ~3 candles later, orphaning a losing long. User: *"I like the hedge — but find the best price to open, and only open when we're 90% sure the token is pumping, using high NTPS."*
-- **Pump-gated trigger.** The hedge arms only on a genuine sudden move: `mkt_mode` agrees (2 long / −2 short) **AND** a fast-candle points that way **AND** `ntps_mult ≥ hedge_ntps_mult` (new config, default 1.6 — NTPS surged to 1.6× its own baseline = a real pump, not a quiet drift). The drift-to-the-top (ntps_mult ~1) never arms.
-- **Pullback-placed entry (best price).** No more market-buying the extreme. The hedge rests as a limit a FastCandle-distance back from the running extreme — long buys a dip below `cur_hi`, short sells a bounce above `cur_lo` — re-emitted each tick (trails the extreme) and auto-cancelled when the pump fades. Same bounce-placement core as `dca`.
-- **Primary stays primary.** The aligned side is never invalidated. On fill the hedge is tagged `hedge_side` (temporary); when the pump resolves (`mkt_mode` leaves the trend, or a fast-candle turns back toward the primary) the leg is closed (`hedge-cl`/`hedge-cs`) and the primary keeps riding. `cooldown_ticks` prevents re-hedge churn. The old `invalid_side`/`neg_exit` best-negative path is left inert.
-- **Mechanics.** Arm computed in `handle_sug_info` (where margin/`stuck` live), placed in `compute_limit_orders` (mirrors the `neg_exit` pattern), `hedge_side` set on fill in `handle_order_update`. New state `hedge_side` (in-memory, like `invalid_side`) + transient `hedge_arm`/`hedge_arm_amt`. New config `hedge_ntps_mult` (Start param + live-apply). Debug `hs=` (run line) + `cfg … hntps=` (ack).
-- **Tunable.** `hedge_ntps_mult=1.6` is a first pass — calibrate from live pumps (real 2021.8 break ≈ NTPS 59 ≈ 3× baseline; quiet grind ≈ 20 ≈ 1×).
-
-## v0.57.0 — 2026-05-30 (built, NOT deployed — awaiting user)
-Runtime debug-info builder — surface any internal view from `list_bots` last_debug on demand. See `docs/debug-info-builder.md`. Compiles clean on wasm32, zero warnings.
-- **Why.** `last_debug` holds one line per snapshot, refreshed ~1/min and landing unpredictably on `init`/`ind`/`sug`. The rich data (V-tracker `vt=`, sizing, bracket) lived only on the `sug` line, so when the snapshot was an `ind` line it was unreachable — the V-tracker could not be read for an entire live session of `ind` snapshots. User: *"info switch in the debug… pass a number to detect what info to display, keep 0 as default"* + *"debug builder… show default log for any event or a preset log."*
-- **`debug_info` bitmask config (default 0).** `debug_builder(state, sel)` returns FULL-detail topic blocks for the selected presets — `1 V` (vt= table) · `2 MRC` (1m band map + 5m ML) · `4 BIG` (big_tested/invalid/neg-exits) · `8 CAS` (cascade/run/stair/5m-break) · `16 DMP` (uncertainty damp + drawdown) · `31 ALL` (add to combine). Appended as a ` | sw[...]` suffix to the `init`, `ind`, and `sug` lines so whatever event the snapshot serves carries the chosen view. `sug` already prints `vt=`, so it gets `sel & !1` (no duplicate V block). The `vt=` token is the exact format the `v-tracker` skill parses → V-tracker report now works off **any** line once bit 0 is set.
-- **Switch mechanism.** `debug_info` is read by `Config::apply` (`"debug_info" => …`), echoed in the config-apply ack (`cfg … dbg={}`), and exposed as the `debug_info` Start param in `strategy.json` (default 0). Pushed via the config/Start action (same path as `seed`/`cap`); applied on the **next tick** (context accumulation), so a focused read is two switches: preset → read → back to 0.
-- **Scope cut (user).** A one-shot `dbg` action that returned the preset immediately in its ack was drafted then **removed** — *"we cannot request something from the bot"* (no request→response channel yet; user will design one later). `debug_builder` reads only `state`, so it is request-ready for that future mechanism.
-
-## v0.56.0 — 2026-05-30 (built, NOT deployed — hold per user)
-Per-type auto-scaling + Big-line first-reaction bracket (live-monitoring directives). See `implementation.md` 0.D/0.E, `docs/auto-scaling-per-type.md`, `docs/big-line-reaction-bracket.md`. Compiles clean on wasm32, zero warnings.
-- **0.D — per-type auto-scaling under one risk budget.** One `R_side = risk_sized_notional(...)` per side; every entry type draws a fraction `f` of **remaining room** (`R_side − current notional`) via its **own curve** — seed `F_SEED=0.50`, trend `0.30+0.40·trend_strength`, re `0.25+0.25·angle-conv`, stair `F_STAIR=0.50` (diminishing). `budget_size()` applies the fraction × conviction tilt × `ntps_mult` × `uncertainty_damp` × `risk_drawdown`, then **clamps to room** → cumulative notional on a side can never exceed `R_side` (the "scale-in then stop ≤ budget" invariant). Same `r_side` cap applied to **every DCA add** in `compute_limit_orders` (`remaining = R_side − notional`). **risk_pct kept at 0.40** (user) — de-risking is dynamic via `uncertainty_damp` (clamp [0.40,1.0]).
-- **0.E — Big-line first-reaction bracket (4 orders).** While `!side_big_tested`, the single `mode==1` DownBig/UpBig TP is replaced by a bracket around Big: pre-touch `(O+B)/2` 20% · just-touch `B∓0.15d` 30% · fast-candle 1× `B∓1d` 25% · fast-candle 2× `B∓2d` 15% (`d=|Outer−Big|`). Catches both the just-touch reversion and a 1–2× overshoot. Collapses to the single TP once Big is tested.
-- **STRICT close protection (user-requested).** Every bracket rung — and the collapsed single TP — is gated profit-only two ways: `tp_is_profitable(entry, tp, side, fee_pad)` (close strictly on the right side of avg entry, with a ~0.08% fee pad) **AND** `exp_pnl > 0`. So when stairs trade **around** the Big line and pull avg entry near/below Big, the below-Big rungs are simply not placed (they'd be losses). All TPs are `reduce_only` (can only close, never open/flip). This also closes a pre-existing gap: the old `mode==1` single TP had **no** profit gate.
-- **Single-source V detection — removed the parallel crossing-counter (B).** The code had two V mechanisms: the real-time `VLineTracker` (A, the `vt=` display) and a candle-close `level_stats` crossing-counter (B). B was mislabeled (its "V-pattern" via `cross_prev2` was never implemented — `cross_prev2`/`current_tests`/`min_dist`/`crossings` were dead) and redundant. Per user, **B removed entirely** (`LevelStats`, `level_stats[9]`, `update_level_stats`, `update_level_min_dists`, `cross_prev2`). All four consumers re-sourced to A: `v_bull/bear_fresh` + `stair_long/short_ok` → A's `last_cross_dir`/`last_cross_tick` (90 / 180-tick windows); `stair_lscale/sscale` → A's real `long_side/short_side.count`; `strong_long/short` → A's `last_cross_tick` age (450/900 ticks ≈ 30/60 candles, still anchored by candle-based `zone_streak`). One V system, ~80 fewer lines, no dead code. See `docs/v-movement.md` history.
-- **Trend-DCA bounce placement (live fix).** `dca-s`/`dca-l` used to rest at `price ∓ tick` ("fills on the very next tick"), so during a pullback the bot re-entered at the **dip** instantly — six `dca-s` fills at ~2004 dragged a short's avg to 2005.36 right before a rally to 2014 (−$0.12). Now adds **sell the bounce / buy the dip**: rest a FastCandle-distance UNDER the running candle high (`cur_hi`) / OVER the low (`cur_lo`), arm only after a ≥dist pullback (so `sell_px` is strictly above market — never an immediate dip fill), and trail with new highs/lows. `dist = clamp(price × fc.avg_pct/100, range×0.05, range×0.50)`. New state `cur_hi`/`cur_lo` (per-1m-candle, reset on close). NATR confirmation deferred (gate only, never distance). See `docs/trend-dca-bounce-placement.md`.
-- **Cold-start V seeding.** `seed_v_lines()` (called at Init) replays the candle history through the shared `apply_v_lines()` core so the V tracker isn't blind during the live warm-up. Depth-agnostic (scans until MRC history ends, cap 512 — 10 candles today, more later with no code change); replays each candle's High/Low/Close by direction against that candle's own bands on a synthetic tick timeline (`(k+1)·15` per candle), then sets `state.ticks = depth·15` so live ticks continue on-scale. Verified: most-recent ~6 candles seed fresh, all feed the stair window, `strong_*` (30–60c) correctly waits for more candles. Init debug gains `vt=`.
-- Debug: sug line adds `bgt=` (R_side budget), `dmp=` (uncertainty_damp), `bk=` (short/long_big_tested).
-
-## v0.55.0 — 2026-05-30
-Full implementation of 0.A + 0.B + 0.C (the v0.54-live findings). See `implementation.md` 0.A/0.B/0.C, `docs/trend-target-5m-ml.md`, memory `feedback_risk_based_sizing`. Compiles clean on wasm32.
-- **0.A — risk-based sizing.** `risk_sized_notional(max_amount, leverage, risk_pct, stop_pct)` = `min((max_amount/leverage × risk_pct)/stop_pct, max_amount)`; loss at a `stop_pct` move = `notional × stop_pct` = `risk_pct` of the allocated margin, **capped at `max_amount`** (the deployable ceiling — NOT equity). Applied to **all primary entries** × conviction tilt, cap-bounded. Defaults ~$28.6 / 0.014 ETH (57% of the $50 cap) vs the old ~$4 / 0.002. New config (Start params): `risk_pct` (0.40), `stop_pct` (0.007).
-- **0.B — breakout-fly / no-line-TP + thesis exit.** No fixed MRC-line TP (grid off → none existed); the ride is held while the strong side controls (let it fly) and exits on a **thesis reversal**. Margin SL still backstops. Added 5m ML **slope** (`angle5`) + **hard-break** state (`mrc5_break`: candle fully under/over its 5m ML) for the touch-vs-break read.
-- **0.C — stairs + mean-line re-entry.** **`stair-s`/`stair-l`** add half-size, cap-bounded increments at each **new 5m down/up line** (`tf5.cross` step) while the strong side holds — builds the position on a continuation (fixes under-sizing when there's no pullback); **`re-s`/`re-l`** re-enter on a **soft touch of the 1m ML** with a **confirming ML angle** (`state.angle`). Stair ladder tracked via `short_stair_cross`/`long_stair_cross` (baselined on entry, advanced per stair, reset when flat).
-- Debug: sug line adds `ss=` (short_stair_cross), `b5=` (mrc5_break).
-- **Not yet wired:** `risk_pct`/`stop_pct` as visible Start signal-action params on the bot group (readable via Config.apply already; add to signal_actions at deploy if UI control wanted).
-
-## v0.52.0 — 2026-05-29
-Two correctness fixes (caught live during the hedge test).
-- **CRITICAL: uPnL sign fix.** `ModulePositionSummary.qty` is **signed** (negative for shorts), so the v0.49 `upnl()` helper (`(entry−mark)·qty` for shorts) double-negated → a *losing short read as profit*. Proven live (module `pnl=+0.0336` while truly ~−$0.021). Now `upnl = (mark − entry)·qty` for both sides. This had inverted the short SL (losing short never SL'd; a *winning* short on a dump could falsely trip the margin SL). Affects margin/staged SL, NTPS(removed), exp_pnl TP gate, win_mult, free-margin.
-- **Persistent `invalid_side` (hedge episode).** When the hedge fires, the OLD side is marked **invalid → close soon** (only action: its best-negative `neg-l`/`neg-s` exit; no adds) and the hedge side is **primary** (normal trend management). The best-negative exit is now gated on `invalid_side` (set on hedge open, cleared when that side closes) instead of `mkt_mode==±2` — so it no longer flickers as mkt_mode oscillates. Debug: `inv=`.
-
-## v0.51.0 — 2026-05-29
-Removed the SMC/NTPS force-stops (user: "useless, should be changed"). Both used the `smc` **`Direction`** field, which is the aggressive **breakline** direction-change (pullback-prone) — so SMC=Long is a *contrarian SHORT* signal, NOT a reason to cover a short. These kept instantly killing valid shorts (e.g. forced shorts auto-covered ~1.4s after open).
-- **Removed** the NTPS-momentum close (`ntps>600 && smc==Long → close short`, and the short-side mirror).
-- **Removed** the `s-ts` spike-exit entirely (its only remaining trigger was the SMC flip Short→Long).
-- Reverted the short-lived `ntps_close` config (the close it gated is gone).
-- Short exits now: **sudden-move panic** (sweep-held, v0.50), **margin/staged SL**, **profit TPs**, and the **opposite-direction best-negative/hedge** path.
-- FUTURE (noted): rebuild SMC usage on **`DirectionSwing`** (truer swing trend) instead of `Direction`; the smc indicator also exposes `OBDirection`/`OBHigh`/`OBLow`.
-
-## v0.50.0 — 2026-05-29
-Stop-hunt sweep-hold — fixes the premature short-cover observed live at 15:31 (short covered at the top of a liquidity-grab pump into UpBig, by `sudden-up` @2029 + `s-ts` @2023, right before the expected dump — −$0.069).
-- New gate: an up-spike INTO the upper extreme (`tf1.cross >= 3`, UpOuter/UpBig) while `tf5.regime == TDN` is a liquidity grab, not a reversal → **suppress short-covers there** (`sudden-up` panic, `s-ts` SMC-flip, and the NTPS>600 momentum close). Mirror for a long into the lower extreme (`cross <= -3`) during a 5m uptrend (`sudden-down`, NTPS close).
-- The deep **margin/staged SL still fires** as the real backstop — only the noise/momentum covers are held.
-
-## v0.49.0 — 2026-05-29
-Exit/PnL overhaul + hedge model — from the live v0.48.0 session findings. See `docs/`.
-- **#1 Self-computed unrealized PnL** (`docs/unrealized-pnl.md`): `position.pnl` is REALIZED, not unrealized — treating it as unrealized blinded the SL ladder and let `exp_pnl` place below-entry TPs. New `upnl(pos, mark, is_long) = (mark−entry)·qty` (inverse for short) now drives margin SL, staged SL, NTPS close, MFE, free-margin, `exp_pnl` TP gate, and `win_mult`.
-- **#2 Gate band-TP ladder on `enable_grid`**: the long/short band-TP else-branch (`l-t1`/`l-t2` ladder) is grid behaviour and now only runs with grid on — removes the constant TP order churn and the below-entry TPs for the trend/stairs-only config.
-- **#3 `mkt_mode` multi-TF trend override**: `classify_mode` now returns TrendShort/TrendLong directly when 1m AND 5m regimes agree and SMC confirms — a slow grind that never builds a big cascade no longer reads as Sideways.
-- **#4 Opposite-direction exit + net-aware hedge** (`docs/opposite-direction-hedge.md`): when `mkt_mode` flips against an open side → (a) place a reduce-only **best-negative exit** on the stuck side (ML target, trailed toward break-even, never chased to market — `neg-l`/`neg-s`), and (b) open a **net-aware hedge** in the trend direction (neutralize + 5m-momentum excess, free-margin capped — `hedge-l`/`hedge-s`). New `enable_hedge` config (default on); skips the old market-dump transition-close. Requires OKX hedge mode.
-- sug debug extended: `negL=.. negS=..`.
-
-## v0.48.0 — 2026-05-29
-Priority 0 batch — entry timing + exit philosophy redesign. See `docs/` for full feature docs.
-- **0.0 Volume floor** (`docs/volume-normalization-floor.md`): `GAIN_RANGE_FLOOR=0.5` / `BSG_RANGE_FLOOR=1.0` replace the `.max(f64::EPSILON)` normalization denominators at all 3 sites so quiet periods can't make micro moves read as full-scale spikes.
-- **Timing 0.1/0.2 Sug-tick entry** (`docs/sug-tick-entry.md`): `compute_auto_open` now also runs in `handle_sug_info` (mid-candle entries); `VLineTracker` gained `last_cross_tick`/`last_cross_dir`; `v_bull_fresh`/`v_bear_fresh` now accept real-time `v_lines` crossings within a 90-tick window in addition to `level_stats`.
-- **0.3 Sudden-move panic exit** (`docs/sudden-move-exit.md`): new price-run tracker (`run_dir`/`run_ticks`/`run_start_price`/`run_extreme`); market-closes only the adverse side when run ≥ 5 no-rollback ticks + NTPS rising + move > 0.5%.
-- **0.1/0.2 Zone-change TP hold** (`docs/zone-change-tp-hold.md`): added `short_min_cross`/`long_max_cross`; band-TP else-branches only fire after price reverses ≥ 1 zone toward ML (hold the winner, don't nibble). Stripped noise triggers from `s-ts` (now SMC-flip only).
-- sug debug extended: `run=^Nt P.PP% [SUDDEN] smn=.. lmx=..`.
-- Deferred: "add stairs (DCA) during sideways zone-change" half of 0.1 — needs grid/DCA path changes, documented for a later isolated version.
-
-## v0.42.0 — 2026-05-29
-- V-pattern detection rewritten: every level boundary crossing is a test (upward = v_bull/support, downward = v_bear/resistance). Removed old 3-candle reversal requirement (`prev2 == cross`). This makes `v_bull_fresh`/`v_bear_fresh` in `compute_auto_open` fire on actual market activity rather than waiting for rare immediate reversals.
-
-## v0.41.0 — 2026-05-29
-- Removed kickstart mechanism entirely (was debug workaround, breaking trading rules with incorrect entries)
-
-## v0.37.0 — 2026-05-29
-- Kickstart fix: fire on first tick of mkt_mode ±2 transition (`mkt_mode_candles == 0`) instead of waiting for `ticks % 120 == 0`; 20-tick cooldown guard added
-- Removed `net_eth` from sug fast_candle debug (OKX contract units unclear, misleading values)
-
-## v0.36.0 — 2026-05-29
-- *(superseded by v0.37.0 — same kickstart fix without net_eth removal)*
-
-## v0.35.0 — 2026-05-29
-- Added `reset_fc` on_action: clears FC sliding window + all EMA stats, callable via `run_bot_action`
-- Added clamps to all FC EMA inputs: pct≤5%, dur≤60t, calm≤300t, gain≤10, momentum clamped ±10
-
-## v0.34.0 — 2026-05-29
-- Added FC sliding window `fc_hist=[...]` to ind debug — last 8 completed events (dir + pct + duration)
-- Added `FcEvent` struct to state
-
-## v0.33.0 — 2026-05-29
-- ind debug: added `dur=Xt gain=Y.YY` to FC stats section
-- ind debug: added `[FAST^]`/`[FASTv]` flag when a fast event is currently active
-- sug debug: added `net_eth=Z.ZZZZ` to fc field (later removed in v0.37.0)
-
-## v0.32.0 — 2026-05-28
-- Expanded `vt_debug` from 2 lines (UB/DB) to 6 lines: UB, US, UI, ML, DI, DB
-- Added `fast_candle` tracking from `sug_info.fast_candle: Option<SuggestionInfoCandle>` to sug debug
-
-## v0.31.x and earlier
-- See git history
+- Removed legacy branch history, retired execution paths, and compatibility config.
+- Reduced the public config surface to `seed_pct`, `cap_pct`, `risk_pct`, `stop_pct`, `tp_pullback_pct`, `cooldown_ticks`, `confirm_tf_fallback`, and `debug_info`.
+- Rebuilt the Rust module around a detector pipeline:
+  - `market_data.rs`
+  - `detection/mrc.rs`
+  - `detection/cascade.rs`
+  - `detection/vlines.rs`
+  - `detection/sharp_return.rs`
+  - `detection/regime.rs`
+  - `decision.rs`
+  - `execution.rs`
+  - `debug.rs`
+  - `engine.rs`
+- Strategy inputs are now limited to `MRC`, `DPSignal`, `ZigZagTrend`, candle OHLC, and live price.
+- Trading behavior is deterministic: exactly one market state, exactly one open position at a time, hard stop first, TP on pullback second, regime invalidation last.
