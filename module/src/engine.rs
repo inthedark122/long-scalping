@@ -91,6 +91,8 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 entry_price: *entry_price,
                 peak_price: input.price.max(*entry_price),
                 trough_price: input.price.min(*entry_price),
+                take_profit: 0.0,
+                stop_loss: 0.0,
             };
             let side = dir_to_position(*direction);
             let plan = exit::plan(
@@ -103,6 +105,10 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 input.price,
                 side,
             );
+            if let Some(plan) = plan {
+                state.position.take_profit = plan.take_profit;
+                state.position.stop_loss = plan.stop_loss;
+            }
             ModuleOutput {
                 update_positions: plan
                     .map(|plan| vec![exit::update_position(side, plan)])

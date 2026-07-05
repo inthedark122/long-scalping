@@ -90,6 +90,35 @@ fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
     }
 }
 
+fn exit_hit_reason(
+    side: crate::model::PositionState,
+    price: f64,
+    take_profit: f64,
+    stop_loss: f64,
+) -> Option<&'static str> {
+    match side {
+        crate::model::PositionState::Long => {
+            if take_profit > 0.0 && price >= take_profit {
+                Some("tp")
+            } else if stop_loss > 0.0 && price <= stop_loss {
+                Some("sl")
+            } else {
+                None
+            }
+        }
+        crate::model::PositionState::Short => {
+            if take_profit > 0.0 && price <= take_profit {
+                Some("tp")
+            } else if stop_loss > 0.0 && price >= stop_loss {
+                Some("sl")
+            } else {
+                None
+            }
+        }
+        crate::model::PositionState::Flat => None,
+    }
+}
+
 pub fn evaluate(
     input: &ModuleInput,
     state: &mut EngineState,
@@ -126,7 +155,30 @@ pub fn evaluate(
     }
 
     if input.positions.long.is_some() {
+        if let Some(hit) = exit_hit_reason(
+            crate::model::PositionState::Long,
+            input.price,
+            state.position.take_profit,
+            state.position.stop_loss,
+        ) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Long,
+                    &format!(
+                        "tp/sl hit={} price={:.4} tp={:.4} sl={:.4}",
+                        hit, input.price, state.position.take_profit, state.position.stop_loss
+                    ),
+                )],
+                note: format!("close-long {}", hit),
+                ..Default::default()
+            };
+        }
+
         let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Long);
+        if let Some(plan) = plan {
+            state.position.take_profit = plan.take_profit;
+            state.position.stop_loss = plan.stop_loss;
+        }
         return ExecutionResult {
             update_positions: plan
                 .map(|plan| vec![exit::update_position(crate::model::PositionState::Long, plan)])
@@ -137,7 +189,30 @@ pub fn evaluate(
     }
 
     if input.positions.short.is_some() {
+        if let Some(hit) = exit_hit_reason(
+            crate::model::PositionState::Short,
+            input.price,
+            state.position.take_profit,
+            state.position.stop_loss,
+        ) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Short,
+                    &format!(
+                        "tp/sl hit={} price={:.4} tp={:.4} sl={:.4}",
+                        hit, input.price, state.position.take_profit, state.position.stop_loss
+                    ),
+                )],
+                note: format!("close-short {}", hit),
+                ..Default::default()
+            };
+        }
+
         let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Short);
+        if let Some(plan) = plan {
+            state.position.take_profit = plan.take_profit;
+            state.position.stop_loss = plan.stop_loss;
+        }
         return ExecutionResult {
             update_positions: plan
                 .map(|plan| vec![exit::update_position(crate::model::PositionState::Short, plan)])
@@ -438,6 +513,118 @@ mod tests {
         );
         assert!(result.open_positions.is_empty());
         assert!(result.note.contains("candle-not-small"));
+    }
+
+    #[test]
+    fn long_tp_hit_closes_position() {
+        let mut state = EngineState::default();
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 103.0,
+            trough_price: 99.0,
+            take_profit: 102.5,
+            stop_loss: 95.0,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.8,
+            qty: 0.1,
+        });
+        inp.price = 103.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 102.0,
+            high: 103.0,
+            low: 101.5,
+            close: 103.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.close_positions.len(), 1);
+        assert!(result.note.contains("close-long tp"));
+    }
+
+    #[test]
+    fn short_sl_hit_closes_position() {
+        let mut state = EngineState::default();
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Short,
+            entry_price: 100.0,
+            peak_price: 101.0,
+            trough_price: 99.0,
+            take_profit: 97.5,
+            stop_loss: 100.5,
+        };
+        let mut inp = input();
+        inp.positions.short = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.6,
+            qty: 0.1,
+        });
+        inp.price = 101.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.5,
+            high: 101.0,
+            low: 100.4,
+            close: 101.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Short,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.close_positions.len(), 1);
+        assert!(result.note.contains("close-short sl"));
     }
 
     #[test]

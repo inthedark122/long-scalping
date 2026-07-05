@@ -8,6 +8,8 @@ pub struct PositionRuntime {
     pub entry_price: f64,
     pub peak_price: f64,
     pub trough_price: f64,
+    pub take_profit: f64,
+    pub stop_loss: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -123,6 +125,8 @@ pub fn sync_position_state(
                     entry_price: entry,
                     peak_price: price.max(entry),
                     trough_price: price.min(entry),
+                    take_profit: 0.0,
+                    stop_loss: 0.0,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -138,6 +142,8 @@ pub fn sync_position_state(
                     entry_price: entry,
                     peak_price: price.max(entry),
                     trough_price: price.min(entry),
+                    take_profit: 0.0,
+                    stop_loss: 0.0,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
