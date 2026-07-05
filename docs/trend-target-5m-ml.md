@@ -1,7 +1,7 @@
 # Trend Target = 5m Mean Line + Scale-In on 1m Pullbacks
 
 ## Purpose
-A trend position (e.g. a `tm-s` trandm short) should ride to the **higher-timeframe target**, not
+A trend position should ride to the **higher-timeframe target**, not
 be banked at a tiny 1m level. The take-profit reference is the **5m MRC mean line**, and 1m
 pullbacks against the position are **add opportunities**, not exit signals. This corrects the
 2026-05-30 18:23–18:32 mistake where the monitor recommended banking a +$0.015 short at the 2021
@@ -21,7 +21,7 @@ Decomposed:
 2. **1m compression ⇒ 1m levels are weak.** When the **1m MRC band spacing is small** and **1m
    NATR (volatility) is low**, price breaks the 1m range easily. So a 1m bounce off a 1m support
    (e.g. 2021) is **noise / a pullback within the larger move**, not a reversal — do not exit on it.
-   (This is *why* the v0.53 `trandm_hold_short` is correct to hold through such bounces.)
+   (This is *why* the v0.53 `direction_hold_short` is correct to hold through such bounces.)
 3. **Scale-in on pullbacks.** A counter-move (pullback) toward the 1m upper band while the 5m
    target is still far is a chance to **add to the position at a better average price**, not to
    close. Closing is only justified to **re-enter at a better price** (a tactical re-entry), never
@@ -32,7 +32,7 @@ Decomposed:
 // 5m mean line (already available as the tf5 MRC MeanLine / read_mrc on the 5m timeframe).
 // Need: per-side TP at the 5m ML, and a pullback-add ladder for the trend side.
 //   short_tp_5m_ml: f64   // buy-to-close target = 5m ML (the big-distance TP)
-//   add levels: when has_short && trandm<=-50 && 5m far above ML, add on pullbacks toward
+//   add levels: when has_short && direction<=-50 && 5m far above ML, add on pullbacks toward
 //               the 1m upper band (better short entries), capped by free-margin.
 ```
 
@@ -41,14 +41,14 @@ Decomposed:
 |-----------|--------|
 | trend short open, price still **above 5m ML** | hold — target not reached; ignore 1m bounces |
 | price **reaches 5m ML** | take profit (the real TP) — `tm-tp` buy-to-close |
-| **pullback** up toward 1m upper band, trandm ≤ −50, 5m far above ML | **add** to the short (scale-in at a better price), free-margin capped |
+| **pullback** up toward 1m upper band, direction ≤ −50, 5m far above ML | **add** to the short (scale-in at a better price), free-margin capped |
 | 1m MRC compressed + low 1m NATR | treat 1m levels as breakable — do NOT exit on a 1m bounce |
 | close *only* to re-enter better | allowed; never close just to bank a small 1m gain |
 
 ## Interactions
 - **Replaces the v0.55 "short TP at support" idea** (18:23 note) — the TP is the **5m ML**, not the
   1m support band. (The 1m support is where you might *add*, not exit.)
-- **`trandm_hold_short` (v0.53)** already holds the short through 1m bounces — this doc explains the
+- **`direction_hold_short` (v0.53)** already holds the short through 1m bounces — this doc explains the
   *why* (1m compression) and adds the *target* (5m ML) + *scale-in*.
 - **Sizing:** pullback-adds raise size at better prices; the user explicitly wants to *increase*
   short size into pullbacks while the 5m target is far (opposite of de-risking).
@@ -104,7 +104,7 @@ target, then 5m **DownInner=1994.96**, **DownBig=1955.99** (big runway). 1m **NA
 EndDirection=SHORT, Fibo=0.913** → up-leg exhausted, turning down. All three of the user's reads
 verified.
 
-Captured after the monitor wrongly recommended banking a +$0.015 `tm-s` short at the 2021 1m
+Captured after the monitor wrongly recommended banking a +$0.015 short at the 2021 1m
 support. User corrected: hold to the **5m mean line** (far target), 1m MRC is compressed + 1m NATR
 tiny so the 1m level breaks easily (the bounce is a pullback, not a reversal), and pullbacks are
 **add** opportunities. To be built as v0.55: 5m-ML take-profit for the trend short + pullback

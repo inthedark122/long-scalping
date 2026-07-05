@@ -11,7 +11,7 @@ use crate::state::{CascadeState, TfMovState};
 pub(crate) const DBG_CORE: i64 = 1; // t, p, mode, ln, pnl, ord — the essentials
 pub(crate) const DBG_CAS: i64 = 2; // cas1 / cas5 movement cascade
 pub(crate) const DBG_WIN: i64 = 4; // window context
-pub(crate) const DBG_RUN: i64 = 8; // run leg / sudden-move / trandm
+pub(crate) const DBG_RUN: i64 = 8; // run leg / sudden-move
 pub(crate) const DBG_FC: i64 = 16; // fast-candle + history
 pub(crate) const DBG_VT: i64 = 32; // V-line tracker table
 pub(crate) const DBG_MRC: i64 = 64; // full MRC band price map

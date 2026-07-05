@@ -8,7 +8,7 @@ Kept as institutional knowledge so we don't re-run this dead end.
 
 ## Design (branch `v0.61-scalp`, module version `0.61-scalp`)
 Added a maker micro-scalp block to `compute_limit_orders`, const-gated (`SCALP_ON`):
-- On the **controlling (trandm) side**: a ladder of `SCALP_RUNGS = 3` MAKER entry limits — sell
+- On the **controlling (direction) side**: a ladder of `SCALP_RUNGS = 3` MAKER entry limits — sell
   ABOVE price / buy BELOW price (non-crossing = maker) — `SCALP_STEP_PCT = 0.06%` apart, each
   `SCALP_RUNG_FRAC = 10%` of the per-side risk budget, total capped by `r_side`.
 - One **reduce-only TP** 0.06% inside the avg entry. 0.06% was picked to clear an assumed

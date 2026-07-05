@@ -57,12 +57,11 @@ The bridge sends `ModuleEvent`s; `run()` dispatches them. All 8 variants are mat
 
 ### Key functions
 - `compute_auto_open` (engine.rs ~786) — **market opens**. Long-only emits: `auto-l`, `trend-l`,
-  `tm-l`, `re-l`, `stair-l`. Sized by `budget_size`/`risk_sized_notional`.
+  `re-l`, `stair-l`. Sized by `budget_size`/`risk_sized_notional`.
 - `compute_limit_orders` (~1036) — **resting limits + TPs**: band-DCA `l-e1/l-e2`, cascade `mv-le*`,
   trend-DCA `dca-l`, trend TPs `t-l*`, Big bracket `l-bk*`, band TPs `l-t1/l-t2`, extended `l-ext-t*`,
   staged SL `psl-l`. (The band-ladder is gated on `cfg.enable_grid`.)
-- `handle_sug_info` — orchestration + **closes**: `MARGIN SL`, `trend-sl`, `sudden-down` (panic),
-  `tm-exit` (trandm thesis-reversal), `tc-cl*` (transition close).
+- `handle_sug_info` — orchestration + **closes**: `MARGIN SL`, `trend-sl`, `sudden-down` (panic), `tc-cl*` (transition close).
 - Regime/analysis: `update_movement`/`advance_market_mode`/`classify_mode` (the **movement cascade**
   → `mkt_mode`: `1` Sideways, `2` TrendUp, `-2` TrendDown), `update_v_lines` (V-tracker), `update_fast_candles`.
 - Sizing: `risk_sized_notional` = `min((max_amount/leverage × risk_pct)/stop_pct, max_amount)`;
@@ -70,7 +69,7 @@ The bridge sends `ModuleEvent`s; `run()` dispatches them. All 8 variants are mat
 
 ### Indicators read (`read_*` helpers)
 `mrc_200` (MRC bands `DownBig..UpBig` + cross), `smc`, `candle` (OHLC), and the **SuggestionInfo**
-analysis (`ntps`, **`trandm`** = buy/sell control −100..+100, `asset_01`, fast-candle). Many more are
+analysis (`ntps`, fast-candle). Many more are
 *available* (see `list_indicators`: `ZigZagTrend`, `Supertrend`, `Smc.DirectionSwing`, `BollingerBands`,
 `Imbalance`, `Window`, …) — the regime redesign (`docs/regime-modes.md`) will pull `ZigZagTrend` + `Candle`.
 
@@ -139,18 +138,17 @@ cooldown_ticks 5, nearest 2, enable_grid 0, enable_stairs 1, enable_trend 1`.
 
 ## 6. Strategy summary & key findings
 - **`v0.61` (hedge version)** was the long-time baseline (back-tested +$1.60/28d) — *but that number is
-  now suspect under gotcha #1*. It traded both directions trandm-aligned + a persist-hedge for protection.
+  now suspect under gotcha #1*. It traded both directions with a persist-hedge for protection.
 - **Long-only (`v0.61-long`)** was adopted to stop shorts bleeding into pumps (e.g. a short that fought a
   +5% move). Trade-off: it **sits out the oversold tape** and trades little when buyers aren't in control.
 - **Backtest snapshots (all PnL-bug-caveated):** ETH 30d long-only ≈ net −$0.92 (low volume);
   HOME 30d long-only ≈ +$13 (100x) / +$15.6 (20x) — HOME trended up, so the bug bites it less.
   `enable_grid=1` looked like +$3.73/3× volume but that was the bug hiding stop-out losses → likely net-negative.
-- **trandm** is the directional gauge the strategy rides ("never buy the dip" — never fade a strongly-
-  controlling side). `mkt_mode` (cascade) is the regime. MRC bands are the price ladder.
+- `mkt_mode` (cascade) is the regime. MRC bands are the price ladder.
 
 ## 7. Roadmap
 1. **Next feature:** the 3-mode **regime redesign** — `docs/regime-modes.md` (Downtrend / Sideway /
-   Uptrend, cascade+trandm owned, 1h ZigZag confirm, `enable_grid` folded into Sideway). Build on a
+   Uptrend, 1h ZigZag confirm, `enable_grid` folded into Sideway). Build on a
    `v0.61-long-regime` branch.
 2. **Blocking everything quantitative:** fix the sim PnL bug (#1), then re-validate long-only, the grid,
    and the regime modes with trustworthy numbers.

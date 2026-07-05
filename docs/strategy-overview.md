@@ -5,7 +5,7 @@ module consumes. Figures are taken directly from the live module source
 (`module/src/engine.rs`, `module/src/state.rs`), not estimated.
 
 > **One-line version:** 4 candle indicators (MRC-200 channel, SMC, OHLC, Volume)
-> + 4 real-time order-flow gauges (trandm, asset_01, NTPS, spike-detector),
+> + 2 real-time analysis streams (NTPS, spike-detector),
 > across 5 timeframes (1m / 5m / 15m / 30m + live tick), with 16 tunable
 > parameters and risk-based position sizing.
 
@@ -35,13 +35,10 @@ module consumes. Figures are taken directly from the live module source
 4. **Volume-50** — Gain and Buy/Sell-Gain (BSG), each with a rolling 50-candle
    min/max envelope so "how big is big" adapts to recent volatility.
 
-### From the real-time analysis feed (4)
+### From the real-time analysis feed (2)
 
-5. **trandm** — which side is in control, −100 (selling) … +100 (buying).
-   The strategy *rides* the controlling side rather than fading it.
-6. **asset_01** — order-flow depth / power: the $ required to move trandm 1%.
-7. **NTPS** — trade-activity rate (average trades per 3 seconds).
-8. **Fast-candle detector** — real-time momentum-spike events.
+5. **NTPS** — trade-activity rate (average trades per 3 seconds).
+6. **Fast-candle detector** — real-time momentum-spike events.
 
 ---
 
@@ -54,7 +51,6 @@ module consumes. Figures are taken directly from the live module source
 - **3 risk controls** — `risk_pct`, `stop_pct`, and margin-SL — which drive
   **risk-based position sizing**: size = (risk budget ÷ stop distance), hard-capped
   at `max_amount ÷ leverage`. The bot never risks more than its configured margin.
-- Plus **~12 hard-coded thresholds** (trandm control bands at ±25 / ±50, volume
   range floors, V-pattern freshness window, EMA smoothing α = 0.20, etc.).
 
 ---

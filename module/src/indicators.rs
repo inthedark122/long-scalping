@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::consts::*;
-use crate::state::State;
+use crate::state::{State, TimeframeSignal};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue, ModuleInput};
 use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorKey, TimeframeSec,
@@ -110,6 +110,51 @@ pub(crate) fn update_zigzag(ind: &Indicators, state: &mut State) {
     state.zz_klines = read_float(ind, TF, 0, ZZ_IND, "KLines").unwrap_or(0.0);
     if close > 0.0 {
         state.zz_close_prev = close;
+    }
+}
+
+pub(crate) fn read_timeframe_signal(ind: &Indicators, tf: i64) -> TimeframeSignal {
+    let dp_dir = match read_direction(ind, tf, 0, DP_IND, "Direction") {
+        Some(Direction::Long) => 1,
+        Some(Direction::Short) => -1,
+        _ => 0,
+    };
+    let zz_dir = match read_direction(ind, tf, 0, ZZ_IND, "Direction") {
+        Some(Direction::Long) => 1,
+        Some(Direction::Short) => -1,
+        _ => 0,
+    };
+    let zz_end_dir = match read_direction(ind, tf, 0, ZZ_IND, "EndDirection") {
+        Some(Direction::Long) => 1,
+        Some(Direction::Short) => -1,
+        _ => 0,
+    };
+    TimeframeSignal {
+        dp_dir,
+        dp_zee: read_float(ind, tf, 0, DP_IND, "Zee").unwrap_or(0.0),
+        dp_zee1: read_float(ind, tf, 0, DP_IND, "Zee1").unwrap_or(0.0),
+        dp_zee2: read_float(ind, tf, 0, DP_IND, "Zee2").unwrap_or(0.0),
+        dp_zee_k: read_float(ind, tf, 0, DP_IND, "ZeeKLines").unwrap_or(0.0),
+        dp_zee1_k: read_float(ind, tf, 0, DP_IND, "Zee1KLines").unwrap_or(0.0),
+        dp_zee2_k: read_float(ind, tf, 0, DP_IND, "Zee2KLines").unwrap_or(0.0),
+        zz_dir,
+        zz_end_dir,
+        zz_break: read_float(ind, tf, 0, ZZ_IND, "BreakPrice").unwrap_or(0.0),
+        zz_buy: read_float(ind, tf, 0, ZZ_IND, "BuyPrice").unwrap_or(0.0),
+        zz_sell: read_float(ind, tf, 0, ZZ_IND, "SellPrice").unwrap_or(0.0),
+        zz_fibo: read_float(ind, tf, 0, ZZ_IND, "Fibo").unwrap_or(0.0),
+        zz_klines: read_float(ind, tf, 0, ZZ_IND, "KLines").unwrap_or(0.0),
+    }
+}
+
+pub(crate) fn update_timeframe_signal(ind: &Indicators, state: &mut State, tf: i64) {
+    let sig = read_timeframe_signal(ind, tf);
+    match tf {
+        TF => state.sig1 = sig,
+        TF_5M => state.sig5 = sig,
+        TF_15M => state.sig15 = sig,
+        TF_1H => state.sig1h = sig,
+        _ => {}
     }
 }
 
@@ -279,19 +324,9 @@ pub(crate) fn read_mrc_at(ind: &Indicators, offset: usize) -> Option<[f64; 9]> {
 
 pub(crate) fn read_analysis(
     input: &ModuleInput,
-) -> (
-    i64,
-    f64,
-    f64,
-    Option<lte_strategy_bridge::SuggestionInfoCandle>,
-) {
+) -> (i64, Option<lte_strategy_bridge::SuggestionInfoCandle>) {
     match &input.sug_info {
-        Some(s) => (
-            s.indicator.ntps,
-            s.indicator.trandm,
-            s.indicator.asset_01,
-            s.fast_candle.clone(),
-        ),
-        None => (0, 0.0, 0.0, None), // trandm default neutral (0) for the -100..+100 scale
+        Some(s) => (s.indicator.ntps, s.fast_candle.clone()),
+        None => (0, None),
     }
 }

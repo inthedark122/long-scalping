@@ -3,24 +3,23 @@
 > Status: **DESIGN (not yet implemented)** · target branch `v0.61-long-regime` off `v0.61-long` · authored 2026-06-06
 
 ## Purpose
-The long-only build (`v0.61-long`) currently fires a *soup* of entry types (`auto-l`, `trend-l`,
-`tm-l`, `re-l`, `stair-l`, plus the `enable_grid` band-ladder) that each carry their own gates.
+The long-only build (`v0.61-long`) currently fires a *soup* of entry types (`auto-l`, `re-l`,
+`stair-l`, plus the `enable_grid` band-ladder) that each carry their own gates.
 This redesign replaces that with **three explicit market regimes**, each with one clear, purpose-built
 behaviour. Long-only means we only ever buy — so the goal is to **buy dips well** in a downtrend,
 **range-trade** when there's no direction, and **scalp micro-pumps** in an uptrend.
 
 ## Core concept — regime detection
 The regime is owned by the **movement-cascade** (the existing `mkt_mode`, derived from the `tf5`
-cascade in `advance_market_mode`/`classify_mode`) **plus `trandm`** (the buy/sell control gauge,
-−100..+100). The **1h `ZigZagTrend.Direction` indicator is confirmation only** — it agrees with or
-**vetoes** the cascade's *trend* call (on disagreement, fall back to Sideway / wait); it never drives
-the regime by itself.
+cascade in `advance_market_mode`/`classify_mode`). The **1h `ZigZagTrend.Direction` indicator is
+confirmation only** — it agrees with or **vetoes** the cascade's *trend* call (on disagreement,
+fall back to Sideway / wait); it never drives the regime by itself.
 
-| Regime | cascade gate | trandm | 1h ZigZag (confirm) | behaviour |
-|---|---|---|---|---|
-| **Downtrend** | `mkt_mode == -2` | `< -50` | `down` (else wait) | buy **only at `DownBig`**, **only on a red candle**, at the candle **`Low`** |
-| **Sideway** | `mkt_mode == 1` | `[-50, +50]` | `both`/neutral | buy bottom / sell top on 1m & 5m MRC bands + risk control |
-| **Uptrend** | `mkt_mode == 2` | `> +50` | `up` (else wait) | **stairs**: fast enter/exit, scalp each micro-pump |
+| Regime | cascade gate | 1h ZigZag (confirm) | behaviour |
+|---|---|---|---|
+| **Downtrend** | `mkt_mode == -2` | `down` (else wait) | buy **only at `DownBig`**, **only on a red candle**, at the candle **`Low`** |
+| **Sideway** | `mkt_mode == 1` | `both`/neutral | buy bottom / sell top on 1m & 5m MRC bands + risk control |
+| **Uptrend** | `mkt_mode == 2` | `up` (else wait) | **stairs**: fast enter/exit, scalp each micro-pump |
 
 "Strong move without retracement" (= *always updating bottom/top*) is exactly what ZigZag encodes —
 that's why it's the confirmation, distinguishing a clean trend from chop the cascade may mislabel.
@@ -46,14 +45,14 @@ that's why it's the confirmation, distinguishing a clean trend from chop the cas
 ### Uptrend — fast stairs, scalp the micro-pumps
 - Use the stair-add ladder (`stair-l`) but **faster/tighter**: a "micro-pump" = a ~**+0.15%** up-leg
   (fast-candle), enter on the small dip/stair, exit at a **tight TP (~+0.10–0.15%)** so each pump is a
-  quick cycle. Re-arm immediately for the next leg while the uptrend + trandm hold.
+  quick cycle. Re-arm immediately for the next leg while the uptrend holds.
 
 ## Indicators (all confirmed available via `list_indicators`)
 - **`ZigZagTrend`** (period via 1h timeframe) — `Direction`, `PrevDirection`, `EndDirection`,
   `StartPrice`/`EndPrice` for the confirmation layer.
 - **`Candle`** (5m + 1m) — `Direction` (red/green), `Open`/`Close`/`High`/`Low` for the red-candle-Low entry.
 - **`Mrc`** (`mrc_200`, already read) — `DownBig`..`UpBig` bands.
-- **`mkt_mode`** + **`trandm`** — already computed in-module (cascade + sug analysis).
+- **`mkt_mode`** — already computed in-module (cascade + sug analysis).
 - (Optional) **`Smc`** `DirectionSwing` (30m) as a second trend confirmation.
 
 ## Open decisions to confirm before building
@@ -76,5 +75,5 @@ review + fill-reconstruction spot-checks, and lean on **live** for the real sign
 
 ## History of Changes
 ### 2026-06-06 — designed
-Regime model agreed: movement-cascade + trandm own the regime; 1h ZigZag confirms/vetoes; `enable_grid`
+Regime model agreed: movement-cascade owns the regime; 1h ZigZag confirms/vetoes; `enable_grid`
 folds into Sideway. Per-mode behaviours + recommended entry/exit defaults captured above. Not yet implemented.

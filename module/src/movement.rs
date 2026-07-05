@@ -245,7 +245,17 @@ pub(crate) fn update_risk_ratchet(state: &mut State, max_amount: f64, auto_max_a
         1.0
     };
 
-    state.risk_drawdown = (peak_factor * floor_factor).sqrt().clamp(0.10, 1.0);
+    let post_sl_factor = if state.post_sl_active && state.ticks <= state.post_sl_until_tick {
+        state.post_sl_factor.clamp(0.10, 1.0)
+    } else {
+        1.0
+    };
+    if state.post_sl_active && state.ticks > state.post_sl_until_tick {
+        state.post_sl_active = false;
+        state.post_sl_factor = 1.0;
+    }
+
+    state.risk_drawdown = (peak_factor * floor_factor).sqrt().clamp(0.10, 1.0) * post_sl_factor;
 }
 
 
@@ -421,5 +431,4 @@ pub(crate) fn compute_conf(tf: &TfMovState) -> u8 {
     };
     ((hist_score + mov_score + stability) as u8).min(100)
 }
-
 

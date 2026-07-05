@@ -4,7 +4,7 @@
 use crate::consts::*;
 use crate::interest::compute_entry_scale;
 use crate::orders::{limit_open, limit_order, market_open, tp_order_with_band};
-use crate::state::State;
+use crate::state::{MarketBias, State, TimeframeSignal};
 use crate::trend::compute_trend;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOpenPosition, ModulePlaceOrder};
 
@@ -20,15 +20,12 @@ pub(crate) fn risk_sized_notional(max_amount: f64, leverage: f64, risk_pct: f64,
 // v0.56 (0.D): de-risk multiplier for an UNPREDICTABLE regime. The user keeps risk_pct=0.40
 // (full base budget) but wants size cut when the read is uncertain — so we damp dynamically
 // instead of lowering the base. Multiplicative: each uncertainty stacks. Clamped to [0.40, 1.0].
-//   • market mode still UNKNOWN, • thin order book (asset_01 < $5M → can whip),
-//   • weak 5m trend confidence, • 1m and 5m disagree on direction (cross-TF conflict).
+//   • market mode still UNKNOWN, • weak 5m trend confidence,
+//   • 1m and 5m disagree on direction (cross-TF conflict).
 pub(crate) fn uncertainty_damp(state: &State) -> f64 {
     let mut d = 1.0_f64;
     if state.mkt_mode == 0 {
         d *= 0.75;
-    }
-    if state.asset_01 > 0.0 && state.asset_01 < 50_000.0 {
-        d *= 0.80;
     }
     if state.tf5.conf < 35 {
         d *= 0.85;
@@ -38,6 +35,115 @@ pub(crate) fn uncertainty_damp(state: &State) -> f64 {
         d *= 0.85;
     }
     d.clamp(0.40, 1.0)
+}
+
+fn tf_dir(sig: &TimeframeSignal) -> i8 {
+    if sig.zz_end_dir != 0 {
+        sig.zz_end_dir
+    } else {
+        sig.dp_dir
+    }
+}
+
+fn tf_conf(sig: &TimeframeSignal) -> u8 {
+    let mut conf = 0u8;
+    if sig.dp_dir != 0 {
+        conf += 1;
+    }
+    if sig.zz_end_dir != 0 {
+        conf += 1;
+    }
+    if sig.dp_dir != 0 && sig.dp_dir == sig.zz_end_dir {
+        conf += 1;
+    }
+    if sig.zz_fibo > 0.0 {
+        conf += 1;
+    }
+    conf.min(4)
+}
+
+fn pullback_exit_levels(sig: &TimeframeSignal) -> [f64; 3] {
+    [sig.zz_sell, sig.zz_break, sig.dp_zee]
+}
+
+fn choose_pullback_tp(price: f64, floor: f64, state: &State) -> f64 {
+    let mut best = 0.0;
+    let mut consider = |sig: &TimeframeSignal| {
+        for lvl in pullback_exit_levels(sig) {
+            if lvl > 0.0 && lvl > price && lvl >= floor && (best == 0.0 || lvl < best) {
+                best = lvl;
+            }
+        }
+    };
+
+    if tf_dir(&state.sig5) != 0 && tf_conf(&state.sig5) >= 2 {
+        consider(&state.sig5);
+        consider(&state.sig1);
+    } else if tf_dir(&state.sig15) != 0 {
+        consider(&state.sig15);
+        consider(&state.sig1h);
+    } else if tf_dir(&state.sig1h) != 0 {
+        consider(&state.sig1h);
+    } else {
+        consider(&state.sig1);
+        consider(&state.sig5);
+        consider(&state.sig15);
+        consider(&state.sig1h);
+    }
+
+    for lvl in [state.mrc_ui, state.mrc_us, state.mrc_uo, state.mrc_ub] {
+        if lvl > 0.0 && lvl > price && lvl >= floor && (best == 0.0 || lvl < best) {
+            best = lvl;
+        }
+    }
+
+    if best > 0.0 {
+        best
+    } else {
+        floor.max(price * 1.001)
+    }
+}
+
+fn pullback_exit_levels_short(sig: &TimeframeSignal) -> [f64; 3] {
+    [sig.zz_buy, sig.zz_break, sig.dp_zee]
+}
+
+fn choose_pullback_tp_short(price: f64, floor: f64, state: &State) -> f64 {
+    let mut best = 0.0;
+    let mut consider = |sig: &TimeframeSignal| {
+        for lvl in pullback_exit_levels_short(sig) {
+            if lvl > 0.0 && lvl < price && lvl >= floor && (best == 0.0 || lvl > best) {
+                best = lvl;
+            }
+        }
+    };
+
+    if tf_dir(&state.sig5) != 0 && tf_conf(&state.sig5) >= 2 {
+        consider(&state.sig5);
+        consider(&state.sig1);
+    } else if tf_dir(&state.sig15) != 0 {
+        consider(&state.sig15);
+        consider(&state.sig1h);
+    } else if tf_dir(&state.sig1h) != 0 {
+        consider(&state.sig1h);
+    } else {
+        consider(&state.sig1);
+        consider(&state.sig5);
+        consider(&state.sig15);
+        consider(&state.sig1h);
+    }
+
+    for lvl in [state.mrc_db, state.mrc_do, state.mrc_ds, state.mrc_di] {
+        if lvl > 0.0 && lvl < price && lvl >= floor && (best == 0.0 || lvl > best) {
+            best = lvl;
+        }
+    }
+
+    if best > 0.0 {
+        best
+    } else {
+        floor.min(price * 0.999)
+    }
 }
 
 // v0.56 (0.D): per-type auto-scaling under ONE per-side risk budget. Every entry type draws a
@@ -109,10 +215,8 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         return vec![];
     }
     let has_long = input.positions.long.is_some();
-    // v0.53: when the selling side is strongly in control, never open a long — ride the
-    // controlling side (no fading / buying-the-dip). LONG-ONLY build (v0.61-long): shorts
-    // and the hedge are removed entirely; the bot only ever opens long.
-    let trandm_block_long = state.trandm <= -TRANDM_STRONG; // selling side: block long opens
+    let has_short = input.positions.short.is_some();
+    let has_position = has_long || has_short;
     let mode = state.tf5.regime;
     let cross1m = state.tf1.cross;
     let smc_dir = match state.smc_dir {
@@ -123,7 +227,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let pzone = (price - state.mrc_db) / (state.mrc_ub - state.mrc_db).max(f64::EPSILON);
     let (long_alloc, _short_alloc) =
         compute_allocation(smc_dir, pzone, state.angle, state.tf5.mov, mode);
-    let (lbias, _sbias) = compute_bias(state.angle, pzone, state.trandm, state.tf5.mov);
+    let (lbias, sbias) = compute_bias(state.angle, pzone, state.tf5.mov);
     let (lscale, _sscale) = compute_entry_scale(state, pzone);
 
     // v0.56 (0.D): one risk budget; every entry type draws a fraction of REMAINING room.
@@ -139,8 +243,6 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let trend_strength =
         (state.tf5.mov.abs() / 100.0 * state.tf5.conf as f64 / 100.0).clamp(0.0, 1.0);
     let f_trend = 0.30 + 0.40 * trend_strength;
-    let tm_conv = ((state.trandm.abs() - TRANDM_STRONG) / TRANDM_STRONG).clamp(0.0, 1.0);
-    let f_tm = 0.30 + 0.30 * tm_conv;
     let angle_conv = (state.angle.abs() / 0.02).clamp(0.0, 1.0);
     let f_re = 0.25 + 0.25 * angle_conv;
     const F_SEED: f64 = 0.50; // seed leaves room for stairs to build the rest
@@ -149,6 +251,7 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let long_on_cd = state.long_close_tick > 0
         && state.ticks.saturating_sub(state.long_close_tick) < state.cfg.cooldown_ticks;
     let cas_allows_long = state.cas1.cas_dir >= 0;
+    let cas_allows_short = state.cas1.cas_dir <= 0;
 
     // v0.56: Freshness = recent support test, sourced ONLY from the real-time V-line tracker.
     let now_tick = state.ticks;
@@ -157,6 +260,12 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     let v_bull_fresh = [0usize, 1, 2, 3].iter().any(|&i| {
         let vl = &state.v_lines[i];
         vl.last_cross_dir == 1
+            && vl.last_cross_tick > 0
+            && now_tick.saturating_sub(vl.last_cross_tick) <= V_CROSS_WINDOW
+    });
+    let v_bear_fresh = [5usize, 6, 7, 8].iter().any(|&i| {
+        let vl = &state.v_lines[i];
+        vl.last_cross_dir == -1
             && vl.last_cross_tick > 0
             && now_tick.saturating_sub(vl.last_cross_tick) <= V_CROSS_WINDOW
     });
@@ -246,12 +355,21 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     // calculators by majority vote. Replaces the old mkt_mode/tf5-only `uptrend`/`uptrend_strong` AND
     // the separate `vol_regime==2` checks, so "up/down" means ONE thing across the zone gate + UpStairs.
     let trend = compute_trend(state);
+    let bias = state.market_bias;
+    let bias_is_long = bias == MarketBias::Long;
+    let bias_is_sideways = bias == MarketBias::Sideways;
+    let bias_is_short = bias == MarketBias::Short;
     let came_from_above = state.cas1.cas_high > mean; // the 1m window reached above the mean
-    let zone_pullback =
-        have_mean && near_mean && above_mean && came_from_above && !trend.is_up() && !downish;
+    let zone_pullback = have_mean
+        && near_mean
+        && above_mean
+        && came_from_above
+        && bias_is_sideways
+        && !trend.is_up()
+        && !downish;
     // Above the mean + a confirmed uptrend = Momentum (the 0.77 falling-knife guard is now baked into the
     // combined Trend, which rejects a lagging 5m flag unless price action / structure agree).
-    let zone_momentum = have_mean && above_mean && trend.is_up();
+    let zone_momentum = have_mean && above_mean && (trend.is_up() || bias_is_long);
     let zone_range = have_mean && !above_mean && state.mkt_mode == 1 && !downish;
     // Gate off, or no mean yet → legacy behaviour (scalp the safe window regardless of zone).
     // A confirmed uptrend (Trend up) is also a scalp-OK zone — we want aboard the uptrend.
@@ -259,7 +377,24 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         || !have_mean
         || zone_momentum
         || zone_range
-        || trend.is_up();
+        || trend.is_up()
+        || bias_is_long;
+    let came_from_below = state.cas1.cas_low < mean;
+    let _zone_pullback_short = have_mean
+        && near_mean
+        && !above_mean
+        && came_from_below
+        && bias_is_sideways
+        && !trend.is_down()
+        && !downish;
+    let zone_momentum_short = have_mean && !above_mean && (trend.is_down() || bias_is_short);
+    let zone_range_short = have_mean && above_mean && state.mkt_mode == 1 && !downish;
+    let scalp_ok_short = !state.cfg.fcscalp_zone_gate
+        || !have_mean
+        || zone_momentum_short
+        || zone_range_short
+        || trend.is_down()
+        || bias_is_short;
 
     // No-worse-price re-entry guard (0.77 anti-churn): for REENTRY_WINDOW ticks after an FC long exit,
     // block ANY re-open unless price is fcscalp_reentry_gap BELOW the exit price. The time cooldown alone
@@ -277,8 +412,9 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         && zone_pullback
         && !reentry_block
         && !state.risk_high
+        && !bias_is_short
         && !trend.is_down()
-        && !has_long
+        && !has_position
         && !long_on_cd
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
@@ -319,10 +455,11 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
 
     // ── Dip-buyer (Momentum / Range zones only) ─────────────────────────────────
     if state.cfg.enable_fcscalp
-        && !has_long
+        && !has_position
         && !long_on_cd
         && !reentry_block
         && !state.risk_high
+        && bias_is_sideways
         && !trend.is_down()
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
@@ -407,14 +544,15 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
     // take it now and ride to the per-rung TP. Stands down in a confirmed downtrend (mkt_mode==-2).
     if state.cfg.enable_fcscalp
         && state.cfg.fcscalp_zz_breakout
-        && !has_long
+        && !has_position
         && !long_on_cd
         && !reentry_block
         && !state.risk_high
+        && bias_is_sideways
         && state.fc_open_px <= 0.0
         && open_positions.is_empty()
         && state.zz_break_up
-        && state.mkt_mode != -2
+        && !bias_is_short
     {
         let min_n = input
             .symbol_info
@@ -437,9 +575,108 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
+    // ── Fast-candle short scalp / breakout ────────────────────────────────────
+    let zz_break_down = state.zz_buy > 0.0
+        && state.zz_close_prev > 0.0
+        && state.zz_close_prev >= state.zz_buy
+        && price < state.zz_buy
+        && state.zz_dir != 1;
+    if state.cfg.enable_fcscalp
+        && !has_position
+        && !long_on_cd
+        && !reentry_block
+        && !state.risk_high
+        && bias_is_short
+        && !trend.is_up()
+        && state.fc_open_px <= 0.0
+        && open_positions.is_empty()
+        && (scalp_ok_short || _zone_pullback_short)
+    {
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        let amt = (max * state.cfg.fcscalp_rung_frac).max(min_n).max(1.0);
+        if amt <= max {
+            let scale = (state.win.scale_pct / 100.0).max(0.0005);
+            let sz_line = state.win.floor
+                + (state.win.ceiling - state.win.floor) * (1.0 - state.cfg.fcscalp_buy_zone);
+            let mut entry_px = (price * (1.0 + scale * 0.25)).max(sz_line).max(price);
+            let has_ob = input
+                .sug_info
+                .as_ref()
+                .and_then(|s| s.order_book.as_ref())
+                .is_some();
+            if state.cfg.fcscalp_use_ob && has_ob {
+                if let Some(s) = input
+                    .sug_info
+                    .as_ref()
+                    .and_then(|s| s.order_book.as_ref())
+                    .and_then(|ob| {
+                        ob.long_levels
+                            .iter()
+                            .map(|l| l.price)
+                            .filter(|&p| p > price)
+                            .min_by(|a, b| a.partial_cmp(b).unwrap())
+                    })
+                {
+                    if s > price {
+                        entry_px = s;
+                    }
+                }
+            }
+            if entry_px > price {
+                let note = format!(
+                    "fcs-s | pullback short | w[{:.4}-{:.4}] pos{:.2} scl{:.1}% | {}",
+                    state.win.floor,
+                    state.win.ceiling,
+                    state.win.pos_frac,
+                    state.win.scale_pct,
+                    state.ctx(price, 0.0)
+                );
+                if has_ob {
+                    open_positions.push(limit_open(Direction::Short, amt, entry_px, &note));
+                } else {
+                    open_positions.push(market_open(Direction::Short, amt, &note));
+                }
+            }
+        }
+    }
+    if state.cfg.enable_fcscalp
+        && state.cfg.fcscalp_zz_breakout
+        && !has_position
+        && !long_on_cd
+        && !reentry_block
+        && !state.risk_high
+        && bias_is_short
+        && state.fc_open_px <= 0.0
+        && open_positions.is_empty()
+        && zz_break_down
+    {
+        let min_n = input
+            .symbol_info
+            .min_notional
+            .unwrap_or(0.0)
+            .max(state.cfg.min_order);
+        let amt = (max * state.cfg.fcscalp_rung_frac * state.cfg.fcscalp_zz_seed_mult)
+            .max(min_n)
+            .max(1.0);
+        if amt <= max {
+            let note = format!(
+                "fcs-bk-s | 1m closed below swing-low line (breakdown): p{:.4}<zz{:.4} pos{:.2} | {}",
+                price,
+                state.zz_buy,
+                state.win.pos_frac,
+                state.ctx(price, 0.0)
+            );
+            open_positions.push(market_open(Direction::Short, amt, &note));
+        }
+    }
+
     // LONG-ONLY: open only on long setups; the bot never opens a short. (The hedge — which
     // opened the opposite side — is removed entirely along with all short entries.)
-    if !has_long && !long_on_cd && cas_allows_long && !trandm_block_long {
+    if !has_position && !long_on_cd && cas_allows_long && bias_is_long && open_positions.is_empty() {
         let (trigger, extra) = match mode {
             2 => (stair_long_ok, stair_lscale),
             // FC owns sideways: when enabled, base auto-l yields the mode-1 entry to FC.
@@ -459,14 +696,28 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
+    if !has_position && !long_on_cd && cas_allows_short && bias_is_short && open_positions.is_empty() {
+        let trigger = match mode {
+            -2 => price >= state.mrc_ub,
+            1 if !state.cfg.enable_fcscalp => cross1m >= 0 && v_bear_fresh && pzone > 0.5,
+            _ => false,
+        };
+        if trigger {
+            let amt = budget_size(room_l, F_SEED, sbias * lscale, state);
+            if amt > 1.0 {
+                open_positions.push(market_open(Direction::Short, amt, "auto-s"));
+            }
+        }
+    }
+
 
     // ── Trend entry (zone-rejection / fast-candle breakout) — long only ─────────
     if state.cfg.enable_trend
-        && !has_long
+        && !has_position
         && open_positions.is_empty()
         && !long_on_cd
         && cas_allows_long
-        && !trandm_block_long
+        && bias_is_long
     {
         let cross_streak_now = if (-4i8..=4).contains(&cross1m) {
             state.zone_streak[(cross1m + 4) as usize]
@@ -493,34 +744,40 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── v0.55 (0.C): trandm-long — ride the buying side on a confirmed 1m up-move ───────────
-    if !has_long
-        && !long_on_cd
-        && cas_allows_long
+    if state.cfg.enable_trend
+        && !has_position
         && open_positions.is_empty()
-        && state.trandm >= TRANDM_STRONG
-        && state.tf1.regime == 2
-        && cross1m > 0
-        && pzone < 0.85
+        && !long_on_cd
+        && cas_allows_short
+        && bias_is_short
     {
-        // v0.56 (0.D): seed the trandm-ride sized by |trandm| conviction; stairs build the rest.
-        let amt = budget_size(room_l, f_tm, 1.0, state);
-        if amt > 1.0 {
-            open_positions.push(market_open(Direction::Long, amt, "tm-l"));
+        let cross_streak_now = if (-4i8..=4).contains(&cross1m) {
+            state.zone_streak[(cross1m + 4) as usize]
+        } else {
+            0
+        };
+        let rejection = cross_streak_now >= 3
+            && cross1m < 0
+            && state.bearish_spike
+            && state.vol_bsg < -1.0
+            && pzone > 0.35;
+        let breakout = state.fc.active
+            && state.fc.dir == -1
+            && cross1m < state.tf1.cross_prev
+            && cross1m <= -2
+            && pzone > 0.35;
+        if rejection || breakout {
+            let amt = budget_size(room_l, f_trend, 1.0, state);
+            if amt > 1.0 {
+                open_positions.push(market_open(Direction::Short, amt, "trend-s"));
+            }
         }
     }
 
-    // ── v0.55 (0.C): re-enter at the 1m mean line on a soft touch, angle-confirmed — long only ──
-    // The mean line is a valid entry ONLY as a soft touch (not hard-broken). The 1m-ML angle must
-    // confirm the up-drift: up-angled 1m ML + buying side → long the touch.
-    if !has_long && open_positions.is_empty() && state.mrc_range > 0.0 {
+    // ── Re-entry at the 1m mean line on a soft touch, angle-confirmed ───────────────
+    if !has_position && open_positions.is_empty() && state.mrc_range > 0.0 && bias_is_long {
         let near_ml = (price - state.mrc_ml).abs() <= state.mrc_range * 0.05;
-        if near_ml
-            && !long_on_cd
-            && cas_allows_long
-            && state.trandm >= TRANDM_STRONG
-            && state.angle > 0.0
-        {
+        if near_ml && !long_on_cd && cas_allows_long && state.angle > 0.0 {
             // v0.56 (0.D): re-entry size scales with the 1m-ML angle (steeper drift → bigger).
             let amt = budget_size(room_l, f_re, 1.0, state);
             if amt > 1.0 {
@@ -529,15 +786,22 @@ pub(crate) fn compute_auto_open(input: &ModuleInput, state: &State) -> Vec<Modul
         }
     }
 
-    // ── v0.55 (0.C/0.A): stair-add at each new 5m up line while the strong buying side holds —
-    // builds the position toward the cap on a continuation that never pulls back. Half-size
-    // increments, capped by remaining room; fires once per new 5m zone (long_stair_cross advanced
-    // in the note post-processing).
+    if !has_position && open_positions.is_empty() && state.mrc_range > 0.0 && bias_is_short {
+        let near_ml = (price - state.mrc_ml).abs() <= state.mrc_range * 0.05;
+        if near_ml && !long_on_cd && cas_allows_short && state.angle < 0.0 {
+            let amt = budget_size(room_l, f_re, 1.0, state);
+            if amt > 1.0 {
+                open_positions.push(market_open(Direction::Short, amt, "re-s"));
+            }
+        }
+    }
+
+    // ── Stair-add at each new 5m up line while the trend holds ─────────────────────
     if open_positions.is_empty()
         && has_long
-        && state.trandm >= TRANDM_STRONG
         && state.tf5.cross > 0
         && state.tf5.cross > state.long_stair_cross
+        && bias_is_long
     {
         // v0.56 (0.D): each stair takes half the REMAINING budget room (diminishing → ≤ R_side).
         let stair = budget_size(room_l, F_STAIR, 1.0, state);
@@ -562,9 +826,17 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
         .as_ref()
         .map(|p| p.notional)
         .unwrap_or(0.0);
+    let short_n = input
+        .positions
+        .short
+        .as_ref()
+        .map(|p| p.notional)
+        .unwrap_or(0.0);
     // UNREALIZED pnl (self-computed — position.pnl is realized). Drives exp_pnl TP gate + free margin.
     let long_pnl = upnl(input.positions.long.as_ref(), price, true);
+    let short_pnl = upnl(input.positions.short.as_ref(), price, false);
     let has_long = input.positions.long.is_some();
+    let has_short = input.positions.short.is_some();
     let mode = state.tf5.regime;
     let mkt_mode = state.mkt_mode; // 0=UNK 1=Sideways 2=TrendLong -2=TrendShort
     let drf = state.risk_drawdown; // entry size scale factor from risk ratchet
@@ -576,7 +848,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     let pzone = (price - state.mrc_db) / (state.mrc_ub - state.mrc_db).max(f64::EPSILON);
     let (long_alloc, _short_alloc) =
         compute_allocation(smc_dir, pzone, state.angle, state.tf5.mov, mode);
-    let (lbias, _sbias) = compute_bias(state.angle, pzone, state.trandm, state.tf5.mov);
+    let (lbias, _sbias) = compute_bias(state.angle, pzone, state.tf5.mov);
     let (lscale, _sscale) = compute_entry_scale(state, pzone);
     // v0.56 (0.D): risk budget — caps EVERY add (grid/stair) so cumulative ≤ R_side.
     let leverage = input.leverage.max(1) as f64;
@@ -592,7 +864,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     // Block all new entries (not TPs) when free margin drops below 10% of total budget.
     let total_margin = max / leverage;
     let committed_margin = long_n / leverage;
-    let free_margin = total_margin - committed_margin + long_pnl;
+    let free_margin = total_margin - committed_margin + long_pnl + short_pnl;
     let balance_ok = free_margin >= total_margin * 0.10;
 
     // Priority 1.2: low-NTPS directional drift gate.
@@ -606,6 +878,31 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
     let bsg_ok_long = !has_long || state.tf1.cross > 0 || state.vol_bsg > 0.0;
 
     let mut place_orders: Vec<ModulePlaceOrder> = Vec::new();
+
+    if has_short {
+        let entry_s = input
+            .positions
+            .short
+            .as_ref()
+            .map(|p| p.entry_price)
+            .unwrap_or(0.0);
+        let fee_pad = price * 0.0008;
+        if short_n > min_tp_notional && entry_s > 0.0 {
+            let scale = state.win.scale_pct / 100.0;
+            let tp_floor = entry_s * (1.0 - scale.max(state.cfg.fcscalp_tp_pct));
+            let tp_px = choose_pullback_tp_short(price, tp_floor, state);
+            if tp_is_profitable(entry_s, tp_px, true, fee_pad) && tp_px < price {
+                place_orders.push(tp_order_with_band(
+                    Direction::Short,
+                    short_n,
+                    tp_px,
+                    "s-tp",
+                    "s-tp",
+                ));
+            }
+        }
+        return place_orders;
+    }
 
     // Block long DCA when price is below DownBig (stop hunt down) and not yet exhausted.
     let v_blocks_long_dca =
@@ -652,6 +949,8 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 } else {
                     scale.max(state.cfg.fcscalp_tp_pct)
                 };
+                let base_tp_floor = avg * (1.0 + tp_dist);
+                let pullback_tp = |floor: f64| choose_pullback_tp(price, floor, state);
 
                 let _ = avg;
                 // ── Entry grid: ONE resting maker BUY at a time. The gap is a FRACTION of the
@@ -713,17 +1012,10 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                             * 3.0
                 {
                     if !state.fc_stair_placed {
-                        let t1 = (avg * (1.0 + tp_dist)).max(price * 1.001); // quick partial
-                        let t2 = state.win.ceiling.max(t1 * 1.001); // current high
-                        let mut t3 = if state.zz_sell > 0.0 {
-                            state.zz_sell
-                        } else {
-                            state.mrc_ub
-                        };
-                        if state.mrc_ub > 0.0 {
-                            t3 = t3.min(state.mrc_ub); // cap at the channel top (UpBig)
-                        }
-                        t3 = t3.max(t2 * 1.001); // runner: expected NEW high
+                        let t1 = pullback_tp(base_tp_floor).max(price * 1.001); // quick partial on pullback
+                        let t2 = pullback_tp(t1 * 1.001).max(t1 * 1.001); // current/next structural shelf
+                        let t3_floor = t2 * 1.001;
+                        let t3 = pullback_tp(t3_floor).max(t2 * 1.001); // runner: next pullback shelf
                         let q3 = p.qty / 3.0;
                         let tiers = [(t1, q3, "s1"), (t2, q3, "s2"), (t3, p.qty - 2.0 * q3, "s3")];
                         for (px, q, mark) in tiers.iter() {
@@ -751,7 +1043,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                         if q <= 0.0 || rpx <= 0.0 {
                             continue;
                         }
-                        let tp_px = rpx * (1.0 + tp_dist);
+                        let tp_px = choose_pullback_tp(price, rpx * (1.0 + tp_dist), state);
                         let amt = q * tp_px; // notional for this rung's qty
                         if amt > 1.0 {
                             place_orders.push(tp_order_with_band(
@@ -765,7 +1057,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     }
                 } else {
                     // Fallback (no per-rung data yet): a single avg-based TP.
-                    let tp_px = avg * (1.0 + tp_dist);
+                    let tp_px = pullback_tp(base_tp_floor);
                     place_orders.push(tp_order_with_band(
                         Direction::Long,
                         long_n,
@@ -790,15 +1082,16 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                 (state.mrc_ub, 0.35f64, "t-l3"),
             ];
             for (tp_price, pct, mark) in &tp3 {
-                if *tp_price > price && !state.filled.contains(*mark) {
-                    let exp_pnl = long_pnl + (tp_price - price) * (long_n / price.max(1.0));
+                let tp_px = choose_pullback_tp(price, *tp_price, state);
+                if tp_px > price && !state.filled.contains(*mark) {
+                    let exp_pnl = long_pnl + (tp_px - price) * (long_n / price.max(1.0));
                     if exp_pnl > 0.0 {
                         let amt = long_n * pct;
                         if amt > 1.0 {
                             place_orders.push(tp_order_with_band(
                                 Direction::Long,
                                 amt,
-                                *tp_price,
+                                tp_px,
                                 mark,
                                 mark,
                             ));
@@ -809,10 +1102,11 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
         } else if mode == -2 && long_n > long_budget + 10.0 {
             let trim = ((long_n - long_budget) * 0.35).min(long_n * 0.30);
             if trim > 1.0 {
+                let trim_tp = choose_pullback_tp(price, price * 1.001, state);
                 place_orders.push(tp_order_with_band(
                     Direction::Long,
                     trim,
-                    price - tick,
+                    trim_tp.max(price + tick),
                     "l-t1",
                     "l-ub",
                 ));
@@ -838,18 +1132,19 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     (b + d * 2.0, 0.15f64, "l-bk4"),  // fast-candle 2×
                 ];
                 for (tp_price, pct, mark) in &bracket {
-                    if *tp_price > price
+                    let tp_px = choose_pullback_tp(price, *tp_price, state);
+                    if tp_px > price
                         && !state.filled.contains(*mark)
-                        && tp_is_profitable(entry_l, *tp_price, false, fee_pad)
+                        && tp_is_profitable(entry_l, tp_px, false, fee_pad)
                     {
-                        let exp_pnl = long_pnl + (tp_price - price) * (long_n / price.max(1.0));
+                        let exp_pnl = long_pnl + (tp_px - price) * (long_n / price.max(1.0));
                         if exp_pnl > 0.0 {
                             let amt = long_n * pct;
                             if amt > 1.0 {
                                 place_orders.push(tp_order_with_band(
                                     Direction::Long,
                                     amt,
-                                    *tp_price,
+                                    tp_px,
                                     mark,
                                     mark,
                                 ));
@@ -858,7 +1153,7 @@ pub(crate) fn compute_limit_orders(input: &ModuleInput, state: &State) -> Vec<Mo
                     }
                 }
             } else {
-                let tp_price = state.mrc_ub;
+                let tp_price = choose_pullback_tp(price, state.mrc_ub, state);
                 if tp_price > price
                     && !state.filled.contains("l-ub")
                     && tp_is_profitable(entry_l, tp_price, false, fee_pad)
@@ -1041,7 +1336,7 @@ pub(crate) fn compute_allocation(
     (long_r, 1.0 - long_r)
 }
 
-pub(crate) fn compute_bias(angle: f64, pzone: f64, trandm: f64, mov5: f64) -> (f64, f64) {
+pub(crate) fn compute_bias(angle: f64, pzone: f64, mov5: f64) -> (f64, f64) {
     let mut lbias = 1.0_f64;
     let mut sbias = 1.0_f64;
 
@@ -1052,24 +1347,6 @@ pub(crate) fn compute_bias(angle: f64, pzone: f64, trandm: f64, mov5: f64) -> (f
     if angle < -0.005 && pzone < 0.4 {
         lbias = 1.3;
         sbias = 0.8;
-    }
-
-    // trandm: which side is in control (-100 selling .. +100 buying). RIDE the controlling side,
-    // never fade it. (Was inverted pre-v0.53: `trandm < 30 → favor long` treated the whole
-    // oversell region as a buy-the-dip — the opposite of the model and a cause of wrong-way longs.)
-    if trandm <= -TRANDM_STRONG {
-        sbias *= 1.3;
-        lbias *= 0.6;
-    } else if trandm <= -TRANDM_MILD {
-        sbias *= 1.15;
-        lbias *= 0.85;
-    }
-    if trandm >= TRANDM_STRONG {
-        lbias *= 1.3;
-        sbias *= 0.6;
-    } else if trandm >= TRANDM_MILD {
-        lbias *= 1.15;
-        sbias *= 0.85;
     }
 
     // 5m mov order-size tilt
@@ -1083,5 +1360,3 @@ pub(crate) fn compute_bias(angle: f64, pzone: f64, trandm: f64, mov5: f64) -> (f
 
     (lbias, sbias)
 }
-
-

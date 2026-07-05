@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Subscribe to the LivTorgEx Projection (sug_info) WebSocket and print a compact
-market-condition snapshot — including the analysis gauge asset_01 that is
-NOT in the /api/indicators feed.
+market-condition snapshot.
 
 Usage:
   python3 scripts/sug_ws.py                 # one-shot: grab latest projection, print, exit
@@ -38,7 +37,6 @@ def fmt_usd(x):
 def summarize(m):
     price = m.get("price")
     ind = m.get("indicator", {}) or {}
-    asset_01 = ind.get("asset_01")
     ntps = ind.get("ntps")
     direction = m.get("direction")
     kl = m.get("klines", {}) or {}
@@ -63,10 +61,7 @@ def summarize(m):
     cdl = m.get("candle", {}) or {}
 
     lines = []
-    lines.append(
-        f"price={price} dir={direction} | asset_01={fmt_usd(asset_01)} "
-        f"(diff {fmt_usd(ind.get('asset_diff_01'))}) | ntps={ntps}"
-    )
+    lines.append(f"price={price} dir={direction} | ntps={ntps}")
     lines.append(
         f"  px% 1h={ind.get('price_1h')} 4h={ind.get('price_4h')} "
         f"8h={ind.get('price_8h')} 24h={ind.get('price_24h')}"

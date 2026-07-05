@@ -38,7 +38,6 @@ ladder scales down together for an unpredictable regime.
 | **seed / auto-open** (flat→open) | conviction = bias × ntps_mult × zone-freshness | `0.40 × conviction` (leaves room for adds) |
 | **trend** (`trend-s/l`) | confirmed multi-candle trend strength | `0.30 + 0.40 × clamp(\|tf5.mov\|/100 · tf5.conf/100)` |
 | **stairs** (`stair-s/l`) | depth (which 5m line) + remaining room | rung-n gets `1/(n+1)` of room → 0.50, 0.33, 0.25… (diminishing) |
-| **tm-driven** (`tm-s/l`) | `\|trandm\|` beyond STRONG | `0.30 + 0.30 × clamp((\|trandm\|−50)/50)` |
 | **re-entry** (`re-s/l`) | 1m-ML angle confirmation | `0.25 + 0.25 × clamp(\|angle\|/angle_ref)` |
 | **spike** (`s-spike`) | spike size vs avg | `0.15 × clamp(fc.peak_gain / fc.avg_gain)` |
 
@@ -46,22 +45,22 @@ ladder scales down together for an unpredictable regime.
 
 - **`risk_drawdown`** — existing risk-ratchet (scales down after drawdown).
 - **`uncertainty_damp` (NEW)** — the "make risk less when unpredictable" knob:
-  `0.6–0.8×` when `mkt_mode ∈ {UNK, Sideways}`, or `asset_01` is thin (`< $5M` → a thin
-  book can whip), or regime confidence is low. `1.0×` in a clean, confirmed trend.
+  `0.6–0.8×` when `mkt_mode ∈ {UNK, Sideways}` or regime confidence is low. `1.0×` in a clean,
+  confirmed trend.
 
 ## State
 
 ```rust
 // Config (existing): risk_pct, stop_pct  — lower risk_pct to de-risk the whole envelope.
 // State additions (proposed):
-pub uncertainty_damp: f64,   // recomputed each tick from mkt_mode + asset_01 + conf
+pub uncertainty_damp: f64,   // recomputed each tick from mkt_mode + conf
 pub stair_rung: u8,          // how many stair adds taken this position (drives 1/(n+1))
 // R_side is computed inline; no new persistent field needed beyond stair_rung.
 ```
 
 ## State Transitions
 
-- `uncertainty_damp` recomputed every SugInfo tick from `mkt_mode`, `asset_01`, `tf5.conf`.
+- `uncertainty_damp` recomputed every SugInfo tick from `mkt_mode`, `tf5.conf`.
 - `stair_rung` increments on each `stair-s/l` fill; resets to 0 when the side goes flat.
 - `R_side` recomputed each entry from live `max_amount`/`leverage`/`risk_pct`/`stop_pct`.
 

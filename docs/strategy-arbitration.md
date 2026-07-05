@@ -27,25 +27,21 @@ exit rules apply to it.** Ownership is **fine-grained — one owner per entry st
   |---|---|---|
   | `OWN_AUTO` (1)   | `auto-l`            | band TPs + margin/sudden-down |
   | `OWN_STAIR` (2)  | `stair-l` / `dca-l` | band TPs + trend-sl |
-  | `OWN_TREND` (3)  | `trend-l`           | progressive `t-l*` TPs + trend-sl |
-  | `OWN_TRANDM` (4) | `tm-l`              | `tm-exit` (trandm neutralize) |
   | `OWN_REENTRY` (5)| `re-l`              | band TPs |
   | `OWN_FC` (6)     | `fcs-l`             | order-book resistance TP + deep DownBig stop |
   | `OWN_NONE` (0)   | — (flat)            | — |
 
 - **Shared but adjustable exits**: each owner points at an **exit profile**. Several owners may
   reference the *same* profile today (e.g. AUTO/STAIR/REENTRY → "band-TP profile"), but because the
-  routing is keyed per owner, we can later give STAIR its own profile without touching TREND, etc.
+  routing is keyed per owner, we can later give STAIR its own profile without touching the others.
   Implement as a `match pos_owner { ... }` that selects which exit blocks run — a single edit point
   to re-route any one strategy.
 - **Exit routing**: every close/TP block runs **only for the owners whose profile includes it**
-  (e.g. `sudden-down` only for AUTO; `tm-exit` only for TRANDM; `fcs-tp`/deep-stop only for FC).
+  (e.g. `sudden-down` only for AUTO; `fcs-tp`/deep-stop only for FC).
 - **Entry routing**: entry blocks already carry distinct marks; we additionally gate them by regime
   (§3) so two strategies don't open competing positions in the same regime.
 
-This removes the corruption (a `tm-l` position is no longer band-TP'd by stair logic, an `fcs-l`
-position is no longer `sudden-down`-closed by AUTO logic), and keeps a per-strategy handle for
-tuning each exit independently.
+This removes the corruption and keeps a per-strategy handle for tuning each exit independently.
 
 ## 3. Regime arbitration — who is allowed to enter
 

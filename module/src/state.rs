@@ -84,6 +84,33 @@ pub struct VSide {
     pub stair: bool,     // last_power > prev_power * 1.10 (momentum building)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarketBias {
+    Long,
+    Short,
+    #[default]
+    Sideways,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TimeframeSignal {
+    pub dp_dir: i8,
+    pub dp_zee: f64,
+    pub dp_zee1: f64,
+    pub dp_zee2: f64,
+    pub dp_zee_k: f64,
+    pub dp_zee1_k: f64,
+    pub dp_zee2_k: f64,
+    pub zz_dir: i8,
+    pub zz_end_dir: i8,
+    pub zz_break: f64,
+    pub zz_buy: f64,
+    pub zz_sell: f64,
+    pub zz_fibo: f64,
+    pub zz_klines: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VLineTracker {
     pub was_above: Option<bool>, // previous tick: was price >= this line? (None = uninit)
@@ -407,7 +434,7 @@ impl State {
     /// Compact decision-context string stamped onto EVERY FC order note (entry + exit), so the
     /// order itself records WHY it fired — no more reading source to explain a fill. Fields:
     ///   m{mkt_mode} r5{5m regime} posf{position-in-window 0..1} win{window width %}
-    ///   pnl{total position PnL $} tdm{trandm side -100..100} {+/-}ml(price above/below mean) dh{deep-hold}
+    ///   pnl{total position PnL $} {+/-}ml(price above/below mean) dh{deep-hold}
     pub fn ctx(&self, price: f64, total_pnl: f64) -> String {
         let win_pct = if price > 0.0 {
             (self.win.ceiling - self.win.floor) / price * 100.0
@@ -415,13 +442,13 @@ impl State {
             0.0
         };
         format!(
-            "m{} r5{} posf{:.2} win{:.1}% pnl{:.3} tdm{:.0} {}ml dh{} | risk{} sharp{} cf{} fr{}/{} mv{} vol{}e{:.2}",
+            "m{} b{:?} r5{} posf{:.2} win{:.1}% pnl{:.3} {}ml dh{} | risk{} sharp{} cf{} fr{}/{} mv{} vol{}e{:.2} rec{}",
             self.mkt_mode,
+            self.market_bias,
             self.tf5.regime,
             self.win.pos_frac,
             win_pct,
             total_pnl,
-            self.trandm,
             if self.mrc_ml > 0.0 && price >= self.mrc_ml {
                 "+"
             } else {
@@ -441,6 +468,7 @@ impl State {
                 _ => "Q",
             },
             self.vol_er,
+            if self.post_sl_active { 1 } else { 0 },
         )
     }
 
@@ -469,8 +497,6 @@ impl State {
 pub struct State {
     pub ticks: u64,
     pub ntps: i64,
-    pub trandm: f64,
-    pub asset_01: f64, // $ (raw × 100) to move trandm 1% — power-of-trades / depth gauge
     pub mrc_range: f64,
     pub long_close_tick: u64,
     // Cached from Indicators (not serialized)
@@ -498,9 +524,6 @@ pub struct State {
     // the first-reaction bracket (4 orders around Big) replaces the single mode==1 TP, because
     // we don't yet know whether Big will just-touch (revert) or fast-candle through it.
     pub long_big_tested: bool,
-    // v0.55 (0.B): which strong-trandm regime the open ride belongs to (-1 sell / +1 buy / 0 none);
-    // the trend-ride exits when this regime neutralizes (trandm returns toward 0).
-    pub tm_side: i8,
     pub smc_dir: i8,
     pub smc_dir_prev: i8,
     // SMC local swing low/high (the running local extreme — verified to track promptly, beats DP/ZZ).
@@ -580,6 +603,15 @@ pub struct State {
     pub zz_close_prev: f64,
     pub zz_break_up: bool,
 
+    // ── Multi-timeframe DP + ZigZag signal stack ──────────────────────────────
+    // 1m/5m are the trading stack; 15m/1h are the higher-horizon prediction stack.
+    pub sig1: TimeframeSignal,
+    pub sig5: TimeframeSignal,
+    pub sig15: TimeframeSignal,
+    pub sig1h: TimeframeSignal,
+    pub market_bias: MarketBias,
+    pub market_bias_conf: u8,
+
     // Deep-dump hold-for-bounce: fc_deep_tick = the tick the hold armed (0 = not holding);
     // fc_deep_active = transient, set each sug tick when the hold is in force (suppresses the FC
     // force-cuts + switches sizing to the breakeven/negative reduce-only TP). Neither serialized.
@@ -590,7 +622,7 @@ pub struct State {
     // 0=UNK  1=Sideways  2=TrendLong  -2=TrendShort
     pub mkt_mode: i8,
     // Which entry strategy owns the open position (see docs/strategy-arbitration.md):
-    // 0=none 1=auto 2=stair 3=trend 4=trandm 5=reentry 6=fc. Exits route per owner.
+    // 0=none 1=auto 2=stair 3=trend 4=reentry 5=fc. Exits route per owner.
     pub pos_owner: u8,
     // FC grid rung tracking (sequential + spaced): anchor price of the last filled rung,
     // count of filled rungs, and prev-tick qty for fill detection. Reset when flat.
@@ -671,6 +703,9 @@ pub struct State {
     // Cross level at which the trend SL fires.  127 = inactive (no trend position).
     // Set when a trend-s/trend-l open is emitted; cleared on position close.
     pub trend_long_sl_cross: i8,
+    pub post_sl_active: bool,
+    pub post_sl_until_tick: u64,
+    pub post_sl_factor: f64,
 
     pub fc_tick_prev_price: f64, // price at previous SugInfo tick (for delta detection)
 
@@ -704,8 +739,6 @@ impl Default for State {
         Self {
             ticks: 0,
             ntps: 0,
-            trandm: 0.0,
-            asset_01: 0.0,
             mrc_range: 0.0,
             long_close_tick: 0,
             last_ind_tick: 0,
@@ -727,7 +760,6 @@ impl Default for State {
             mrc5_break: 0,
             long_stair_cross: 0,
             long_big_tested: false,
-            tm_side: 0,
             smc_dir: 0,
             smc_dir_prev: 0,
             smc_low: 0.0,
@@ -775,6 +807,12 @@ impl Default for State {
             zz_klines: 0.0,
             zz_close_prev: 0.0,
             zz_break_up: false,
+            sig1: TimeframeSignal::default(),
+            sig5: TimeframeSignal::default(),
+            sig15: TimeframeSignal::default(),
+            sig1h: TimeframeSignal::default(),
+            market_bias: MarketBias::Sideways,
+            market_bias_conf: 0,
             fc_deep_tick: 0,
             fc_deep_active: false,
             // Market mode
@@ -830,6 +868,9 @@ impl Default for State {
             cur_lo: 0.0,
             // Trend mode SL (127 = inactive)
             trend_long_sl_cross: 127,
+            post_sl_active: false,
+            post_sl_until_tick: 0,
+            post_sl_factor: 1.0,
             // V-movement tracker
             v_lines: [VLineTracker::default(); 9],
             // Sudden-move price-run tracker

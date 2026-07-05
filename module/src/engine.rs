@@ -6,14 +6,14 @@ use crate::debug::{
 };
 use crate::fastcandle::update_fast_candles;
 use crate::indicators::*;
-use crate::trend::compute_trend;
+use crate::trend::{compute_trend, update_market_bias};
 use crate::trend_efficiency::update_efficiency_trend;
 use crate::trend_structure::structure_dir;
 use crate::movement::{
     advance_market_mode, advance_tf_from_ind, init_cascade, init_tf_from_ind, update_cascade,
     update_risk_ratchet,
 };
-use crate::orders::{close, market_open, tp_order_with_band};
+use crate::orders::{close, market_open};
 use crate::sizing::{
     compute_auto_open, compute_limit_orders, fcscalp_support, risk_sized_notional, uncertainty_damp,
     upnl,
@@ -117,10 +117,25 @@ fn handle_action(
             ..Default::default()
         };
     }
+    if name == "force_open_short" {
+        let amt = values.get("amount").and_then(|v| v.as_f64()).unwrap_or(5.0);
+        return ModuleOutput {
+            open_positions: vec![market_open(Direction::Short, amt, "force")],
+            debug: format!("action {} Short amt={}", name, amt),
+            ..Default::default()
+        };
+    }
     // force_close / force_close_long — close the LONG.
     if name == "force_close" || name == "force_close_long" {
         return ModuleOutput {
             close_positions: vec![close(Direction::Long, "force_close")],
+            debug: format!("action {} at t={}", name, state.ticks),
+            ..Default::default()
+        };
+    }
+    if name == "force_close_short" {
+        return ModuleOutput {
+            close_positions: vec![close(Direction::Short, "force_close")],
             debug: format!("action {} at t={}", name, state.ticks),
             ..Default::default()
         };
@@ -200,6 +215,8 @@ fn update_fill_idx(state: &mut State, dir: Direction, role: &OrderRole, band: &s
     let (arr, idx) = match (dir, role) {
         (Direction::Long, OrderRole::Entry) => (LONG_ENTRY_BANDS, &mut state.long_entry_idx),
         (Direction::Long, OrderRole::TakeProfit) => (LONG_TP_BANDS, &mut state.long_tp_idx),
+        (Direction::Short, OrderRole::Entry) => (SHORT_ENTRY_BANDS, &mut state.long_entry_idx),
+        (Direction::Short, OrderRole::TakeProfit) => (SHORT_TP_BANDS, &mut state.long_tp_idx),
         _ => return,
     };
     if let Some(pos) = arr.iter().position(|b| *b == band) {
@@ -222,14 +239,18 @@ fn handle_init(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     }
     state.smc_dir = read_smc_dir(&input.indicators);
 
-    for tf_sec in [TF, TF_5M, TF_15M, TF_30M] {
+    for tf_sec in [TF, TF_5M, TF_15M, TF_30M, TF_1H] {
         init_tf_from_ind(&input.indicators, state, tf_sec);
+    }
+    for tf_sec in [TF, TF_5M, TF_15M, TF_1H] {
+        update_timeframe_signal(&input.indicators, state, tf_sec);
     }
 
     // Rebuild both movement cascades from last 10 candles and initialise risk ratchet.
     init_cascade(&mut state.cas1, &input.indicators, TF);
     init_cascade(&mut state.cas5, &input.indicators, TF_5M);
     advance_market_mode(state);
+    update_market_bias(state, input.price);
 
     // v0.56 cold-start: seed the V-line tracker from the candle history (sets state.ticks to the
     // synthetic post-history tick so live ticks continue on the same scale). Depth-agnostic.
@@ -286,6 +307,12 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
         state.cur_lo = input.price;
     }
 
+    for &tf_sec in [TF, TF_5M, TF_15M, TF_1H].iter() {
+        if timeframes.contains(&tf_sec) {
+            update_timeframe_signal(&input.indicators, state, tf_sec);
+        }
+    }
+
     // v0.55 (0.B): 5m mean-line slope + hard-break state, recomputed each 5m close.
     if timeframes.contains(&TF_5M) {
         if let Some(ml5) = read_float(&input.indicators, TF_5M, 0, MRC, "MeanLine") {
@@ -317,6 +344,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
     for &tf_sec in timeframes {
         advance_tf_from_ind(&input.indicators, state, tf_sec);
     }
+    update_market_bias(state, input.price);
 
     // Window context (Layer 1) — refresh before the candle-close FC entry consumes it.
     let w = detect_window(input, state);
@@ -343,7 +371,7 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
                     state.long_stair_cross = state.tf5.cross;
                 }
                 // v0.55 (0.C): baseline/advance the stair ladder on long opens & stairs.
-                "tm-l" | "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
+                "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
                 _ => {}
             }
             // Latch ownership here too — opens fire from BOTH this candle handler and
@@ -430,11 +458,17 @@ fn handle_indicators(input: &ModuleInput, state: &mut State, timeframes: &[i64])
 
 // ── SugInfo: closes + reentry + grid placement ─────────────────────────────
 
+fn arm_post_sl_recovery(state: &mut State) {
+    let window = (state.cfg.cooldown_ticks.max(1) * 3).max(TICKS_PER_CANDLE * 2);
+    state.post_sl_active = true;
+    state.post_sl_until_tick = state.ticks.saturating_add(window);
+    state.post_sl_factor = 0.50;
+}
+
 fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
-    let (ntps, trandm, asset_01, fast_candle) = read_analysis(input);
+    let (ntps, fast_candle) = read_analysis(input);
     state.ntps = ntps;
-    state.trandm = trandm;
-    state.asset_01 = asset_01;
+    update_market_bias(state, input.price);
 
     // Capture previous tick price BEFORE update_fast_candles overwrites fc_tick_prev_price.
     let prev_tick_price = state.fc_tick_prev_price;
@@ -500,12 +534,14 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         .unwrap_or(0.0);
     // UNREALIZED pnl (self-computed from mark vs avg-entry — see upnl()).
     let long_pnl = upnl(input.positions.long.as_ref(), price, true);
+    let short_pnl = upnl(input.positions.short.as_ref(), price, false);
     let has_long = input.positions.long.is_some();
-    let total_pnl = long_pnl;
+    let has_short = input.positions.short.is_some();
+    let total_pnl = long_pnl + short_pnl;
     // Owner reconciliation: when genuinely flat, clear the owner so a stale latch from an
     // unfilled/rejected open can't leak onto the next position. The open this tick (emitted
-    // while still flat) re-latches below; once has_long is true the owner is preserved.
-    if !has_long {
+    // while still flat) re-latches below; once a side is live the owner is preserved.
+    if !has_long && !has_short {
         state.pos_owner = OWN_NONE;
     }
 
@@ -643,16 +679,12 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
     update_risk_ratchet(state, input.max_amount, input.auto_max_amount);
 
     // (smc_dir no longer needed here — the SMC/NTPS momentum close was removed in v0.51.0)
-    let mkt_mode = state.mkt_mode;
-
     let mut close_positions: Vec<ModuleClosePosition> = Vec::new();
 
     // ── Exit routing by owner (docs/strategy-arbitration.md §2) ─────────────────
-    // Only the strategy that OPENED the position manages it. fc_owner → FC's deep stop
-    // only; base_owner (AUTO/STAIR/TREND/TRANDM/REENTRY) → the base loss-exits. The
-    // catastrophic margin SL still backstops every owner regardless.
+    // Only the strategy that OPENED the position manages it. FC still gets its
+    // emergency holds / backstops; the rest is now TP-driven.
     let fc_owner = state.pos_owner == OWN_FC;
-    let base_owner = (OWN_AUTO..=OWN_REENTRY).contains(&state.pos_owner);
 
     // ── Deep-dump hold-for-bounce ───────────────────────────────────────────────
     // A SUDDEN dump into the 30m deep bands is a potential FLIP zone (high recovery potential):
@@ -710,6 +742,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             .iter()
             .any(|c| matches!(c.direction, Direction::Long))
     {
+        arm_post_sl_recovery(state);
         close_positions.push(close(
             Direction::Long,
             &format!(
@@ -722,6 +755,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
     // Hold window elapsed without the bounce → the "if not, stop": cut now.
     if fc_owner && has_long && long_n > 1.0 && deep_hold_expired {
+        arm_post_sl_recovery(state);
         close_positions.push(close(
             Direction::Long,
             &format!(
@@ -754,6 +788,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
             .iter()
             .any(|c| matches!(c.direction, Direction::Long))
     {
+        arm_post_sl_recovery(state);
         close_positions.push(close(
             Direction::Long,
             &format!(
@@ -765,44 +800,10 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         ));
     }
 
-    // ── FC downtrend bag-exit ───────────────────────────────────────────────────
-    // In a 5m DOWNTREND (bias < 0) don't bag-hold a falling knife: take the exit when
-    // price PUMPS back to the upper window (a bounce to sell into) OR the window is too
-    // wide to safely hold (e.g. a 5% window in a downtrend). Up/sideways never triggers
-    // this — there we accumulate. Owner-routed (FC only).
-    if fc_owner && has_long && long_n > 1.0 && state.mkt_mode == -2 {
-        let win_pct = if price > 0.0 {
-            (state.win.ceiling - state.win.floor) / price
-        } else {
-            0.0
-        };
-        // Only sell into a bounce that's actually GREEN — never market-cut at break-even/loss here
-        // (that was the SPCX bleed: open→instant close at zero profit). Losers are left to the TP /
-        // fast-return hold / margin-SL backstop.
-        let pumped = state.win.pos_frac > 0.7 && total_pnl > 0.0; // green bounce into the window top
-        let too_wide = win_pct > 0.04; // window too big to hold against the trend
-        if (pumped || too_wide)
-            && !hold_for_tp
-            && !deep_hold_active
-            && !close_positions
-                .iter()
-                .any(|c| matches!(c.direction, Direction::Long))
-        {
-            let why = if pumped {
-                format!("5m-DOWN & price pumped to top: posf {:.2}>0.70", state.win.pos_frac)
-            } else {
-                format!("5m-DOWN & window tooWide to hold: win {:.1}%>4.0%", win_pct * 100.0)
-            };
-            close_positions.push(close(
-                Direction::Long,
-                &format!("fcs-dn-exit | {} | {}", why, state.ctx(price, total_pnl)),
-            ));
-        }
-    }
-
     // ── SL: last-resort margin protection ──────────────────────────────
     if state.cfg.margin_sl && total_pnl < -(margin * state.cfg.sl_margin_pct) {
         if has_long && long_n > 1.0 {
+            arm_post_sl_recovery(state);
             close_positions.push(close(
                 Direction::Long,
                 &format!(
@@ -813,107 +814,6 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                 ),
             ));
         }
-    }
-
-    // ── v0.50.0: stop-hunt sweep hold ───────────────────────────────────────
-    // An up-spike INTO the upper extreme (1m cross >= 3, UpOuter/UpBig) while the 5m
-    // trend is still DOWN is a liquidity grab, not a reversal — do NOT cover a short
-    // there (the higher-TF trend favors holding it; covering = selling the top into the
-    // sweep, right before the dump — observed 15:31). Mirror for a long into the lower
-    // extreme during a 5m uptrend. These gate the noise/momentum covers ONLY; the deep
-    // margin/staged SL still fires as the real backstop.
-    let long_sweep_hold = state.tf1.cross <= -3 && state.tf5.regime == 2;
-
-    // ── v0.53: trandm side-hold ─────────────────────────────────────────────
-    // trandm = which side controls (-100 selling .. +100 buying). If the controlling side AGREES
-    // with our open position, a counter price-move is a relief bounce / dip, NOT a flip — do NOT
-    // panic-cover it; ride the side. (The deep margin SL still backstops a genuine runaway.)
-    let trandm_hold_long = trandm >= TRANDM_MILD; // buying side  → hold the long through dips
-
-    // ── Trend mode zone-based SL ─────────────────────────────────────────
-    // Fires when price reverses one cross zone past the entry zone.
-    // Tighter than the margin SL — cuts the loss early while the thesis is wrong.
-    if base_owner
-        && state.trend_long_sl_cross != 127
-        && has_long
-        && long_n > 1.0
-        && state.tf1.cross <= state.trend_long_sl_cross
-        && !close_positions
-            .iter()
-            .any(|c| matches!(c.direction, Direction::Long))
-    {
-        close_positions.push(close(
-            Direction::Long,
-            &format!(
-                "trend-sl | 1m reversed past entry zone: cross {}<=stop-zone {} | {}",
-                state.tf1.cross,
-                state.trend_long_sl_cross,
-                state.ctx(price, total_pnl)
-            ),
-        ));
-    }
-
-    // ── Sudden-move panic close (Priority 0.3) ──────────────────────────────
-    // Close only the side the move is ADVERSE to: a sharp rise threatens shorts,
-    // a sharp drop threatens longs. This is the only loss-exit driven by live price
-    // action (besides the deep margin SL) — small single spikes (< 0.5%) and slow
-    // zone-change oscillations never trigger it (require >= 5 no-rollback ticks +
-    // rising NTPS + > 0.5% move). A favorable run never closes the winning side.
-    // v0.50.0: sweep-hold suppresses the panic cover when the spike is into a channel
-    // extreme against the 5m trend (stop hunt) — don't sell the top / buy the bottom.
-    if sudden_move && base_owner {
-        if state.run_dir < 0
-            && has_long
-            && long_n > 1.0
-            && !long_sweep_hold
-            && !trandm_hold_long
-            && !suppress_sell
-            && !hold_for_tp
-            && !close_positions
-                .iter()
-                .any(|c| matches!(c.direction, Direction::Long))
-        {
-            close_positions.push(close(
-                Direction::Long,
-                &format!(
-                    "sudden-down | sharp adverse drop (run_dir-1, no sweep/trandm hold) | {}",
-                    state.ctx(price, total_pnl)
-                ),
-            ));
-        }
-    }
-
-    // ── v0.55 (0.B): trandm thesis-reversal exit (the trend-ride's exit; NOT a line TP) ─────
-    // The ride has no fixed MRC-line TP — while the controlling side stays strong we let it FLY
-    // (0.B). It exits when the strong-trandm regime it belongs to NEUTRALIZES (trandm returns
-    // toward 0). P&L-agnostic: banks a winner whose momentum is done, cuts a wrong ride. The deep
-    // margin SL still backstops a runaway.
-    if trandm <= -TRANDM_STRONG {
-        state.tm_side = -1;
-    } else if trandm >= TRANDM_STRONG {
-        state.tm_side = 1;
-    }
-    if state.tm_side == -1 && trandm > -TRANDM_MILD {
-        state.tm_side = 0; // selling regime over — nothing to exit in long-only
-    } else if state.tm_side == 1 && trandm < TRANDM_MILD {
-        if has_long
-            && long_n > 1.0
-            && base_owner
-            && !close_positions
-                .iter()
-                .any(|c| matches!(c.direction, Direction::Long))
-        {
-            close_positions.push(close(
-                Direction::Long,
-                &format!(
-                    "tm-exit | buy-side regime neutralized: trandm {:.0} fell below +{:.0} | {}",
-                    trandm,
-                    TRANDM_MILD,
-                    state.ctx(price, total_pnl)
-                ),
-            ));
-        }
-        state.tm_side = 0;
     }
 
     // Window context (Layer 1) — recompute BEFORE FC entry so it can consume it.
@@ -980,7 +880,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
                     state.long_stair_cross = state.tf5.cross;
                 }
                 // v0.55 (0.C): baseline/advance the stair ladder on long opens & stairs.
-                "tm-l" | "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
+                "auto-l" | "re-l" | "stair-l" => state.long_stair_cross = state.tf5.cross,
                 _ => {}
             }
             // Latch ownership on the flat→open transition: the first opening note this
@@ -1101,9 +1001,7 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.fc_created_tick = 0;
     }
 
-    let tick = input.symbol_info.price_tick_size.max(f64::EPSILON);
-
-    let mut place_orders = if state.has_mrc {
+    let place_orders = if state.has_mrc {
         compute_limit_orders(input, state)
     } else {
         vec![]
@@ -1147,51 +1045,6 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         }
     }
 
-    // ── Trend mode: gradual transition close for a long caught in a confirmed downtrend ────
-    // Stage 0→1: 25% after 2 candles · 1→2: 25% after 5 · 2→3: 50% after 8.
-    let mc = state.mkt_mode_candles;
-    if base_owner && mkt_mode == -2 && has_long && long_n > 1.0 {
-        let (stage, min_can, pct, mark): (u8, u32, f64, &str) = match state.mode_close_l {
-            0 => (0, 2, 0.25, "tc-cl1"),
-            1 => (1, 5, 0.25, "tc-cl2"),
-            2 => (2, 8, 0.50, "tc-cl3"),
-            _ => (3, u32::MAX, 0.0, ""),
-        };
-        if mc >= min_can && pct > 0.0 {
-            let amt = long_n * pct;
-            if amt > 1.0 {
-                place_orders.push(tp_order_with_band(
-                    Direction::Long,
-                    amt,
-                    price - tick,
-                    mark,
-                    mark,
-                ));
-            }
-        }
-        let _ = stage;
-    }
-
-    // Priority 1.4: staged partial SL — at 50% of full SL threshold, reduce the losing side
-    // by 30% via a reduce-only limit order near market price (fills on the very next tick).
-    // Only fires when no full SL is already in progress (close_positions is empty).
-    let early_sl_threshold = -(margin * state.cfg.sl_margin_pct * 0.50);
-    if state.cfg.margin_sl && close_positions.is_empty() && total_pnl < early_sl_threshold {
-        // base owners only — FC holds through the flush on its deep stop, no staged SL.
-        if base_owner && has_long && long_pnl < 0.0 && long_n > 1.0 {
-            let amt = long_n * 0.30;
-            if amt > 1.0 {
-                place_orders.push(tp_order_with_band(
-                    Direction::Long,
-                    amt,
-                    price - tick,
-                    "psl-l",
-                    "psl-l",
-                ));
-            }
-        }
-    }
-
     let ord_count = place_orders.len();
 
     // ── FC grid cancel-on-stale ─────────────────────────────────────────────────
@@ -1224,12 +1077,11 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
         state.cfg.stop_pct,
     );
     let run_dbg = format!(
-        " run={}{}t {:.2}%{} lmx={} tm={:.0} a01={:.0} tms={} ls={} b5={} bgt={:.0} dmp={:.2} bk={}",
+        " run={}{}t {:.2}%{} lmx={} ls={} b5={} bgt={:.0} dmp={:.2} bk={}",
         run_arrow, state.run_ticks, run_move_pct,
         if sudden_move { " SUDDEN" } else { "" },
         state.long_max_cross,
-        trandm, asset_01,
-        state.tm_side, state.long_stair_cross, state.mrc5_break,
+        state.long_stair_cross, state.mrc5_break,
         r_side_dbg, uncertainty_damp(state),
         state.long_big_tested as u8,
     );
@@ -1319,27 +1171,33 @@ fn handle_sug_info(input: &ModuleInput, state: &mut State) -> ModuleOutput {
 
 // v0.55 (0.A): risk-based position notional. A `stop_pct` adverse move loses `notional × stop_pct`;
 // bound that loss by `risk_pct` of the allocated margin (max_amount/leverage), then cap at max_amount.
-// Fixes the under-sizing where a confirmed-trend entry (e.g. tm-s) rode a big move with a tiny size.
+// Fixes the under-sizing where a confirmed-trend entry rode a big move with a tiny size.
 //   notional = min( (max_amount/leverage × risk_pct) / stop_pct , max_amount )
 // ── FinishPosition / NewPosition ───────────────────────────────────────────
 
 fn handle_finish(input: &ModuleInput, state: &mut State, direction: Direction) -> ModuleOutput {
-    // LONG-ONLY: only the long position lifecycle exists.
-    if let Direction::Long = direction {
-        state.long_close_tick = state.ticks;
-        // Record the exit price+tick for the no-worse-price re-entry guard (anti-churn, see sizing.rs).
-        state.fc_exit_px = input.price;
-        state.fc_exit_tick = state.ticks;
-        state
-            .filled
-            .retain(|k| !k.starts_with("l-") && !k.starts_with("t-l") && !k.starts_with("tc-cl"));
-        state.long_entry_idx = -1;
-        state.long_tp_idx = -1;
-        state.mode_close_l = 0;
-        state.long_pnl_mfe = 0.0;
-        state.trend_long_sl_cross = 127;
-        state.pos_owner = OWN_NONE; // position flat → clear owner; next open re-latches.
-    }
+    state.long_close_tick = state.ticks;
+    // Record the exit price+tick for the no-worse-price re-entry guard (anti-churn, see sizing.rs).
+    state.fc_exit_px = input.price;
+    state.fc_exit_tick = state.ticks;
+    state
+        .filled
+        .retain(|k| {
+            !k.starts_with("l-")
+                && !k.starts_with("t-l")
+                && !k.starts_with("s-")
+                && !k.starts_with("t-s")
+                && !k.starts_with("tc-cl")
+        });
+    state.long_entry_idx = -1;
+    state.long_tp_idx = -1;
+    state.mode_close_l = 0;
+    state.long_pnl_mfe = 0.0;
+    state.trend_long_sl_cross = 127;
+    state.long_stair_cross = 0;
+    state.long_big_tested = false;
+    state.long_max_cross = -127;
+    state.pos_owner = OWN_NONE; // position flat → clear owner; next open re-latches.
     ModuleOutput {
         debug: format!(
             "finish {:?} t={} p={:.2}",
@@ -1348,4 +1206,3 @@ fn handle_finish(input: &ModuleInput, state: &mut State, direction: Direction) -
         ..Default::default()
     }
 }
-

@@ -12,7 +12,7 @@ The repeatable standard for taking an idea to a validated module version. Defaul
 1. **RECOMMEND / validate only — never deploy live without an explicit user keyword.** Build + backtest freely; flipping the live bot needs the user's word.
 2. **Never expose the live bot to an untested version.** To backtest a non-live version you patch the group's `module_version`, run, then **REVERT**. The live in-memory bot keeps running the old version until an explicit restart — a config change alone does not touch it. Always revert.
 3. **Self-calc the net from positions.** Headline `profit`/`fee`/`volume` and the hourly `pnl_chart` are **UNRELIABLE** (can be byte-identical across genuinely different runs). NET = `Σ total_profit − Σ fee`.
-4. **Only use backtestable signals.** Replayed in backtest: `asset_01`, `trandm`, `NTPS`, fast-candle, MRC, regime, cascade, V-tracker. **NOT replayed: `OI`, `order_book`.** An improvement that depends on OI/order_book cannot be validated — don't build it.
+4. **Only use backtestable signals.** Replayed in backtest: `NTPS`, fast-candle, MRC, regime, cascade, V-tracker. **NOT replayed: `OI`, `order_book`.** An improvement that depends on OI/order_book cannot be validated — don't build it.
 5. **One branch -> one backtest name -> one version tag**, all the same slug, so git history and LTE backtest history read as one timeline.
 
 ## 0. Baseline (the number to beat)
@@ -80,7 +80,7 @@ run_bot_group_backtest(29,
 
 ## 7. Self-calc the net (MANDATORY)
 
-Page `get_backtest_run(run_id, position_limit=50, position_offset=0,50,100,...)`, dedup positions by `id`, then **NET = Σ `total_profit` − Σ `fee`**. Save the raw tool results to a file and parse with python for large runs. Also **bucket by the open-order `note`** (`auto-s`/`tm-s`/`re-s`/`hedge-l`/`stair-s`/`neg-*`/...) for attribution: which entry types win/lose, trade count, total fees. (Sanity: a clean run's headline `profit − fee` often equals the self-calc — but always self-calc.)
+Page `get_backtest_run(run_id, position_limit=50, position_offset=0,50,100,...)`, dedup positions by `id`, then **NET = Σ `total_profit` − Σ `fee`**. Save the raw tool results to a file and parse with python for large runs. Also **bucket by the open-order `note`** (`auto-s`/`re-s`/`hedge-l`/`stair-s`/`neg-*`/...) for attribution: which entry types win/lose, trade count, total fees. (Sanity: a clean run's headline `profit − fee` often equals the self-calc — but always self-calc.)
 
 ## 8. Compare + decide
 
@@ -110,6 +110,6 @@ Patch both `module_version` fields + rename the group -> `run_bot_action(694, lt
 | group / bot | 29 / 694, `OKX#ETH-USDT-SWAP#SWAP`, lev 100 |
 | backtest window | `1777507200000` -> `1779926400000` (Apr30->May28 2026) |
 | baseline | v0.61 Run 22 NET **+$1.60** (m10) |
-| backtestable | asset_01, trandm, NTPS, fast-candle, MRC, regime, cascade, V-tracker |
+| backtestable | NTPS, fast-candle, MRC, regime, cascade, V-tracker |
 | NOT backtestable | OI, order_book |
 | target | `wasm32-wasip1` |

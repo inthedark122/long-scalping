@@ -4,7 +4,9 @@ pub(crate) const TF: i64 = 60;
 pub(crate) const TF_5M: i64 = 300;
 pub(crate) const TF_15M: i64 = 900;
 pub(crate) const TF_30M: i64 = 1800;
+pub(crate) const TF_1H: i64 = 3600;
 pub(crate) const MRC: &str = "mrc_200";
+pub(crate) const DP_IND: &str = "dpsignal";
 pub(crate) const SMC_IND: &str = "smc";
 pub(crate) const ZZ_IND: &str = "zigzagtrend";
 pub(crate) const CANDLE_IND: &str = "candle";
@@ -20,16 +22,6 @@ pub(crate) const TICKS_PER_CANDLE: u64 = 15;
 pub(crate) const GAIN_RANGE_FLOOR: f64 = 0.5; // min Gain spread (Gain is a ratio: +1.0 = 100% above baseline)
 pub(crate) const BSG_RANGE_FLOOR: f64 = 1.0; // min BuySellGain spread
 
-// trandm = which side is in control (-100 selling .. +100 buying). RIDE the controlling side,
-// never fade it ("never buy the dip" — user 2026-05-29). |trandm| >= STRONG → strong control:
-// tilt size hard AND block counter-trend auto-opens. |trandm| >= MILD → leaning: tilt size and
-// hold the aligned position through a counter relief-bounce/dip (suppress the sudden-move cover).
-pub(crate) const TRANDM_STRONG: f64 = 50.0;
-pub(crate) const TRANDM_MILD: f64 = 25.0;
-// asset_01 = $ (raw × 100) to move trandm 1% — power-of-trades/depth. Raw < ~50k ($5M) = thin/
-// coiled (sudden move loaded); raw >= ~200k ($20M) = move spent (expect normal vol). Wired to
-// state + debug this version; behavioral gate deferred until calibrated from live observation.
-
 // Band names used to build grid levels — entry fills at a band block that band
 pub(crate) const LONG_ENTRY_BANDS: &[&str] = &[
     "l-db", "l-db-do", "l-do", "l-do-ds", "l-ds", "l-ds-di", "l-di", "l-di-ml", "l-ml",
@@ -37,28 +29,31 @@ pub(crate) const LONG_ENTRY_BANDS: &[&str] = &[
 pub(crate) const LONG_TP_BANDS: &[&str] = &[
     "l-ml+", "l-ml-ui", "l-ui", "l-ui-us", "l-us", "l-us-uo", "l-uo", "l-uo-ub", "l-ub",
 ];
+pub(crate) const SHORT_ENTRY_BANDS: &[&str] = &[
+    "s-ub", "s-ub-uo", "s-uo", "s-uo-us", "s-us", "s-us-ui", "s-ui", "s-ui-ml", "s-ml",
+];
+pub(crate) const SHORT_TP_BANDS: &[&str] = &[
+    "s-ml-", "s-ml-di", "s-di", "s-di-ds", "s-ds", "s-ds-do", "s-do", "s-do-db", "s-db",
+];
 
 // Position-owner ids (which entry strategy opened the position). Exits route per owner;
-// see docs/strategy-arbitration.md. Base = AUTO/STAIR/TREND/TRANDM/REENTRY, FC = fast-candle scalp.
+// see docs/strategy-arbitration.md. Base = AUTO/STAIR/TREND/REENTRY, FC = fast-candle scalp.
 pub(crate) const OWN_NONE: u8 = 0;
 pub(crate) const OWN_AUTO: u8 = 1;
 pub(crate) const OWN_STAIR: u8 = 2;
 pub(crate) const OWN_TREND: u8 = 3;
-pub(crate) const OWN_TRANDM: u8 = 4;
-pub(crate) const OWN_REENTRY: u8 = 5;
-pub(crate) const OWN_FC: u8 = 6;
+pub(crate) const OWN_REENTRY: u8 = 4;
+pub(crate) const OWN_FC: u8 = 5;
 
 /// Map an opening order's mark to its owning entry strategy.
 pub(crate) fn owner_from_mark(mark: &str) -> u8 {
     if mark.starts_with("fcs") {
         OWN_FC
-    } else if mark.starts_with("tm-l") {
-        OWN_TRANDM
-    } else if mark.starts_with("trend-l") {
+    } else if mark.starts_with("trend-") {
         OWN_TREND
-    } else if mark.starts_with("re-l") {
+    } else if mark.starts_with("re-") {
         OWN_REENTRY
-    } else if mark.starts_with("stair") || mark.starts_with("dca-l") {
+    } else if mark.starts_with("stair") || mark.starts_with("dca-") {
         OWN_STAIR
     } else {
         OWN_AUTO // auto-l and anything else base
