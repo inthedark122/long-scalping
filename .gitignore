@@ -10,6 +10,7 @@ __pycache__/
 # Claude Code runtime / machine-local
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+.env
 
 # OS cruft
 .DS_Store

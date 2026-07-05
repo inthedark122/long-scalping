@@ -4,6 +4,8 @@
 > build/deploy/backtest workflow, and critical gotchas (notably the backtest PnL bug). The next-feature
 > design is [`docs/regime-modes.md`](./docs/regime-modes.md).
 >
+> Indicator reading notes are in [`docs/indicators/README.md`](./docs/indicators/README.md).
+>
 > **⚠️ The deployed version is now `v0.61-long` (LONG-ONLY)** — short + hedge code removed. The
 > delta-neutral both-sided description below is the *legacy* design (preserved on branch `v0.61-hedge`).
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Subscribe to the LivTorgEx Projection (sug_info) WebSocket and print a compact
-market-condition snapshot — including the analysis gauges trandm + asset_01 that are
+market-condition snapshot — including the analysis gauge asset_01 that is
 NOT in the /api/indicators feed.
 
 Usage:
-  python3 sug_ws.py                 # one-shot: grab latest projection, print, exit
-  python3 sug_ws.py --stream        # keep printing each projection (Ctrl-C to stop)
-  python3 sug_ws.py --symbol ETH-USDT-SWAP --raw   # dump raw JSON
+  python3 scripts/sug_ws.py                 # one-shot: grab latest projection, print, exit
+  python3 scripts/sug_ws.py --stream        # keep printing each projection (Ctrl-C to stop)
+  python3 scripts/sug_ws.py --symbol ETH-USDT-SWAP --raw   # dump raw JSON
 
 Source: wss://okx.tg.trading.sinvoid.me/ws
 Subscribe msg: {"event":"Subscribe","param":{"event":"Projection","symbol":"<SYM>"}}
@@ -38,7 +38,6 @@ def fmt_usd(x):
 def summarize(m):
     price = m.get("price")
     ind = m.get("indicator", {}) or {}
-    trandm = ind.get("trandm")
     asset_01 = ind.get("asset_01")
     ntps = ind.get("ntps")
     direction = m.get("direction")
@@ -64,12 +63,9 @@ def summarize(m):
     cdl = m.get("candle", {}) or {}
 
     lines = []
-    osb = ""
-    if isinstance(trandm, (int, float)):
-        osb = " OVERSELL" if trandm <= -50 else (" OVERBUY" if trandm >= 50 else "")
     lines.append(
-        f"price={price} dir={direction} | trandm={trandm:.1f}{osb} "
-        f"asset_01={fmt_usd(asset_01)} (diff {fmt_usd(ind.get('asset_diff_01'))}) | ntps={ntps}"
+        f"price={price} dir={direction} | asset_01={fmt_usd(asset_01)} "
+        f"(diff {fmt_usd(ind.get('asset_diff_01'))}) | ntps={ntps}"
     )
     lines.append(
         f"  px% 1h={ind.get('price_1h')} 4h={ind.get('price_4h')} "

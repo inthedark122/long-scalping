@@ -1,6 +1,6 @@
 ---
 name: lte-strategy-monitoring
-description: Live monitoring loop for LTE bot groups (default ETH group 29). Each check fetches bots/positions/orders/balances + the Projection WS feed (sug_ws.py: trandm, asset_01, order-book, OI) + MRC lines, gives a FULL report with a one-liner, flags escalations, and self-paces via ScheduleWakeup. RECOMMENDS trades — never executes a close/open/deploy without an explicit user keyword. Appends only notable events to analysis_notes.md.
+description: Live monitoring loop for LTE bot groups (default ETH group 29). Each check fetches bots/positions/orders/balances + the Projection WS feed (scripts/sug_ws.py: trandm, asset_01, order-book, OI) + MRC lines, gives a FULL report with a one-liner, flags escalations, and self-paces via ScheduleWakeup. RECOMMENDS trades — never executes a close/open/deploy without an explicit user keyword. Appends only notable events to analysis_notes.md.
 ---
 
 # LTE Strategy Monitoring
@@ -27,7 +27,7 @@ User keywords → action (only act on these, this turn):
 2. `mcp__claude_ai_LTE__list_bot_positions` (bot_id 694, `["InProgress"]`) — side, qty (**signed**), entry_price, fee.
 3. `mcp__claude_ai_LTE__list_bot_orders` (group 29, limit 5) — new entries/TPs/closes + their `note`. **ANY long opened while trandm ≤ −50 = a v0.53+ BUG → flag hard.**
 4. `mcp__claude_ai_LTE__get_account_balances` — inthedark4 (id 5) balance. **See balance caveat.**
-5. **Projection WS feed** — `python3 /home/dev/dev/strategy/long-scalping/sug_ws.py` → price, **trandm**, **asset_01**, NTPS, dir, price_1h/4h/24h, klines (1m/1h/4h), **order-book walls** (resist/support + buy/sell amounts), **OI** + change, **net_flow** (qtym_asset). (`--stream` to follow, `--raw` for full JSON.)
+5. **Projection WS feed** — `python3 /home/dev/strategies/long-scalping/scripts/sug_ws.py` → price, **trandm**, **asset_01**, NTPS, dir, price_1h/4h/24h, klines (1m/1h/4h), **order-book walls** (resist/support + buy/sell amounts), **OI** + change, **net_flow** (qtym_asset). (`--stream` to follow, `--raw` for full JSON.)
 6. MRC lines when relevant — `curl -s "https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=60&limit=1"` (and `timeframe=300` for 5m): `mrc_200` ML / DownInner / DownBig / CurrentCross, `candle` Close/High, `zigzagtrend` EndDirection/Fibo.
 
 ## Key gauges & concepts

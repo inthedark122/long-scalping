@@ -4,7 +4,7 @@
 > the **Projection (sug_info) feed** — `indicator.trandm` and `indicator.asset_01` — which the
 > module receives every tick via `handle_sug_info`. Live read path:
 > `wss://okx.tg.trading.sinvoid.me/ws` → `{"event":"Subscribe","param":{"event":"Projection","symbol":"ETH-USDT-SWAP"}}`
-> (subscriber: `long-scalping/sug_ws.py`).
+> (subscriber: `long-scalping/scripts/sug_ws.py`).
 >
 > **Module status:**
 > - `trandm` IS already deserialized (`SuggestionInfoIndicator.trandm`, read in `read_analysis`,
