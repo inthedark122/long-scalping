@@ -12,7 +12,7 @@ pub fn render(
     let vt = &state.vlines[4];
     let fc = snapshot
         .fast_candle
-        .map(|fc| format!("{:.4}->{:.4}", fc.candle.open, fc.candle.close))
+        .map(|fc| format!("{:?} {:.4}->{:.4}", fc.phase(&snapshot.tf1m.candle), fc.candle.open, fc.candle.close))
         .unwrap_or_else(|| "na".to_string());
     format!(
         "t={} p={:.4} 5m={:?} 15m={} 1h={:?} risk={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} vml={}/{} fc={} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={} reason={}",

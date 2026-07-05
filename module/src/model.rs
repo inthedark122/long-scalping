@@ -150,6 +150,20 @@ pub struct FastCandleSnapshot {
     pub active: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FastCandlePhase {
+    Absent,
+    Cooling,
+    Building,
+    Tiring,
+}
+
+impl Default for FastCandlePhase {
+    fn default() -> Self {
+        Self::Absent
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SignalIndicatorSnapshot {
     pub ntps: i64,
@@ -187,6 +201,43 @@ impl TimeframeSnapshot {
     }
 }
 
+impl FastCandleSnapshot {
+    pub fn range_pct(&self) -> f64 {
+        let price = self.candle.close.max(0.0);
+        if price <= 0.0 {
+            return 0.0;
+        }
+        ((self.candle.high - self.candle.low).abs() / price) * 100.0
+    }
+
+    pub fn phase(&self, current_candle: &Candle) -> FastCandlePhase {
+        if !self.active {
+            return if self.range_pct() > 0.0 {
+                FastCandlePhase::Cooling
+            } else {
+                FastCandlePhase::Absent
+            };
+        }
+
+        let fc_pct = self.range_pct();
+        let candle_pct = if current_candle.close > 0.0 {
+            ((current_candle.high - current_candle.low).abs() / current_candle.close) * 100.0
+        } else {
+            0.0
+        };
+
+        if fc_pct <= 0.0 {
+            FastCandlePhase::Absent
+        } else if candle_pct <= 0.40 && fc_pct >= candle_pct * 1.5 {
+            FastCandlePhase::Tiring
+        } else if fc_pct >= candle_pct {
+            FastCandlePhase::Building
+        } else {
+            FastCandlePhase::Cooling
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct IndicatorSnapshot {
     pub tf1m: TimeframeSnapshot,
@@ -195,6 +246,51 @@ pub struct IndicatorSnapshot {
     pub tf1h: TimeframeSnapshot,
     pub fast_candle: Option<FastCandleSnapshot>,
     pub signal: SignalIndicatorSnapshot,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_candle_phase_follows_doc_semantics() {
+        let active = FastCandleSnapshot {
+            candle: Candle {
+                open: 100.0,
+                high: 106.0,
+                low: 100.0,
+                close: 105.0,
+            },
+            active: true,
+        };
+        let growing = active.phase(&Candle {
+            open: 100.0,
+            high: 105.5,
+            low: 99.5,
+            close: 105.0,
+        });
+        assert_eq!(growing, FastCandlePhase::Building);
+
+        let tiring = active.phase(&Candle {
+            open: 105.0,
+            high: 105.3,
+            low: 104.9,
+            close: 105.05,
+        });
+        assert_eq!(tiring, FastCandlePhase::Tiring);
+
+        let cooling = FastCandleSnapshot {
+            active: false,
+            ..active
+        }
+        .phase(&Candle {
+            open: 105.0,
+            high: 105.3,
+            low: 104.9,
+            close: 105.05,
+        });
+        assert_eq!(cooling, FastCandlePhase::Cooling);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
