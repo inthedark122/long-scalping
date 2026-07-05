@@ -126,6 +126,65 @@ pub struct TimeframeSnapshot {
     pub zz_buy_price: f64,
     pub zz_sell_price: f64,
     pub zz_break_price: f64,
+    pub volume_gain: f64,
+    pub volume_gain_min: f64,
+    pub volume_gain_max: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GainZone {
+    Weak,
+    Building,
+    Late,
+}
+
+impl Default for GainZone {
+    fn default() -> Self {
+        Self::Weak
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct FastCandleSnapshot {
+    pub candle: Candle,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SignalIndicatorSnapshot {
+    pub ntps: i64,
+    pub asset_01: f64,
+    pub asset_diff_01: f64,
+}
+
+impl TimeframeSnapshot {
+    pub fn gain_zone(&self) -> GainZone {
+        if self.volume_gain < 1.0 {
+            return GainZone::Weak;
+        }
+        if self.volume_gain_max > 0.0 && self.volume_gain >= self.volume_gain_max * 0.8 {
+            GainZone::Late
+        } else {
+            GainZone::Building
+        }
+    }
+
+    pub fn gain_progress_pct(&self) -> f64 {
+        if self.volume_gain_max <= self.volume_gain_min {
+            return 0.0;
+        }
+        ((self.volume_gain - self.volume_gain_min)
+            / (self.volume_gain_max - self.volume_gain_min))
+            .clamp(0.0, 1.0)
+    }
+
+    pub fn gain_is_building(&self) -> bool {
+        matches!(self.gain_zone(), GainZone::Building)
+    }
+
+    pub fn gain_is_late(&self) -> bool {
+        matches!(self.gain_zone(), GainZone::Late)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -134,6 +193,8 @@ pub struct IndicatorSnapshot {
     pub tf5m: TimeframeSnapshot,
     pub tf15m: TimeframeSnapshot,
     pub tf1h: TimeframeSnapshot,
+    pub fast_candle: Option<FastCandleSnapshot>,
+    pub signal: SignalIndicatorSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

@@ -222,6 +222,8 @@ mod tests {
             tf5m: tf(100.0),
             tf15m: tf(100.0),
             tf1h: tf(100.0),
+            fast_candle: None,
+            signal: Default::default(),
         };
         let plan = plan(&snapshot, 100.0, PositionState::Long).unwrap();
         assert!(plan.take_profit > 100.0);
@@ -235,6 +237,8 @@ mod tests {
             tf5m: tf(100.0),
             tf15m: tf(100.0),
             tf1h: tf(100.0),
+            fast_candle: None,
+            signal: Default::default(),
         };
         let plan = plan(&snapshot, 100.0, PositionState::Short).unwrap();
         assert!(plan.take_profit < 100.0);

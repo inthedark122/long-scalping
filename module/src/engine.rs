@@ -94,7 +94,12 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             };
             let side = dir_to_position(*direction);
             let plan = exit::plan(
-                &market_data::build_snapshot(&state.history, &input.indicators, input.price),
+                &market_data::build_snapshot(
+                    &state.history,
+                    &input.indicators,
+                    input.sug_info.as_ref(),
+                    input.price,
+                ),
                 input.price,
                 side,
             );
@@ -154,7 +159,12 @@ fn process(
         input.price,
     );
 
-    let snapshot = market_data::build_snapshot(&state.history, &input.indicators, input.price);
+    let snapshot = market_data::build_snapshot(
+        &state.history,
+        &input.indicators,
+        input.sug_info.as_ref(),
+        input.price,
+    );
     vlines::update(
         &mut state.vlines,
         snapshot.tf1m.mrc.lines(),

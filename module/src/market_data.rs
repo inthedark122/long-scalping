@@ -1,5 +1,7 @@
 use crate::model::{Candle, IndicatorSnapshot, MrcBands, TimeframeSnapshot};
+use crate::model::{FastCandleSnapshot, SignalIndicatorSnapshot};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
+use lte_strategy_bridge::sug_info::SuggestionInfo;
 use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
@@ -197,15 +199,60 @@ fn build_timeframe(
         zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
         zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
         zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice"),
+        volume_gain: read_float(
+            history,
+            timeframe,
+            IndicatorKey::Volume50,
+            IndicatorField::Gain,
+            0,
+        ),
+        volume_gain_min: read_float(
+            history,
+            timeframe,
+            IndicatorKey::Volume50,
+            IndicatorField::Min,
+            0,
+        ),
+        volume_gain_max: read_float(
+            history,
+            timeframe,
+            IndicatorKey::Volume50,
+            IndicatorField::Max,
+            0,
+        ),
     }
 }
 
-pub fn build_snapshot(history: &IndicatorHistory, raw: &RawIndicators, live_price: f64) -> IndicatorSnapshot {
+pub fn build_snapshot(
+    history: &IndicatorHistory,
+    raw: &RawIndicators,
+    sug_info: Option<&SuggestionInfo>,
+    live_price: f64,
+) -> IndicatorSnapshot {
+    let fast_candle = sug_info.and_then(|info| {
+        info.fast_candle.as_ref().map(|fc| FastCandleSnapshot {
+            candle: Candle {
+                open: fc.enter,
+                high: fc.max,
+                low: fc.min,
+                close: fc.exit,
+            },
+            active: info.status.is_fast(),
+        })
+    });
+    let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| SignalIndicatorSnapshot {
+        ntps: info.indicator.ntps,
+        asset_01: info.indicator.asset_01,
+        asset_diff_01: info.indicator.asset_diff_01,
+    });
+
     IndicatorSnapshot {
         tf1m: build_timeframe(history, raw, TF_1M, Some(live_price)),
         tf5m: build_timeframe(history, raw, TF_5M, None),
         tf15m: build_timeframe(history, raw, TF_15M, None),
         tf1h: build_timeframe(history, raw, TF_1H, None),
+        fast_candle,
+        signal,
     }
 }
 
@@ -265,6 +312,19 @@ mod tests {
                     ModuleIndicatorValue::Direction(Direction::Short),
                 )]),
             );
+            candle.insert(
+                "volume_50".to_string(),
+                HashMap::from([(
+                    "Gain".to_string(),
+                    ModuleIndicatorValue::Float(12.5),
+                ), (
+                    "Min".to_string(),
+                    ModuleIndicatorValue::Float(1.0),
+                ), (
+                    "Max".to_string(),
+                    ModuleIndicatorValue::Float(20.0),
+                )]),
+            );
             snapshot.insert(tf, vec![candle.clone(), candle]);
         }
 
@@ -276,17 +336,20 @@ mod tests {
     fn missing_fields_degrade_to_neutral() {
         let history = IndicatorHistory::default();
         let raw = BTreeMap::new();
-        let snap = build_snapshot(&history, &raw, 101.0);
+        let snap = build_snapshot(&history, &raw, None, 101.0);
         assert_eq!(snap.tf1m.dp_dir, 0);
         assert_eq!(snap.tf1m.zz_dir, 0);
         assert_eq!(snap.tf1m.mrc.range(), 0.0);
         assert_eq!(snap.tf1m.candle.close, 101.0);
+        assert!(snap.fast_candle.is_none());
+        assert_eq!(snap.tf1m.volume_gain, 0.0);
+        assert_eq!(snap.tf1m.gain_zone(), crate::model::GainZone::Weak);
     }
 
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
-        let snap = build_snapshot(&history, &raw, 106.0);
+        let snap = build_snapshot(&history, &raw, None, 106.0);
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
@@ -296,10 +359,83 @@ mod tests {
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
         let (history, raw) = mk_history();
-        let snap = build_snapshot(&history, &raw, 106.0);
+        let snap = build_snapshot(&history, &raw, None, 106.0);
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
         assert_eq!(snap.tf5m.mrc.down_big, 80.0);
         assert_eq!(snap.tf5m.mrc.up_big, 120.0);
+    }
+
+    #[test]
+    fn fast_candle_and_gain_are_read_from_sug_info_and_history() {
+        use lte_strategy_bridge::sug_info::{
+            AlgoSuggestionTradeStatus, SuggestionInfo, SuggestionInfoCandle,
+            SuggestionInfoIndicator,
+        };
+
+        let (history, raw) = mk_history();
+
+        let sug_info = SuggestionInfo {
+            time: 1,
+            system_time: 1,
+            symbol: "TEST".to_string(),
+            symbol_id: 1,
+            symbol_key: "TEST".to_string(),
+            status: AlgoSuggestionTradeStatus::FastTrade,
+            price: 106.0,
+            candle: SuggestionInfoCandle::new(106.0),
+            klines: HashMap::new(),
+            fast_candle: Some(SuggestionInfoCandle {
+                min: 104.0,
+                max: 108.0,
+                enter: 105.0,
+                exit: 107.0,
+                qty: 1.0,
+                qty_asset: 2.0,
+                qtym: 3.0,
+                qtym_asset: 4.0,
+            }),
+            direction: Direction::Long,
+            indicator: SuggestionInfoIndicator {
+                ntps: 77,
+                ntps_fast_time: None,
+                trandm: 8.5,
+                asset_01: 9.5,
+                asset_diff_01: 1.25,
+                price_1h: 0.0,
+                price_4h: 0.0,
+                price_8h: 0.0,
+                price_24h: 0.0,
+            },
+            order_book: None,
+            oi: None,
+        };
+
+        let snap = build_snapshot(&history, &raw, Some(&sug_info), 106.0);
+        assert!(snap.fast_candle.is_some());
+        assert!(snap.fast_candle.unwrap().active);
+        assert_eq!(snap.signal.ntps, 77);
+        assert_eq!(snap.tf1m.volume_gain, 12.5);
+        assert_eq!(snap.tf1m.volume_gain_min, 1.0);
+        assert_eq!(snap.tf1m.volume_gain_max, 20.0);
+        assert!(snap.tf1m.gain_is_building());
+        assert!(!snap.tf1m.gain_is_late());
+        assert!(snap.tf1m.gain_progress_pct() > 0.5);
+    }
+
+    #[test]
+    fn gain_zone_marks_late_when_gain_nears_the_observed_maximum() {
+        let mut snap = TimeframeSnapshot {
+            volume_gain: 18.0,
+            volume_gain_min: 1.0,
+            volume_gain_max: 20.0,
+            ..Default::default()
+        };
+        assert_eq!(snap.gain_zone(), crate::model::GainZone::Late);
+        assert!(snap.gain_is_late());
+
+        snap.volume_gain = 8.0;
+        assert_eq!(snap.gain_zone(), crate::model::GainZone::Building);
+        assert!(snap.gain_is_building());
     }
 }

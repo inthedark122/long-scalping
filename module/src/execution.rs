@@ -394,6 +394,8 @@ mod tests {
                 tf5m: Default::default(),
                 tf15m: Default::default(),
                 tf1h: Default::default(),
+                fast_candle: None,
+                signal: Default::default(),
             },
             &TradeDecision {
                 market_state: MarketState::Long,
