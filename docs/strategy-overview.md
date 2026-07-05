@@ -1,6 +1,6 @@
 # Strategy Overview
 
-`1.0.1` is the limit-entry release for the long-scalping module.
+`1.0.2` is the limit-entry release for the long-scalping module.
 
 ## Trading model
 - Detection regime: `5m`
@@ -25,4 +25,10 @@
 5. `detection/sharp_return.rs` marks sharp moves that fail to return quickly.
 6. `detection/regime.rs` classifies `5m`, falls back to `15m`, and lets `1h` only block overconfident entries.
 7. `decision.rs` outputs one state and an entry allowance.
-8. `execution.rs` enforces one-position trading, stop loss, TP-on-pullback, cooldown, and post-SL drawdown sizing.
+8. `execution.rs` enforces one-position trading and a limit-only entry with the internal `cap_init` bankroll model.
+
+## Risk model
+- The only public risk knob is `cap_init`
+- `cap_init` seeds the internal deployable budget from `max_amount * cap_init / 100`
+- Profit first doubles the budget until the cap is reached
+- After the cap is reached, further profit growth is reinvested with leverage

@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.1",
+      "module_version": "1.0.2",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.1"
+          "module_version": "1.0.2"
         }
       }
     }
@@ -32,13 +32,21 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.1 limit-entry release using compiled defaults.",
-      "params": []
+      "description": "Start the 1.0.2 limit-entry release using compiled defaults or a cap_init override.",
+      "params": [
+        {
+          "code": "cap_init",
+          "name": "Initial budget %",
+          "description": "Percent of max_amount reserved for the internal trading budget.",
+          "default": 2.0,
+          "variant": "Number"
+        }
+      ]
     }
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "defaults": {}
   }
 }

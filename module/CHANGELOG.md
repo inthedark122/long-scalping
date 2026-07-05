@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2
+
+`cap_init` risk-model reset.
+
+- Removed the public multi-variable sizing stack.
+- Added a single Start parameter: `cap_init` as a percentage from `0` to `100`.
+- Internal deployable budget now starts from `max_amount * cap_init / 100`.
+- Profits double the internal budget until that cap is reached, then reinvest with leverage.
+- Limit entries and the one-position trading model stay intact.
+
 ## 1.0.1
 
 Limit-only entry release.

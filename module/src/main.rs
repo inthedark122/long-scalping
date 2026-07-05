@@ -5,6 +5,7 @@ mod engine;
 mod execution;
 mod market_data;
 mod model;
+mod risk;
 mod orders;
 mod state;
 

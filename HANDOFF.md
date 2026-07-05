@@ -4,9 +4,9 @@ Last updated 2026-07-06.
 
 ## Baseline
 
-This repo now tracks the `1.0.1` release only.
+This repo now tracks the `1.0.2` release only.
 
-- Module version: `1.0.1`
+- Module version: `1.0.2`
 - Rust crate: `module/`
 - Runtime model: one position at a time
 - Market states: `Long`, `Short`, `Sideways`
@@ -17,7 +17,12 @@ This repo now tracks the `1.0.1` release only.
 
 ## Config surface
 
-The Start signal has no editable variables. The module uses compiled defaults from `Config::default()`.
+The Start signal exposes one variable: `cap_init`.
+
+- Type: percentage
+- Range: `0` to `100`
+- Meaning: seed the internal deployable budget from `max_amount * cap_init / 100`
+- Growth model: double the budget on profit until that cap is reached, then reinvest profit with leverage
 
 ## Rust layout
 

@@ -1,7 +1,8 @@
-use crate::model::{MarketState, PositionState, TradeDecision};
-use crate::orders::{close, limit_open};
-use crate::state::{sync_position_state, EngineState};
 use crate::model::IndicatorSnapshot;
+use crate::model::{MarketState, TradeDecision};
+use crate::orders::{close, limit_open};
+use crate::risk::entry_budget;
+use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition};
 
 #[derive(Debug, Default)]
@@ -11,46 +12,36 @@ pub struct ExecutionResult {
     pub note: String,
 }
 
-fn size_for_entry(input: &ModuleInput, state: &EngineState) -> f64 {
-    let cap_notional = input.auto_max_amount.max(input.max_amount) * state.cfg.cap_pct;
-    let leverage = (input.leverage as f64).max(1.0);
-    let risk_notional =
-        ((cap_notional / leverage) * state.cfg.risk_pct / state.cfg.stop_pct).min(cap_notional);
-    let min_notional = input.symbol_info.min_notional.unwrap_or(1.0).max(1.0);
-    (risk_notional * state.cfg.seed_pct * state.risk_drawdown).max(min_notional)
-}
-
-fn same_price_reentry_block(state: &EngineState, side: PositionState, price: f64) -> bool {
-    if side != state.last_stop_side || state.last_stop_price <= 0.0 {
-        return false;
-    }
-    ((price - state.last_stop_price).abs() / state.last_stop_price)
-        < state.cfg.tp_pullback_pct.max(0.001)
-}
-
-fn open_note(side: Direction, amount: f64, price: f64, decision: &TradeDecision, state: &EngineState) -> String {
+fn open_note(
+    side: Direction,
+    amount: f64,
+    price: f64,
+    decision: &TradeDecision,
+    state: &EngineState,
+) -> String {
     let side = match side {
         Direction::Long => "long",
         Direction::Short => "short",
         _ => "both",
     };
     format!(
-        "open {} because {} price={:.4} amount={:.4} risk_drawdown={:.2}",
+        "open {} because {} price={:.4} amount={:.4} cap_init={:.2}% budget={:.4}",
         side,
         decision.reason,
         price,
         amount,
-        state.risk_drawdown
+        state.cfg.cap_init,
+        state.trade_budget
     )
 }
 
 fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     format!(
-        "close because {} price={:.4} cooldown_until={} risk_drawdown={:.2}",
+        "close because {} price={:.4} cap_init={:.2}% budget={:.4}",
         reason,
         price,
-        state.cooldown_until,
-        state.risk_drawdown
+        state.cfg.cap_init,
+        state.trade_budget
     )
 }
 
@@ -105,20 +96,24 @@ pub fn evaluate(
         };
     }
 
-    if state.ticks < state.cooldown_until || !decision.allow_entry {
+    if !decision.allow_entry {
         return ExecutionResult {
-            note: if state.ticks < state.cooldown_until {
-                "cooldown".to_string()
-            } else {
-                "entry-blocked".to_string()
-            },
+            note: "entry-blocked".to_string(),
             ..Default::default()
         };
     }
 
-    let amount = size_for_entry(input, state);
+    let amount = entry_budget(input, state);
+    let min_notional = input.symbol_info.min_notional.unwrap_or(1.0).max(1.0);
+    if amount < min_notional {
+        return ExecutionResult {
+            note: "budget-too-small".to_string(),
+            ..Default::default()
+        };
+    }
+
     match decision.market_state {
-        MarketState::Long if !same_price_reentry_block(state, PositionState::Long, input.price) => {
+        MarketState::Long => {
             ExecutionResult {
                 open_positions: vec![limit_open(
                     Direction::Long,
@@ -136,9 +131,7 @@ pub fn evaluate(
                 ..Default::default()
             }
         }
-        MarketState::Short
-            if !same_price_reentry_block(state, PositionState::Short, input.price) =>
-        {
+        MarketState::Short => {
             ExecutionResult {
                 open_positions: vec![limit_open(
                     Direction::Short,
@@ -167,6 +160,7 @@ pub fn evaluate(
 mod tests {
     use super::*;
     use crate::model::TradeDecision;
+    use crate::risk::apply_close_pnl;
     use crate::state::EngineState;
     use lte_strategy_bridge::abi::{ModulePositionSummary, ModulePositions, ModuleSymbolInfo};
 
@@ -190,6 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn cap_init_zero_blocks_entries() {
+        let mut state = EngineState::default();
+        state.cfg.cap_init = 0.0;
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+    }
+
+    #[test]
     fn sideways_blocks_entries() {
         let mut state = EngineState::default();
         let result = evaluate(
@@ -203,6 +214,37 @@ mod tests {
             },
         );
         assert!(result.open_positions.is_empty());
+    }
+
+    #[test]
+    fn entry_budget_uses_cap_init_and_min_notional() {
+        let mut state = EngineState::default();
+        state.cfg.cap_init = 2.0;
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].amount, Some(1.0));
+    }
+
+    #[test]
+    fn profit_doubles_before_leverage_growth() {
+        let mut state = EngineState::default();
+        let inp = input();
+        state.trade_budget = 1.0;
+
+        apply_close_pnl(&inp, &mut state, 0.25);
+        assert_eq!(state.trade_budget, 2.0);
+
+        apply_close_pnl(&inp, &mut state, 0.25);
+        assert_eq!(state.trade_budget, 4.5);
     }
 
     #[test]

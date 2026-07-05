@@ -28,28 +28,18 @@ pub enum PositionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub seed_pct: f64,
-    pub cap_pct: f64,
-    pub risk_pct: f64,
-    pub stop_pct: f64,
-    pub tp_pullback_pct: f64,
-    pub cooldown_ticks: u64,
-    pub confirm_tf_fallback: i64,
-    pub debug_info: i64,
+    pub cap_init: f64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            seed_pct: 0.05,
-            cap_pct: 0.90,
-            risk_pct: 0.40,
-            stop_pct: 0.007,
-            tp_pullback_pct: 0.0015,
-            cooldown_ticks: 5,
-            confirm_tf_fallback: 900,
-            debug_info: 0,
-        }
+        Self { cap_init: 2.0 }
+    }
+}
+
+impl Config {
+    pub fn cap_ratio(&self) -> f64 {
+        (self.cap_init / 100.0).clamp(0.0, 1.0)
     }
 }
 

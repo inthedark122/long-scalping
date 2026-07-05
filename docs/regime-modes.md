@@ -17,6 +17,11 @@ The module always produces exactly one market state:
 - `Sideways` opens nothing.
 
 ## Exit policy
-1. Hard stop / risk exit
-2. TP after a favorable move pulls back by `tp_pullback_pct`
-3. Regime invalidation exit if the thesis is gone and TP did not resolve first
+- Regime mode does not directly define exit timing.
+- The execution engine keeps the one-position invariant and closes conflicting dual positions if they ever appear.
+- A held position is not reversed on the same tick.
+
+## Risk policy
+- The module keeps the one-position invariant and uses limit-only entries.
+- Risk sizing is controlled only by `cap_init`.
+- The internal deployable budget doubles on profit until the cap is reached, then grows with leverage-backed profit reinvestment.

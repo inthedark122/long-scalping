@@ -5,6 +5,7 @@ use crate::execution;
 use crate::market_data;
 use crate::model::{MarketState, RiskSnapshot, TradeDecision};
 use crate::orders::{close, limit_open};
+use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput};
 
@@ -21,10 +22,13 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
         ModuleEvent::SugInfo => process(input, state, false, &[]),
         ModuleEvent::Signal { code, values, .. } => {
             if code == "start" {
-                let _ = values;
+                state.trade_budget = 0.0;
+                if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
+                    state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
+                }
                 state.cfg_loaded = true;
                 ModuleOutput {
-                    debug: "start cfg=defaults".to_string(),
+                    debug: format!("start cap_init={:.2}%", state.cfg.cap_init),
                     ..Default::default()
                 }
             } else {
@@ -108,9 +112,7 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             }
         }
         ModuleEvent::FinishPosition { direction, pnl } => {
-            if *pnl > 0.0 {
-                state.risk_drawdown = 1.0;
-            }
+            risk::apply_close_pnl(input, state, *pnl);
             if state.position.side == dir_to_position(*direction) {
                 state.position = PositionRuntime::default();
             }
