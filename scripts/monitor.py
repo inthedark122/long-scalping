@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compact terminal monitor for the 1.0.0 baseline.
+Compact terminal monitor for the 1.0.1 release.
 """
 
 import argparse
@@ -50,7 +50,7 @@ def tf_line(tf: int) -> str:
 
 def print_monitor(debug_line: str):
     os.system("clear")
-    print("Long Scalping 1.0.0")
+    print("Long Scalping 1.0.1")
     print("====================")
     for tf in [60, 300, 900, 3600]:
         print(tf_line(tf))

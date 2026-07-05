@@ -4,19 +4,6 @@ use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleOpenPosition, ModuleOrderSide, ModulePlaceOrder,
 };
 
-pub(crate) fn market_open(direction: Direction, amount: f64, note: &str) -> ModuleOpenPosition {
-    ModuleOpenPosition {
-        direction,
-        amount: Some(amount),
-        qty: None,
-        enter_price: None,
-        order_type: "Market".to_string(),
-        take_profit: None,
-        stop_loss: None,
-        note: note.to_string(),
-    }
-}
-
 pub(crate) fn close(direction: Direction, reason: &str) -> ModuleClosePosition {
     ModuleClosePosition {
         direction,
@@ -51,7 +38,6 @@ pub(crate) fn limit_order(
 /// Clean LIMIT open ("create position with price"): a maker open resting at
 /// `enter`. NO stop_loss/take_profit bracket on the create — attaching those
 /// gets the order rejected; the stop/TP are handled separately.
-#[allow(dead_code)]
 pub(crate) fn limit_open(
     direction: Direction,
     amount: f64,

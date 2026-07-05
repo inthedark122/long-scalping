@@ -1,6 +1,6 @@
 # Strategy Overview
 
-`1.0.0` is a fresh baseline for the long-scalping module.
+`1.0.1` is the limit-entry release for the long-scalping module.
 
 ## Trading model
 - Detection regime: `5m`

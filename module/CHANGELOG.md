@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1
+
+Limit-only entry release.
+
+- Removed the last market-open helper from the active path.
+- Initial entries now use `open_positions` with `Limit` order payloads only.
+- Manual force-open actions were aligned to the same limit-entry flow.
+- Bot-group config should now point at `1.0.1` for the LAB module repo.
+
 ## 1.0.0
 
 Fresh baseline reset.

@@ -1,6 +1,7 @@
 use crate::model::{MarketState, PositionState, TradeDecision};
-use crate::orders::{close, market_open};
+use crate::orders::{close, limit_open};
 use crate::state::{sync_position_state, EngineState};
+use crate::model::IndicatorSnapshot;
 use lte_strategy_bridge::abi::{Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition};
 
 #[derive(Debug, Default)]
@@ -19,17 +20,6 @@ fn size_for_entry(input: &ModuleInput, state: &EngineState) -> f64 {
     (risk_notional * state.cfg.seed_pct * state.risk_drawdown).max(min_notional)
 }
 
-fn arm_stop_penalty(state: &mut EngineState, side: PositionState, price: f64) {
-    state.cooldown_until = state.ticks.saturating_add(state.cfg.cooldown_ticks);
-    state.risk_drawdown = (state.risk_drawdown * 0.5).max(0.25);
-    state.last_stop_price = price;
-    state.last_stop_side = side;
-}
-
-fn clear_stop_penalty(state: &mut EngineState) {
-    state.risk_drawdown = 1.0;
-}
-
 fn same_price_reentry_block(state: &EngineState, side: PositionState, price: f64) -> bool {
     if side != state.last_stop_side || state.last_stop_price <= 0.0 {
         return false;
@@ -41,6 +31,7 @@ fn same_price_reentry_block(state: &EngineState, side: PositionState, price: f64
 pub fn evaluate(
     input: &ModuleInput,
     state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
     decision: &TradeDecision,
 ) -> ExecutionResult {
     let long = input
@@ -66,68 +57,16 @@ pub fn evaluate(
         };
     }
 
-    if let Some(pos) = &input.positions.long {
-        let stop_price = pos.entry_price * (1.0 - state.cfg.stop_pct);
-        if input.price <= stop_price {
-            arm_stop_penalty(state, PositionState::Long, input.price);
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Long, "sl-long")],
-                note: "sl-long".to_string(),
-                ..Default::default()
-            };
-        }
-        let profitable = pos.pnl > 0.0;
-        let pullback_hit =
-            input.price <= state.position.peak_price * (1.0 - state.cfg.tp_pullback_pct);
-        if profitable && pullback_hit {
-            clear_stop_penalty(state);
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Long, "tp-pullback-long")],
-                note: "tp-pullback-long".to_string(),
-                ..Default::default()
-            };
-        }
-        if decision.market_state != MarketState::Long && pos.pnl <= 0.0 {
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Long, "regime-invalid-long")],
-                note: "regime-invalid-long".to_string(),
-                ..Default::default()
-            };
-        }
+    if input.positions.long.is_some() {
+        let _ = snapshot;
         return ExecutionResult {
             note: "hold-long".to_string(),
             ..Default::default()
         };
     }
 
-    if let Some(pos) = &input.positions.short {
-        let stop_price = pos.entry_price * (1.0 + state.cfg.stop_pct);
-        if input.price >= stop_price {
-            arm_stop_penalty(state, PositionState::Short, input.price);
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Short, "sl-short")],
-                note: "sl-short".to_string(),
-                ..Default::default()
-            };
-        }
-        let profitable = pos.pnl > 0.0;
-        let pullback_hit =
-            input.price >= state.position.trough_price * (1.0 + state.cfg.tp_pullback_pct);
-        if profitable && pullback_hit {
-            clear_stop_penalty(state);
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Short, "tp-pullback-short")],
-                note: "tp-pullback-short".to_string(),
-                ..Default::default()
-            };
-        }
-        if decision.market_state != MarketState::Short && pos.pnl <= 0.0 {
-            return ExecutionResult {
-                close_positions: vec![close(Direction::Short, "regime-invalid-short")],
-                note: "regime-invalid-short".to_string(),
-                ..Default::default()
-            };
-        }
+    if input.positions.short.is_some() {
+        let _ = snapshot;
         return ExecutionResult {
             note: "hold-short".to_string(),
             ..Default::default()
@@ -149,7 +88,12 @@ pub fn evaluate(
     match decision.market_state {
         MarketState::Long if !same_price_reentry_block(state, PositionState::Long, input.price) => {
             ExecutionResult {
-                open_positions: vec![market_open(Direction::Long, amount, "regime-long")],
+                open_positions: vec![limit_open(
+                    Direction::Long,
+                    amount,
+                    input.price,
+                    "regime-long",
+                )],
                 note: "open-long".to_string(),
                 ..Default::default()
             }
@@ -158,7 +102,12 @@ pub fn evaluate(
             if !same_price_reentry_block(state, PositionState::Short, input.price) =>
         {
             ExecutionResult {
-                open_positions: vec![market_open(Direction::Short, amount, "regime-short")],
+                open_positions: vec![limit_open(
+                    Direction::Short,
+                    amount,
+                    input.price,
+                    "regime-short",
+                )],
                 note: "open-short".to_string(),
                 ..Default::default()
             }
@@ -173,7 +122,7 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Config, TradeDecision};
+    use crate::model::TradeDecision;
     use crate::state::EngineState;
     use lte_strategy_bridge::abi::{ModulePositionSummary, ModulePositions, ModuleSymbolInfo};
 
@@ -202,6 +151,7 @@ mod tests {
         let result = evaluate(
             &input(),
             &mut state,
+            &IndicatorSnapshot::default(),
             &TradeDecision {
                 market_state: MarketState::Sideways,
                 allow_entry: true,
@@ -224,6 +174,7 @@ mod tests {
         let result = evaluate(
             &inp,
             &mut state,
+            &IndicatorSnapshot::default(),
             &TradeDecision {
                 market_state: MarketState::Short,
                 allow_entry: true,
@@ -234,60 +185,48 @@ mod tests {
     }
 
     #[test]
-    fn tp_pullback_closes_without_reversal() {
+    fn long_open_uses_limit_entry() {
         let mut state = EngineState::default();
-        state.position.side = PositionState::Long;
-        state.position.entry_price = 100.0;
-        state.position.peak_price = 105.0;
-
-        let mut inp = input();
-        inp.price = 104.0;
-        inp.positions.long = Some(ModulePositionSummary {
-            entry_price: 100.0,
-            notional: 10.0,
-            pnl: 1.0,
-            qty: 0.1,
-        });
+        let inp = input();
 
         let result = evaluate(
             &inp,
             &mut state,
-            &TradeDecision {
-                market_state: MarketState::Short,
-                allow_entry: true,
-                reason: String::new(),
-            },
-        );
-        assert_eq!(result.close_positions.len(), 1);
-        assert!(result.open_positions.is_empty());
-    }
-
-    #[test]
-    fn stop_loss_applies_cooldown_and_drawdown() {
-        let mut state = EngineState::default();
-        state.cfg = Config::default();
-        state.ticks = 10;
-
-        let mut inp = input();
-        inp.price = 99.0;
-        inp.positions.long = Some(ModulePositionSummary {
-            entry_price: 100.0,
-            notional: 10.0,
-            pnl: -1.0,
-            qty: 0.1,
-        });
-
-        let result = evaluate(
-            &inp,
-            &mut state,
+            &IndicatorSnapshot::default(),
             &TradeDecision {
                 market_state: MarketState::Long,
                 allow_entry: true,
                 reason: String::new(),
             },
         );
-        assert_eq!(result.close_positions.len(), 1);
-        assert!(state.cooldown_until > state.ticks);
-        assert!(state.risk_drawdown < 1.0);
+        assert_eq!(result.open_positions.len(), 1);
+        let open = &result.open_positions[0];
+        assert_eq!(open.order_type, "Limit");
+        assert_eq!(open.enter_price, Some(inp.price));
+        assert!(open.take_profit.is_none());
+        assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn short_open_uses_limit_entry() {
+        let mut state = EngineState::default();
+        let inp = input();
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &TradeDecision {
+                market_state: MarketState::Short,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.open_positions.len(), 1);
+        let open = &result.open_positions[0];
+        assert_eq!(open.order_type, "Limit");
+        assert_eq!(open.enter_price, Some(inp.price));
+        assert!(open.take_profit.is_none());
+        assert!(open.stop_loss.is_none());
     }
 }

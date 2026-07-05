@@ -4,7 +4,7 @@ use crate::detection::{cascade, mrc, regime, sharp_return, vlines};
 use crate::execution;
 use crate::market_data;
 use crate::model::{MarketState, RiskSnapshot, TradeDecision};
-use crate::orders::{close, market_open};
+use crate::orders::{close, limit_open};
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput};
 
@@ -38,12 +38,12 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             let amount = values.get("amount").and_then(|v| v.as_f64()).unwrap_or(5.0);
             match name.as_str() {
                 "force_open_long" | "force_open" => ModuleOutput {
-                    open_positions: vec![market_open(Direction::Long, amount, "force")],
+                    open_positions: vec![limit_open(Direction::Long, amount, input.price, "force")],
                     debug: format!("action {} long {}", name, amount),
                     ..Default::default()
                 },
                 "force_open_short" => ModuleOutput {
-                    open_positions: vec![market_open(Direction::Short, amount, "force")],
+                    open_positions: vec![limit_open(Direction::Short, amount, input.price, "force")],
                     debug: format!("action {} short {}", name, amount),
                     ..Default::default()
                 },
@@ -216,7 +216,7 @@ fn process(
         };
     }
 
-    let execution = execution::evaluate(input, state, &decision);
+    let execution = execution::evaluate(input, state, &snapshot, &decision);
 
     ModuleOutput {
         open_positions: execution.open_positions,
