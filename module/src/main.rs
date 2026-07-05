@@ -6,6 +6,7 @@ mod execution;
 mod exit;
 mod market_data;
 mod model;
+mod prediction;
 mod risk;
 mod orders;
 mod state;

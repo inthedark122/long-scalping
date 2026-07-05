@@ -1,4 +1,4 @@
-use crate::model::{Config, PositionState};
+use crate::model::{Config, ExitKind, PositionState};
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 
@@ -10,6 +10,7 @@ pub struct PositionRuntime {
     pub trough_price: f64,
     pub take_profit: f64,
     pub stop_loss: f64,
+    pub exit_tp_reliable: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -65,6 +66,11 @@ pub struct EngineState {
     pub cascade_5m: CascadeState,
     pub cascade_15m: CascadeState,
     pub cascade_1h: CascadeState,
+    pub last_exit_kind: Option<ExitKind>,
+    pub last_exit_side: PositionState,
+    pub last_exit_price: f64,
+    pub last_exit_tick: u64,
+    pub last_exit_tp_reliable: bool,
 }
 
 impl Default for EngineState {
@@ -83,6 +89,11 @@ impl Default for EngineState {
             cascade_5m: CascadeState::default(),
             cascade_15m: CascadeState::default(),
             cascade_1h: CascadeState::default(),
+            last_exit_kind: None,
+            last_exit_side: PositionState::Flat,
+            last_exit_price: 0.0,
+            last_exit_tick: 0,
+            last_exit_tp_reliable: false,
         }
     }
 }
@@ -95,6 +106,11 @@ struct PersistedState {
     cfg_loaded: bool,
     trade_budget: f64,
     position: PositionState,
+    last_exit_kind: Option<ExitKind>,
+    last_exit_side: PositionState,
+    last_exit_price: f64,
+    last_exit_tick: u64,
+    last_exit_tp_reliable: bool,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -105,6 +121,11 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         cfg_loaded: state.cfg_loaded,
         trade_budget: state.trade_budget,
         position: state.position.side,
+        last_exit_kind: state.last_exit_kind,
+        last_exit_side: state.last_exit_side,
+        last_exit_price: state.last_exit_price,
+        last_exit_tick: state.last_exit_tick,
+        last_exit_tp_reliable: state.last_exit_tp_reliable,
     })
     .ok()
 }
@@ -127,6 +148,7 @@ pub fn sync_position_state(
                     trough_price: price.min(entry),
                     take_profit: 0.0,
                     stop_loss: 0.0,
+                    exit_tp_reliable: false,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -144,6 +166,7 @@ pub fn sync_position_state(
                     trough_price: price.min(entry),
                     take_profit: 0.0,
                     stop_loss: 0.0,
+                    exit_tp_reliable: false,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);

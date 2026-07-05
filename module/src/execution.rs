@@ -1,7 +1,8 @@
 use crate::model::IndicatorSnapshot;
-use crate::model::{FastCandlePhase, MarketState, TradeDecision};
+use crate::model::{ExitKind, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open};
 use crate::exit;
+use crate::prediction;
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
@@ -51,53 +52,14 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     )
 }
 
-fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
-    if candle.close <= 0.0 {
-        return 0.0;
-    }
-    ((candle.high - candle.low).abs() / candle.close) * 100.0
-}
-
-fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
-    let fc = snapshot.fast_candle?;
-    let phase = fc.phase(&snapshot.tf1m.candle);
-    let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
-    let fc_pct = fc.range_pct();
-    let small_candle = candle_pct <= 0.40;
-    match phase {
-        FastCandlePhase::Building | FastCandlePhase::Tiring => Some(format!(
-            "fc-phase={:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
-            phase,
-            fc_pct,
-            candle_pct,
-            snapshot.tf1m.gain_zone(),
-            snapshot.tf1m.gain_progress_pct()
-        )),
-        FastCandlePhase::Cooling => {
-            if small_candle {
-                None
-            } else {
-                Some(format!(
-                    "fc-phase=Cooling candle-not-small fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
-                    fc_pct,
-                    candle_pct,
-                    snapshot.tf1m.gain_zone(),
-                    snapshot.tf1m.gain_progress_pct()
-                ))
-            }
-        }
-        FastCandlePhase::Absent => None,
-    }
-}
-
 fn exit_hit_reason(
-    side: crate::model::PositionState,
+    side: PositionState,
     price: f64,
     take_profit: f64,
     stop_loss: f64,
 ) -> Option<&'static str> {
     match side {
-        crate::model::PositionState::Long => {
+        PositionState::Long => {
             if take_profit > 0.0 && price >= take_profit {
                 Some("tp")
             } else if stop_loss > 0.0 && price <= stop_loss {
@@ -106,7 +68,7 @@ fn exit_hit_reason(
                 None
             }
         }
-        crate::model::PositionState::Short => {
+        PositionState::Short => {
             if take_profit > 0.0 && price <= take_profit {
                 Some("tp")
             } else if stop_loss > 0.0 && price >= stop_loss {
@@ -115,7 +77,7 @@ fn exit_hit_reason(
                 None
             }
         }
-        crate::model::PositionState::Flat => None,
+        PositionState::Flat => None,
     }
 }
 
@@ -156,11 +118,21 @@ pub fn evaluate(
 
     if input.positions.long.is_some() {
         if let Some(hit) = exit_hit_reason(
-            crate::model::PositionState::Long,
+            PositionState::Long,
             input.price,
             state.position.take_profit,
             state.position.stop_loss,
         ) {
+            let exit_kind = if hit == "tp" {
+                ExitKind::TakeProfit
+            } else {
+                ExitKind::StopLoss
+            };
+            state.last_exit_kind = Some(exit_kind);
+            state.last_exit_side = PositionState::Long;
+            state.last_exit_price = input.price;
+            state.last_exit_tick = state.ticks;
+            state.last_exit_tp_reliable = state.position.exit_tp_reliable;
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Long,
@@ -178,6 +150,7 @@ pub fn evaluate(
         if let Some(plan) = plan {
             state.position.take_profit = plan.take_profit;
             state.position.stop_loss = plan.stop_loss;
+            state.position.exit_tp_reliable = plan.tp_reliable;
         }
         return ExecutionResult {
             update_positions: plan
@@ -190,11 +163,21 @@ pub fn evaluate(
 
     if input.positions.short.is_some() {
         if let Some(hit) = exit_hit_reason(
-            crate::model::PositionState::Short,
+            PositionState::Short,
             input.price,
             state.position.take_profit,
             state.position.stop_loss,
         ) {
+            let exit_kind = if hit == "tp" {
+                ExitKind::TakeProfit
+            } else {
+                ExitKind::StopLoss
+            };
+            state.last_exit_kind = Some(exit_kind);
+            state.last_exit_side = PositionState::Short;
+            state.last_exit_price = input.price;
+            state.last_exit_tick = state.ticks;
+            state.last_exit_tp_reliable = state.position.exit_tp_reliable;
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Short,
@@ -212,6 +195,7 @@ pub fn evaluate(
         if let Some(plan) = plan {
             state.position.take_profit = plan.take_profit;
             state.position.stop_loss = plan.stop_loss;
+            state.position.exit_tp_reliable = plan.tp_reliable;
         }
         return ExecutionResult {
             update_positions: plan
@@ -229,7 +213,13 @@ pub fn evaluate(
         };
     }
 
-    if let Some(reason) = fast_candle_entry_block(snapshot) {
+    let entry_side = match decision.market_state {
+        MarketState::Long => PositionState::Long,
+        MarketState::Short => PositionState::Short,
+        MarketState::Sideways => PositionState::Flat,
+    };
+
+    if let Some(reason) = prediction::entry_wait_reason(snapshot, state, entry_side) {
         return ExecutionResult {
             note: format!("entry-blocked {}", reason),
             ..Default::default()
@@ -479,6 +469,92 @@ mod tests {
     }
 
     #[test]
+    fn unreliable_tp_blocks_entries() {
+        let mut state = EngineState::default();
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.0,
+            high: 100.8,
+            low: 99.9,
+            close: 100.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 100.7,
+            up_small: 101.0,
+            up_outer: 101.5,
+            up_big: 102.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("tp-unreliable"));
+    }
+
+    #[test]
+    fn post_sl_wait_requires_reclaim() {
+        let mut state = EngineState::default();
+        state.last_exit_kind = Some(ExitKind::StopLoss);
+        state.last_exit_side = PositionState::Long;
+        state.last_exit_price = 100.0;
+        state.last_exit_tick = 10;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 99.0,
+            high: 99.5,
+            low: 98.8,
+            close: 99.2,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("post-sl-wait"));
+    }
+
+    #[test]
     fn cooling_fast_candle_with_large_candle_waits() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
@@ -525,6 +601,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 102.5,
             stop_loss: 95.0,
+            exit_tp_reliable: true,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -581,6 +658,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 97.5,
             stop_loss: 100.5,
+            exit_tp_reliable: true,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {

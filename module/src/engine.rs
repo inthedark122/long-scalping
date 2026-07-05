@@ -93,6 +93,7 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 trough_price: input.price.min(*entry_price),
                 take_profit: 0.0,
                 stop_loss: 0.0,
+                exit_tp_reliable: false,
             };
             let side = dir_to_position(*direction);
             let plan = exit::plan(

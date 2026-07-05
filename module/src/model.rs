@@ -171,6 +171,18 @@ pub struct SignalIndicatorSnapshot {
     pub asset_diff_01: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExitKind {
+    TakeProfit,
+    StopLoss,
+}
+
+impl Default for ExitKind {
+    fn default() -> Self {
+        Self::TakeProfit
+    }
+}
+
 impl TimeframeSnapshot {
     pub fn gain_zone(&self) -> GainZone {
         if self.volume_gain < 1.0 {
