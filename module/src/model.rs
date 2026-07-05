@@ -28,18 +28,36 @@ pub enum PositionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_cap_init")]
     pub cap_init: f64,
+    #[serde(default = "default_trading_amount")]
+    pub trading_amount: f64,
+}
+
+fn default_cap_init() -> f64 {
+    2.0
+}
+
+fn default_trading_amount() -> f64 {
+    50.0
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { cap_init: 2.0 }
+        Self {
+            cap_init: default_cap_init(),
+            trading_amount: default_trading_amount(),
+        }
     }
 }
 
 impl Config {
     pub fn cap_ratio(&self) -> f64 {
         (self.cap_init / 100.0).clamp(0.0, 1.0)
+    }
+
+    pub fn trading_ratio(&self) -> f64 {
+        (self.trading_amount / 100.0).clamp(0.10, 1.0)
     }
 }
 

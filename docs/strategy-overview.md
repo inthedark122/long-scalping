@@ -25,10 +25,11 @@
 5. `detection/sharp_return.rs` marks sharp moves that fail to return quickly.
 6. `detection/regime.rs` classifies `5m`, falls back to `15m`, and lets `1h` only block overconfident entries.
 7. `decision.rs` outputs one state and an entry allowance.
-8. `execution.rs` enforces one-position trading and a limit-only entry with the internal `cap_init` bankroll model.
+8. `execution.rs` enforces one-position trading and a limit-only entry with the internal `cap_init` bankroll model plus `trading_amount` entry guard.
 
 ## Risk model
-- The only public risk knob is `cap_init`
-- `cap_init` seeds the internal deployable budget from `max_amount * cap_init / 100`
+- The public risk knobs are `cap_init` and `trading_amount`
+- `cap_init` seeds the internal budget from `max_amount * cap_init / 100`
+- `trading_amount` caps the normal entry size as a fraction of the deployable budget (`budget × leverage`)
 - Profit first doubles the budget until the cap is reached
 - After the cap is reached, further profit growth is reinvested with leverage

@@ -27,9 +27,16 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
                     state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
                 }
+                if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64())
+                {
+                    state.cfg.trading_amount = trading_amount.clamp(10.0, 100.0);
+                }
                 state.cfg_loaded = true;
                 ModuleOutput {
-                    debug: format!("start cap_init={:.2}%", state.cfg.cap_init),
+                    debug: format!(
+                        "start cap_init={:.2}% trading_amount={:.2}%",
+                        state.cfg.cap_init, state.cfg.trading_amount
+                    ),
                     ..Default::default()
                 }
             } else {

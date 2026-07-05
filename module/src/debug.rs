@@ -11,7 +11,7 @@ pub fn render(
 ) -> String {
     let vt = &state.vlines[4];
     format!(
-        "t={} p={:.4} 5m={:?} 15m={} 1h={:?} risk={} cap_init={:.2}% budget={:.4} pos={:?} vml={}/{} exec={} reason={}",
+        "t={} p={:.4} 5m={:?} 15m={} 1h={:?} risk={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} vml={}/{} exec={} reason={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -19,6 +19,7 @@ pub fn render(
         regime.context_1h,
         if risk.risk_high { "hi" } else { "lo" },
         state.cfg.cap_init,
+        state.cfg.trading_amount,
         state.trade_budget,
         state.position.side,
         vt.long_side.count,

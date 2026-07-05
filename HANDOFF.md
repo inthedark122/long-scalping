@@ -17,11 +17,15 @@ This repo now tracks the `1.0.2` release only.
 
 ## Config surface
 
-The Start signal exposes one variable: `cap_init`.
+The Start signal exposes two variables: `cap_init` and `trading_amount`.
 
 - Type: percentage
 - Range: `0` to `100`
-- Meaning: seed the internal deployable budget from `max_amount * cap_init / 100`
+- Meaning: seed the internal budget from `max_amount * cap_init / 100`
+- `trading_amount`
+- Default: `50`
+- Range: `10` to `100`
+- Meaning: normal entry size as a percent of the deployable budget (`budget × leverage`)
 - Growth model: double the budget on profit until that cap is reached, then reinvest profit with leverage
 
 ## Rust layout

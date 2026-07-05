@@ -23,5 +23,7 @@ The module always produces exactly one market state:
 
 ## Risk policy
 - The module keeps the one-position invariant and uses limit-only entries.
-- Risk sizing is controlled only by `cap_init`.
+- Risk sizing is controlled by `cap_init` and `trading_amount`.
+- `cap_init` seeds the internal budget.
+- `trading_amount` caps routine entries at 10-100% of the deployable budget.
 - The internal deployable budget doubles on profit until the cap is reached, then grows with leverage-backed profit reinvestment.
