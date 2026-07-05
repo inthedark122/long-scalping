@@ -1,5 +1,5 @@
 use crate::model::IndicatorSnapshot;
-use crate::model::{MarketState, TradeDecision};
+use crate::model::{FastCandlePhase, MarketState, TradeDecision};
 use crate::orders::{close, limit_open};
 use crate::exit;
 use crate::risk::entry_budget;
@@ -49,6 +49,20 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
         state.cfg.trading_amount,
         state.trade_budget
     )
+}
+
+fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
+    let fc = snapshot.fast_candle?;
+    let phase = fc.phase(&snapshot.tf1m.candle);
+    match phase {
+        FastCandlePhase::Building | FastCandlePhase::Tiring => Some(format!(
+            "fc-phase={:?} gain_zone={:?} gain_prog={:.2}",
+            phase,
+            snapshot.tf1m.gain_zone(),
+            snapshot.tf1m.gain_progress_pct()
+        )),
+        FastCandlePhase::Cooling | FastCandlePhase::Absent => None,
+    }
 }
 
 pub fn evaluate(
@@ -111,6 +125,13 @@ pub fn evaluate(
     if !decision.allow_entry {
         return ExecutionResult {
             note: "entry-blocked".to_string(),
+            ..Default::default()
+        };
+    }
+
+    if let Some(reason) = fast_candle_entry_block(snapshot) {
+        return ExecutionResult {
+            note: format!("entry-blocked {}", reason),
             ..Default::default()
         };
     }
@@ -229,6 +250,43 @@ mod tests {
     }
 
     #[test]
+    fn building_fast_candle_blocks_entries() {
+        let mut state = EngineState::default();
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.fast_candle = Some(crate::model::FastCandleSnapshot {
+            candle: crate::model::Candle {
+                open: 100.0,
+                high: 106.0,
+                low: 100.0,
+                close: 105.0,
+            },
+            active: true,
+        });
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.0,
+            high: 105.5,
+            low: 99.5,
+            close: 105.0,
+        };
+        snapshot.tf1m.volume_gain = 8.0;
+        snapshot.tf1m.volume_gain_min = 1.0;
+        snapshot.tf1m.volume_gain_max = 20.0;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("fc-phase=Building"));
+    }
+
+    #[test]
     fn entry_budget_uses_cap_init_and_min_notional() {
         let mut state = EngineState::default();
         state.cfg.cap_init = 2.0;
@@ -245,6 +303,42 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].amount, Some(10.0));
+    }
+
+    #[test]
+    fn cooling_fast_candle_allows_entries() {
+        let mut state = EngineState::default();
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.fast_candle = Some(crate::model::FastCandleSnapshot {
+            candle: crate::model::Candle {
+                open: 100.0,
+                high: 106.0,
+                low: 100.0,
+                close: 105.0,
+            },
+            active: false,
+        });
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 105.0,
+            high: 105.2,
+            low: 104.9,
+            close: 105.0,
+        };
+        snapshot.tf1m.volume_gain = 2.0;
+        snapshot.tf1m.volume_gain_min = 1.0;
+        snapshot.tf1m.volume_gain_max = 20.0;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &TradeDecision {
+                market_state: MarketState::Long,
+                allow_entry: true,
+                reason: String::new(),
+            },
+        );
+        assert_eq!(result.open_positions.len(), 1);
     }
 
     #[test]
