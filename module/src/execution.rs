@@ -28,6 +28,32 @@ fn same_price_reentry_block(state: &EngineState, side: PositionState, price: f64
         < state.cfg.tp_pullback_pct.max(0.001)
 }
 
+fn open_note(side: Direction, amount: f64, price: f64, decision: &TradeDecision, state: &EngineState) -> String {
+    let side = match side {
+        Direction::Long => "long",
+        Direction::Short => "short",
+        _ => "both",
+    };
+    format!(
+        "open {} because {} price={:.4} amount={:.4} risk_drawdown={:.2}",
+        side,
+        decision.reason,
+        price,
+        amount,
+        state.risk_drawdown
+    )
+}
+
+fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
+    format!(
+        "close because {} price={:.4} cooldown_until={} risk_drawdown={:.2}",
+        reason,
+        price,
+        state.cooldown_until,
+        state.risk_drawdown
+    )
+}
+
 pub fn evaluate(
     input: &ModuleInput,
     state: &mut EngineState,
@@ -49,8 +75,14 @@ pub fn evaluate(
     if input.positions.long.is_some() && input.positions.short.is_some() {
         return ExecutionResult {
             close_positions: vec![
-                close(Direction::Long, "one-position-invariant"),
-                close(Direction::Short, "one-position-invariant"),
+                close(
+                    Direction::Long,
+                    &close_reason("one-position-invariant", state, input.price),
+                ),
+                close(
+                    Direction::Short,
+                    &close_reason("one-position-invariant", state, input.price),
+                ),
             ],
             note: "flatten-both".to_string(),
             ..Default::default()
@@ -92,7 +124,13 @@ pub fn evaluate(
                     Direction::Long,
                     amount,
                     input.price,
-                    "regime-long",
+                    &open_note(
+                        Direction::Long,
+                        amount,
+                        input.price,
+                        decision,
+                        state,
+                    ),
                 )],
                 note: "open-long".to_string(),
                 ..Default::default()
@@ -106,7 +144,13 @@ pub fn evaluate(
                     Direction::Short,
                     amount,
                     input.price,
-                    "regime-short",
+                    &open_note(
+                        Direction::Short,
+                        amount,
+                        input.price,
+                        decision,
+                        state,
+                    ),
                 )],
                 note: "open-short".to_string(),
                 ..Default::default()

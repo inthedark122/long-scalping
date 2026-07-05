@@ -36,24 +36,52 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
         }
         ModuleEvent::Action { name, values } => {
             let amount = values.get("amount").and_then(|v| v.as_f64()).unwrap_or(5.0);
+            let action_note = |side: &str| {
+                format!(
+                    "manual {} via {} price={:.4} amount={:.4}",
+                    side, name, input.price, amount
+                )
+            };
             match name.as_str() {
                 "force_open_long" | "force_open" => ModuleOutput {
-                    open_positions: vec![limit_open(Direction::Long, amount, input.price, "force")],
+                    open_positions: vec![limit_open(
+                        Direction::Long,
+                        amount,
+                        input.price,
+                        &action_note("open long"),
+                    )],
                     debug: format!("action {} long {}", name, amount),
                     ..Default::default()
                 },
                 "force_open_short" => ModuleOutput {
-                    open_positions: vec![limit_open(Direction::Short, amount, input.price, "force")],
+                    open_positions: vec![limit_open(
+                        Direction::Short,
+                        amount,
+                        input.price,
+                        &action_note("open short"),
+                    )],
                     debug: format!("action {} short {}", name, amount),
                     ..Default::default()
                 },
                 "force_close_long" => ModuleOutput {
-                    close_positions: vec![close(Direction::Long, "force-close")],
+                    close_positions: vec![close(
+                        Direction::Long,
+                        &format!(
+                            "manual close long via {} price={:.4} amount={:.4}",
+                            name, input.price, amount
+                        ),
+                    )],
                     debug: "action force_close_long".to_string(),
                     ..Default::default()
                 },
                 "force_close_short" => ModuleOutput {
-                    close_positions: vec![close(Direction::Short, "force-close")],
+                    close_positions: vec![close(
+                        Direction::Short,
+                        &format!(
+                            "manual close short via {} price={:.4} amount={:.4}",
+                            name, input.price, amount
+                        ),
+                    )],
                     debug: "action force_close_short".to_string(),
                     ..Default::default()
                 },
