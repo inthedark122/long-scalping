@@ -1,4 +1,4 @@
-use crate::model::{Config, ExitMemory, ExitMode, PositionState};
+use crate::model::{Config, EntryReason, ExitMemory, ExitMode, PositionState};
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 
@@ -13,6 +13,7 @@ pub struct PositionRuntime {
     pub exit_tp_reliable: bool,
     pub exit_mode: ExitMode,
     pub tp_mark: String,
+    pub entry_reason: Option<EntryReason>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -130,6 +131,7 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
+                    entry_reason: state.position.entry_reason.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -150,6 +152,7 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
+                    entry_reason: state.position.entry_reason.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);

@@ -121,6 +121,7 @@ fn handle_new_position(
         exit_tp_reliable: false,
         exit_mode: ExitMode::Structural,
         tp_mark: tp_mark(direction),
+        entry_reason: state.position.entry_reason.clone(),
     };
 
     let side = dir_to_position(direction);

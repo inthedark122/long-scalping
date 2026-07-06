@@ -2,7 +2,7 @@ use crate::detection::cascade::CascadeSignal;
 use crate::exit;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{EntryGate, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark};
 use crate::prediction;
 use crate::risk::entry_budget;
@@ -15,6 +15,7 @@ use lte_strategy_bridge::abi::{
 #[cfg(test)]
 use crate::model::ExitKind;
 
+const CREATED_MAX_AGE_MS: u64 = 2_000;
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
@@ -44,15 +45,13 @@ fn open_note(
         .entry_reason
         .as_ref()
         .map(|reason| match reason {
-            crate::model::EntryReason::SugInfoMovement {
+            EntryReason::SugInfoMovement {
                 price,
                 started_at_ms,
-            } => {
-                format!(
-                    "sug-info-movement price={:.4} started_at_ms={}",
-                    price, started_at_ms
-                )
-            }
+            } => format!(
+                "sug-info-movement price={:.4} started_at_ms={}",
+                price, started_at_ms
+            ),
         })
         .unwrap_or_else(|| "none".to_string());
     format!(
@@ -102,6 +101,22 @@ fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
 
 fn tick_size(input: &ModuleInput) -> f64 {
     input.symbol_info.price_tick_size.max(f64::EPSILON)
+}
+
+fn created_entry_timeout_reason(input: &ModuleInput, state: &EngineState) -> Option<String> {
+    let started_at_ms = match state.position.entry_reason.as_ref()? {
+        EntryReason::SugInfoMovement { started_at_ms, .. } => *started_at_ms,
+    };
+    let current_ms = input.sug_info.as_ref()?.system_time as u64;
+    let age_ms = current_ms.saturating_sub(started_at_ms);
+    if age_ms < CREATED_MAX_AGE_MS {
+        return None;
+    }
+
+    Some(format!(
+        "created-timeout age_ms={} max_ms={} started_at_ms={}",
+        age_ms, CREATED_MAX_AGE_MS, started_at_ms
+    ))
 }
 
 fn trailing_tp_price(side: PositionState, price: f64, tick_size: f64) -> f64 {
@@ -312,6 +327,16 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.long.is_some() {
+        if let Some(reason) = created_entry_timeout_reason(input, state) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Long,
+                    &close_reason(&reason, state, input.price),
+                )],
+                note: format!("close-long {}", reason),
+                ..Default::default()
+            };
+        }
         let (tp_orders, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Long);
         return ExecutionResult {
@@ -322,6 +347,16 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.short.is_some() {
+        if let Some(reason) = created_entry_timeout_reason(input, state) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Short,
+                    &close_reason(&reason, state, input.price),
+                )],
+                note: format!("close-short {}", reason),
+                ..Default::default()
+            };
+        }
         let (tp_orders, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Short);
         return ExecutionResult {
@@ -383,16 +418,18 @@ pub fn evaluate_with_cascade(
         }
     }
 
+    state.position.entry_reason = decision.entry_reason.clone();
+
     let entry_price = decision
         .entry_reason
         .as_ref()
         .and_then(|reason| match reason {
-            crate::model::EntryReason::SugInfoMovement { price, .. } => Some(*price),
+            EntryReason::SugInfoMovement { price, .. } => Some(*price),
         })
         .unwrap_or(input.price);
     let movement_reason = matches!(
         decision.entry_reason,
-        Some(crate::model::EntryReason::SugInfoMovement { .. })
+        Some(EntryReason::SugInfoMovement { .. })
     );
     match decision.market_state {
         MarketState::Long => ExecutionResult {
@@ -1074,6 +1111,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
+            entry_reason: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1133,6 +1171,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
+            entry_reason: None,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
