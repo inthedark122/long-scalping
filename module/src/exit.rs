@@ -1,6 +1,6 @@
-use crate::state::CascadeState;
 use crate::detection::levels;
 use crate::model::{IndicatorSnapshot, PositionState, SugInfoSnapshot};
+use crate::state::CascadeState;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ExitSource {
@@ -30,7 +30,11 @@ pub struct ExitPlan {
     pub structural_stop_loss: f64,
 }
 
-fn structural_plan(levels: &crate::detection::levels::LevelBook, price: f64, side: PositionState) -> Option<(f64, f64)> {
+fn structural_plan(
+    levels: &crate::detection::levels::LevelBook,
+    price: f64,
+    side: PositionState,
+) -> Option<(f64, f64)> {
     match side {
         PositionState::Long => {
             let tp = levels.nearest_above(price)?;

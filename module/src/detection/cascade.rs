@@ -93,8 +93,8 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
                 memory.sizes_len += 1;
             }
             memory.samples = memory.sizes_len as u32;
-            memory.avg_size = memory.sizes[..memory.sizes_len].iter().sum::<f64>()
-                / memory.sizes_len as f64;
+            memory.avg_size =
+                memory.sizes[..memory.sizes_len].iter().sum::<f64>() / memory.sizes_len as f64;
         }
         memory.last_break = memory.last_close;
         memory.cas_dir = dir;
@@ -131,11 +131,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         0
     };
 
-    let dir = if raw_dir == 0 {
-        memory.dir
-    } else {
-        raw_dir
-    };
+    let dir = if raw_dir == 0 { memory.dir } else { raw_dir };
 
     let phase_hint = if dir == 0 {
         false
@@ -190,7 +186,10 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         completed_size: active_size,
         average_size,
         samples: memory.samples,
-        break_price: memory.breaks[memory.break_n.saturating_sub(1).min(memory.breaks.len() - 1)],
+        break_price: memory.breaks[memory
+            .break_n
+            .saturating_sub(1)
+            .min(memory.breaks.len() - 1)],
     }
 }
 
@@ -224,7 +223,10 @@ mod tests {
         assert_eq!(first.phase, MovementPhase::Starting);
 
         let second = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5));
-        assert!(matches!(second.phase, MovementPhase::Building | MovementPhase::Mature));
+        assert!(matches!(
+            second.phase,
+            MovementPhase::Building | MovementPhase::Mature
+        ));
         assert!(second.dir > 0);
     }
 

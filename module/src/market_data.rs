@@ -1,5 +1,7 @@
 use crate::detection::mrc;
-use crate::model::{Candle, FastCandleSnapshot, IndicatorSnapshot, MrcBands, SignalIndicatorSnapshot};
+use crate::model::{
+    Candle, FastCandleSnapshot, IndicatorSnapshot, MrcBands, SignalIndicatorSnapshot,
+};
 use crate::model::{SugInfoSnapshot, TimeframeSnapshot};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
 use lte_strategy_bridge::indicator_access::{

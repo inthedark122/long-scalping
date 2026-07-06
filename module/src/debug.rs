@@ -91,7 +91,12 @@ fn debug_exit_sources(state: &EngineState) -> (&'static str, &'static str, f64, 
     } else {
         "fast"
     };
-    (tp_src, sl_src, state.position.take_profit, state.position.stop_loss)
+    (
+        tp_src,
+        sl_src,
+        state.position.take_profit,
+        state.position.stop_loss,
+    )
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
@@ -102,10 +107,6 @@ fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
     };
     format!(
         "{:?}:{}:avg={:.2}%:s={:.2}:b={:.4}",
-        cascade.phase,
-        cascade.dir,
-        cascade_avg_pct,
-        cascade.strength,
-        cascade.break_price,
+        cascade.phase, cascade.dir, cascade_avg_pct, cascade.strength, cascade.break_price,
     )
 }

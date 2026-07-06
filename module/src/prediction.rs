@@ -1,10 +1,10 @@
+use crate::detection::cascade::CascadeSignal;
 use crate::detection::levels;
 use crate::exit;
 use crate::model::{
     EntryGate, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase, IndicatorSnapshot,
     MarketState, PositionState, SugInfoSnapshot,
 };
-use crate::detection::cascade::CascadeSignal;
 use crate::state::EngineState;
 
 fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
@@ -24,6 +24,16 @@ fn candidate_exit_plan(
     exit::plan(snapshot, sug_snapshot, cascade, price, side)
 }
 
+fn signal_candle<'a>(
+    snapshot: &'a IndicatorSnapshot,
+    sug_snapshot: &'a SugInfoSnapshot,
+) -> &'a crate::model::Candle {
+    sug_snapshot
+        .sug_candle
+        .as_ref()
+        .unwrap_or(&snapshot.tf1m.candle)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementEntryKind {
     ReverseReady,
@@ -37,16 +47,35 @@ pub struct MovementEntryPlan {
     pub notes: Vec<String>,
 }
 
-fn movement_fill_price(snapshot: &IndicatorSnapshot, market_state: MarketState) -> f64 {
+fn movement_fill_price(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    market_state: MarketState,
+) -> f64 {
+    let candle = signal_candle(snapshot, sug_snapshot);
     match market_state {
-        MarketState::Long => snapshot.tf1m.candle.low.max(f64::EPSILON),
-        MarketState::Short => snapshot.tf1m.candle.high.max(f64::EPSILON),
-        MarketState::Sideways => snapshot.tf1m.candle.close.max(f64::EPSILON),
+        MarketState::Long => candle.low.max(f64::EPSILON),
+        MarketState::Short => candle.high.max(f64::EPSILON),
+        MarketState::Sideways => candle.close.max(f64::EPSILON),
     }
+}
+
+fn movement_continuation_band(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    cascade: &CascadeSignal,
+) -> f64 {
+    let candle = signal_candle(snapshot, sug_snapshot);
+    let candle_range = (candle.high - candle.low).abs();
+    let avg_band = cascade.average_size * 0.20;
+    let candle_band = candle_range * 0.25;
+    let price_band = candle.close.abs() * 0.0005;
+    avg_band.max(candle_band).max(price_band)
 }
 
 pub fn movement_entry_plan(
     snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeSignal,
 ) -> Option<MovementEntryPlan> {
     if cascade.samples < 3 || cascade.average_size <= 0.0 || cascade.dir == 0 {
@@ -75,7 +104,16 @@ pub fn movement_entry_plan(
         },
     };
 
-    let price = movement_fill_price(snapshot, market_state);
+    let price = movement_fill_price(snapshot, sug_snapshot, market_state);
+    if matches!(kind, MovementEntryKind::SafeContinuation) {
+        let current_price = signal_candle(snapshot, sug_snapshot).close;
+        let band = movement_continuation_band(snapshot, sug_snapshot, cascade);
+        let distance = (current_price - price).abs();
+        if distance > band {
+            return None;
+        }
+    }
+
     let mut notes = vec![
         "movement-research".to_string(),
         format!(
@@ -93,8 +131,13 @@ pub fn movement_entry_plan(
     ];
     if matches!(kind, MovementEntryKind::ReverseReady) {
         notes.push("reverse-entry".to_string());
+        notes.push("fill=aggressive".to_string());
     } else {
         notes.push("continuation-entry".to_string());
+        notes.push(format!(
+            "pullback-band={:.4}",
+            movement_continuation_band(snapshot, sug_snapshot, cascade)
+        ));
     }
 
     Some(MovementEntryPlan {
@@ -108,11 +151,12 @@ pub fn fast_candle_entry_block(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
 ) -> Option<String> {
-    let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
+    let candle = signal_candle(snapshot, sug_snapshot);
+    let candle_pct = candle_range_pct(candle);
     let small_candle = candle_pct <= 0.40;
     let fc_phase = sug_snapshot
         .fast_candle
-        .map(|fc| fc.phase(&snapshot.tf1m.candle))
+        .map(|fc| fc.phase(candle))
         .unwrap_or(FastCandlePhase::Absent);
 
     match fc_phase {
@@ -135,8 +179,7 @@ pub fn fast_candle_entry_block(
     }
 }
 
-fn dp_signal_band(snapshot: &IndicatorSnapshot, anchor: f64) -> f64 {
-    let price = snapshot.tf1m.candle.close;
+fn dp_signal_band(snapshot: &IndicatorSnapshot, price: f64, anchor: f64) -> f64 {
     let span = (snapshot.tf1m.dp_zee - snapshot.tf1m.dp_zee1).abs();
     let anchor_gap = (price - anchor).abs();
     span.max(anchor_gap) * 0.25
@@ -169,7 +212,7 @@ fn sug_entry_gate(
     };
     let range = (sug.high - sug.low).abs().max(f64::EPSILON);
     let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
-    let price = snapshot.tf1m.candle.close;
+    let price = sug.close;
     let near_entry = (price - entry).abs() <= band;
 
     if near_entry {
@@ -223,7 +266,7 @@ pub fn entry_gate(
     {
         let price = snapshot.tf1m.candle.close;
         let level_book = levels::structural_levels(snapshot);
-        let band = dp_signal_band(snapshot, state.exit_memory.price);
+        let band = dp_signal_band(snapshot, price, state.exit_memory.price);
         let band_low = (state.exit_memory.price - band).max(0.0);
         let band_high = state.exit_memory.price + band;
         let notes = vec![
@@ -311,30 +354,34 @@ pub fn entry_gate(
         }
     }
 
-    if let Some(plan) = movement_entry_plan(snapshot, cascade) {
-        return EntryGate::Open {
-            notes: plan.notes,
-        };
+    if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
+        return EntryGate::Open { notes: plan.notes };
     }
 
     if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, side) {
         return gate;
     }
 
-    let plan = if let Some(plan) =
-        candidate_exit_plan(snapshot, sug_snapshot, &state.cascade_sug, snapshot.tf1m.candle.close, side)
-    {
+    let current_price = signal_candle(snapshot, sug_snapshot).close;
+    let plan = if let Some(plan) = candidate_exit_plan(
+        snapshot,
+        sug_snapshot,
+        &state.cascade_sug,
+        current_price,
+        side,
+    ) {
         plan
     } else {
         return EntryGate::Open {
             notes: vec!["no-exit-plan".to_string()],
         };
     };
-    let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
+    let candle = signal_candle(snapshot, sug_snapshot);
+    let candle_pct = candle_range_pct(candle);
     let small_candle = candle_pct <= 0.40;
     let fc_phase = sug_snapshot
         .fast_candle
-        .map(|fc| fc.phase(&snapshot.tf1m.candle))
+        .map(|fc| fc.phase(candle))
         .unwrap_or(FastCandlePhase::Absent);
 
     if !plan.tp_reliable && !(matches!(fc_phase, FastCandlePhase::Cooling) && small_candle) {
@@ -344,7 +391,7 @@ pub fn entry_gate(
         } else {
             snapshot.tf1m.dp_zee1.min(snapshot.tf1m.dp_zee)
         };
-        let band = dp_signal_band(snapshot, anchor);
+        let band = dp_signal_band(snapshot, current_price, anchor);
         return EntryGate::Wait(EntryWait {
             reason: format!(
                 "tp-unreliable tp={:.4} sl={:.4}",
@@ -355,8 +402,7 @@ pub fn entry_gate(
                     source: "dpsignal".to_string(),
                     anchor,
                     distance_pct: if snapshot.tf1m.candle.close > 0.0 {
-                        ((snapshot.tf1m.candle.close - anchor).abs() / snapshot.tf1m.candle.close)
-                            * 100.0
+                        ((current_price - anchor).abs() / current_price) * 100.0
                     } else {
                         0.0
                     },
@@ -369,13 +415,9 @@ pub fn entry_gate(
                 EntryWaitSolution::ReclaimLevel {
                     source: "structural".to_string(),
                     level: if matches!(side, PositionState::Long) {
-                        level_book
-                            .nearest_above(snapshot.tf1m.candle.close)
-                            .unwrap_or(anchor)
+                        level_book.nearest_above(current_price).unwrap_or(anchor)
                     } else {
-                        level_book
-                            .nearest_below(snapshot.tf1m.candle.close)
-                            .unwrap_or(anchor)
+                        level_book.nearest_below(current_price).unwrap_or(anchor)
                     },
                     band_low: (anchor - band).max(0.0),
                     band_high: anchor + band,
@@ -399,16 +441,16 @@ pub fn entry_gate(
             solutions: vec![EntryWaitSolution::ReclaimDpsignal {
                 source: "dpsignal".to_string(),
                 anchor: snapshot.tf1m.dp_zee1,
-                distance_pct: if snapshot.tf1m.candle.close > 0.0 {
-                    ((snapshot.tf1m.candle.close - snapshot.tf1m.dp_zee1).abs()
-                        / snapshot.tf1m.candle.close)
-                        * 100.0
+                distance_pct: if current_price > 0.0 {
+                    ((current_price - snapshot.tf1m.dp_zee1).abs() / current_price) * 100.0
                 } else {
                     0.0
                 },
-                band_low: (snapshot.tf1m.dp_zee1 - dp_signal_band(snapshot, snapshot.tf1m.dp_zee1))
-                    .max(0.0),
-                band_high: snapshot.tf1m.dp_zee1 + dp_signal_band(snapshot, snapshot.tf1m.dp_zee1),
+                band_low: (snapshot.tf1m.dp_zee1
+                    - dp_signal_band(snapshot, current_price, snapshot.tf1m.dp_zee1))
+                .max(0.0),
+                band_high: snapshot.tf1m.dp_zee1
+                    + dp_signal_band(snapshot, current_price, snapshot.tf1m.dp_zee1),
             }],
             notes: vec![
                 format!("tp={:.4}", plan.take_profit),

@@ -1,8 +1,8 @@
-use crate::exit;
 use crate::detection::cascade::CascadeSignal;
+use crate::exit;
 use crate::model::IndicatorSnapshot;
-use crate::model::{EntryGate, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::model::SugInfoSnapshot;
+use crate::model::{EntryGate, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark};
 use crate::prediction;
 use crate::risk::entry_budget;
@@ -48,7 +48,10 @@ fn open_note(
                 price,
                 started_at_ms,
             } => {
-                format!("sug-info-movement price={:.4} started_at_ms={}", price, started_at_ms)
+                format!(
+                    "sug-info-movement price={:.4} started_at_ms={}",
+                    price, started_at_ms
+                )
             }
         })
         .unwrap_or_else(|| "none".to_string());
@@ -126,7 +129,13 @@ fn initialize_exit_plan(
     } else {
         input.price
     };
-    let plan = exit::plan(snapshot, sug_snapshot, &state.cascade_sug, reference_price, side)?;
+    let plan = exit::plan(
+        snapshot,
+        sug_snapshot,
+        &state.cascade_sug,
+        reference_price,
+        side,
+    )?;
     state.position.take_profit = plan.take_profit;
     state.position.stop_loss = plan.stop_loss;
     state.position.exit_tp_reliable = plan.tp_reliable;
@@ -138,7 +147,12 @@ fn initialize_exit_plan(
     if qty <= 0.0 {
         return None;
     }
-    Some(tp_limit_order(direction, qty, plan.take_profit, &state.position.tp_mark))
+    Some(tp_limit_order(
+        direction,
+        qty,
+        plan.take_profit,
+        &state.position.tp_mark,
+    ))
 }
 
 fn ensure_active_exit_order(
@@ -388,7 +402,12 @@ pub fn evaluate_with_cascade(
                 entry_price,
                 &open_note(Direction::Long, amount, entry_price, decision, state),
             )],
-            note: if movement_reason { "open-long-movement" } else { "open-long" }.to_string(),
+            note: if movement_reason {
+                "open-long-movement"
+            } else {
+                "open-long"
+            }
+            .to_string(),
             ..Default::default()
         },
         MarketState::Short => ExecutionResult {
@@ -398,7 +417,12 @@ pub fn evaluate_with_cascade(
                 entry_price,
                 &open_note(Direction::Short, amount, entry_price, decision, state),
             )],
-            note: if movement_reason { "open-short-movement" } else { "open-short" }.to_string(),
+            note: if movement_reason {
+                "open-short-movement"
+            } else {
+                "open-short"
+            }
+            .to_string(),
             ..Default::default()
         },
         _ => ExecutionResult {
