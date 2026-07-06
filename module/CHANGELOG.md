@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.9
+
+Movement entry alignment release.
+
+- Folded movement-based entry back under `SugInfoMovement`.
+- Kept the research-style movement open logic while preserving the existing regime gate.
+- Kept TP/SL source debug annotations for active and fallback exit planning.
+
 ## 1.0.8
 
 Fast TP/SL debug and movement release.
