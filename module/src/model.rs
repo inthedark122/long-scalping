@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::detection::mrc::MrcSignal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MarketState {
     Long,
@@ -119,6 +121,8 @@ impl MrcBands {
 pub struct TimeframeSnapshot {
     pub candle: Candle,
     pub mrc: MrcBands,
+    #[serde(default)]
+    pub mrc_signal: MrcSignal,
     pub dp_dir: i8,
     pub zz_dir: i8,
     pub dp_zee: f64,
@@ -167,6 +171,14 @@ impl Default for FastCandlePhase {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SignalIndicatorSnapshot {
     pub ntps: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SugInfoSnapshot {
+    pub fast_candle: Option<FastCandleSnapshot>,
+    pub sug_candle: Option<Candle>,
+    pub sug_direction: i8,
+    pub signal: SignalIndicatorSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -308,10 +320,6 @@ pub struct IndicatorSnapshot {
     pub tf5m: TimeframeSnapshot,
     pub tf15m: TimeframeSnapshot,
     pub tf1h: TimeframeSnapshot,
-    pub fast_candle: Option<FastCandleSnapshot>,
-    pub sug_candle: Option<Candle>,
-    pub sug_direction: i8,
-    pub signal: SignalIndicatorSnapshot,
 }
 
 #[cfg(test)]
@@ -367,12 +375,6 @@ pub struct RegimeSnapshot {
     pub fallback_used: bool,
     pub context_1h: MarketState,
     pub blocked_by_context: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct RiskSnapshot {
-    pub fail_streak: u32,
-    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

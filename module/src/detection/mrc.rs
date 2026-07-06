@@ -1,6 +1,7 @@
 use crate::model::MrcBands;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct MrcSignal {
     pub ordered: bool,
     pub zone: i8,

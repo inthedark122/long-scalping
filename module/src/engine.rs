@@ -1,13 +1,13 @@
 use crate::debug;
 use crate::decision;
-use crate::detection::{cascade, mrc, regime, sharp_return, vlines};
+use crate::detection::{cascade, mrc, regime, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
-use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, RiskSnapshot, TradeDecision};
-use crate::orders::{limit_open, tp_limit_order, tp_mark};
-use crate::risk;
 use crate::model::EntryReason;
+use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, TradeDecision};
+use crate::orders::{tp_limit_order, tp_mark};
+use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
 use lte_strategy_bridge::indicator_access::TimeframeSec;
@@ -21,138 +21,21 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
         ModuleEvent::Init => {
             state.history.init(&input.indicators);
-            process(input, state, true, &[TF_1M, TF_5M, TF_15M, TF_1H])
+            refresh_indicators(input, state, &[TF_1M, TF_5M, TF_15M, TF_1H], true)
         }
         ModuleEvent::Indicators { timeframes } => {
             state.history.update(&input.indicators, timeframes);
-            process(input, state, timeframes.contains(&TF_1M), timeframes)
+            refresh_indicators(input, state, timeframes, false)
         }
-        ModuleEvent::SugInfo => process(input, state, false, &[]),
-        ModuleEvent::Signal { code, values, .. } => {
-            if code == "start" {
-                state.trade_budget = 0.0;
-                if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
-                    state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
-                }
-                if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64())
-                {
-                    state.cfg.trading_amount = trading_amount.clamp(10.0, 100.0);
-                }
-                state.cfg_loaded = true;
-                ModuleOutput {
-                    debug: format!(
-                        "start cap_init={:.2}% trading_amount={:.2}%",
-                        state.cfg.cap_init, state.cfg.trading_amount
-                    ),
-                    ..Default::default()
-                }
-            } else {
-                ModuleOutput {
-                    debug: format!("signal {} ignored", code),
-                    ..Default::default()
-                }
-            }
-        }
-        ModuleEvent::Action { name, values } => {
-            let amount = values.get("amount").and_then(|v| v.as_f64()).unwrap_or(5.0);
-            let action_note = |side: &str| {
-                format!(
-                    "manual {} via {} price={:.4} amount={:.4}",
-                    side, name, input.price, amount
-                )
-            };
-            match name.as_str() {
-                "force_open_long" | "force_open" => ModuleOutput {
-                    open_positions: vec![limit_open(
-                        Direction::Long,
-                        amount,
-                        input.price,
-                        &action_note("open long"),
-                    )],
-                    debug: format!("action {} long {}", name, amount),
-                    ..Default::default()
-                },
-                "force_open_short" => ModuleOutput {
-                    open_positions: vec![limit_open(
-                        Direction::Short,
-                        amount,
-                        input.price,
-                        &action_note("open short"),
-                    )],
-                    debug: format!("action {} short {}", name, amount),
-                    ..Default::default()
-                },
-                _ => ModuleOutput {
-                    debug: format!("action {} ignored", name),
-                    ..Default::default()
-                },
-            }
-        }
+        ModuleEvent::SugInfo => process_realtime(input, state),
+        ModuleEvent::Signal { code, values, .. } => handle_signal(code, values, state),
+        ModuleEvent::Action { name, values } => handle_action(input, name, values),
         ModuleEvent::NewPosition {
             direction,
             entry_price,
             ..
-        } => {
-            state.position = PositionRuntime {
-                side: dir_to_position(*direction),
-                entry_price: *entry_price,
-                peak_price: input.price.max(*entry_price),
-                trough_price: input.price.min(*entry_price),
-                take_profit: 0.0,
-                stop_loss: 0.0,
-                exit_tp_reliable: false,
-                exit_mode: ExitMode::Structural,
-                tp_mark: tp_mark(*direction),
-            };
-            let side = dir_to_position(*direction);
-            let snapshot = market_data::build_snapshot(
-                &state.history,
-                &input.indicators,
-                input.sug_info.as_ref(),
-                input.price,
-            );
-            let plan = exit::plan(&snapshot, input.price, side);
-            let mut place_orders = Vec::new();
-            if let Some(plan) = plan {
-                state.position.take_profit = plan.take_profit;
-                state.position.stop_loss = plan.stop_loss;
-                let amount = input
-                    .positions
-                    .long
-                    .as_ref()
-                    .map(|p| p.notional)
-                    .or_else(|| input.positions.short.as_ref().map(|p| p.notional))
-                    .unwrap_or(0.0);
-                if amount > 0.0 {
-                    place_orders.push(tp_limit_order(
-                        *direction,
-                        amount,
-                        plan.take_profit,
-                        &state.position.tp_mark,
-                    ));
-                }
-            }
-            ModuleOutput {
-                place_orders,
-                debug: format!(
-                    "new-position {:?} {}",
-                    direction,
-                    plan.map(|plan| exit::describe(Some(plan)))
-                        .unwrap_or_else(|| "tp=n/a sl=n/a".to_string())
-                ),
-                ..Default::default()
-            }
-        }
-        ModuleEvent::FinishPosition { direction, pnl } => {
-            risk::apply_close_pnl(input, state, *pnl);
-            if state.position.side == dir_to_position(*direction) {
-                state.position = PositionRuntime::default();
-            }
-            ModuleOutput {
-                debug: format!("finish {:?} pnl={:.4}", direction, pnl),
-                ..Default::default()
-            }
-        }
+        } => handle_new_position(input, state, *direction, *entry_price),
+        ModuleEvent::FinishPosition { direction, pnl } => handle_finish_position(input, state, *direction, *pnl),
         ModuleEvent::OrderUpdate {
             direction,
             status,
@@ -160,39 +43,153 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             fill_price,
             mark,
             ..
-        } => {
-            if matches!(role, OrderRole::TakeProfit | OrderRole::StopLoss) {
-                state.exit_memory = ExitMemory {
-                    side: dir_to_position(*direction),
-                    kind: Some(match role {
-                        OrderRole::TakeProfit => ExitKind::TakeProfit,
-                        OrderRole::StopLoss => ExitKind::StopLoss,
-                        OrderRole::Entry | OrderRole::Other => ExitKind::TakeProfit,
-                    }),
-                    price: if *fill_price > 0.0 {
-                        *fill_price
-                    } else {
-                        input.price
-                    },
-                    take_profit: state.position.take_profit,
-                    stop_loss: state.position.stop_loss,
-                    reliable: state.position.exit_tp_reliable,
-                    tick: state.ticks,
-                };
-            }
-            ModuleOutput {
-                debug: format!("order {:?} {} {:?} {:?}", direction, status, role, mark),
-                ..Default::default()
-            }
+        } => handle_order_update(input, state, *direction, status, role.clone(), *fill_price, mark),
+    }
+}
+
+fn handle_signal(code: &str, values: &std::collections::HashMap<String, serde_json::Value>, state: &mut EngineState) -> ModuleOutput {
+    if code == "start" {
+        state.trade_budget = 0.0;
+        if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
+            state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
+        }
+        if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64()) {
+            state.cfg.trading_amount = trading_amount.clamp(10.0, 100.0);
+        }
+        state.cfg_loaded = true;
+        ModuleOutput {
+            debug: format!(
+                "start cap_init={:.2}% trading_amount={:.2}%",
+                state.cfg.cap_init, state.cfg.trading_amount
+            ),
+            ..Default::default()
+        }
+    } else {
+        ModuleOutput {
+            debug: format!("signal {} ignored", code),
+            ..Default::default()
         }
     }
 }
 
-fn process(
+fn handle_action(
+    _input: &ModuleInput,
+    name: &str,
+    _values: &std::collections::HashMap<String, serde_json::Value>,
+) -> ModuleOutput {
+    ModuleOutput {
+        debug: format!("action {} ignored", name),
+        ..Default::default()
+    }
+}
+
+fn handle_new_position(
     input: &ModuleInput,
     state: &mut EngineState,
-    update_risk: bool,
+    direction: Direction,
+    entry_price: f64,
+) -> ModuleOutput {
+    state.position = PositionRuntime {
+        side: dir_to_position(direction),
+        entry_price,
+        peak_price: input.price.max(entry_price),
+        trough_price: input.price.min(entry_price),
+        take_profit: 0.0,
+        stop_loss: 0.0,
+        exit_tp_reliable: false,
+        exit_mode: ExitMode::Structural,
+        tp_mark: tp_mark(direction),
+    };
+
+    let side = dir_to_position(direction);
+    let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    let sug_snapshot = market_data::build_sug_info_snapshot(input.sug_info.as_ref());
+    let plan = exit::plan(&snapshot, &sug_snapshot, input.price, side);
+    let mut tp_orders = Vec::new();
+    if let Some(plan) = plan {
+        state.position.take_profit = plan.take_profit;
+        state.position.stop_loss = plan.stop_loss;
+        let qty = input
+            .positions
+            .long
+            .as_ref()
+            .map(|p| p.qty)
+            .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
+            .unwrap_or(0.0);
+        if qty > 0.0 {
+            tp_orders.push(tp_limit_order(
+                direction,
+                qty,
+                plan.take_profit,
+                &state.position.tp_mark,
+            ));
+        }
+    }
+
+    ModuleOutput {
+        place_orders: tp_orders,
+        debug: format!(
+            "new-position {:?} {}",
+            direction,
+            plan.map(|plan| exit::describe(Some(plan)))
+                .unwrap_or_else(|| "tp=n/a sl=n/a".to_string())
+        ),
+        ..Default::default()
+    }
+}
+
+fn handle_finish_position(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    direction: Direction,
+    pnl: f64,
+) -> ModuleOutput {
+    risk::apply_close_pnl(input, state, pnl);
+    if state.position.side == dir_to_position(direction) {
+        state.position = PositionRuntime::default();
+    }
+    ModuleOutput {
+        debug: format!("finish {:?} pnl={:.4}", direction, pnl),
+        ..Default::default()
+    }
+}
+
+fn handle_order_update(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    direction: Direction,
+    status: &str,
+    role: OrderRole,
+    fill_price: f64,
+    mark: &Option<String>,
+) -> ModuleOutput {
+    if matches!(role, OrderRole::TakeProfit | OrderRole::StopLoss) {
+        state.exit_memory = ExitMemory {
+            side: dir_to_position(direction),
+            kind: Some(match role {
+                OrderRole::TakeProfit => ExitKind::TakeProfit,
+                OrderRole::StopLoss => ExitKind::StopLoss,
+                OrderRole::Entry | OrderRole::Other => ExitKind::TakeProfit,
+            }),
+            price: if fill_price > 0.0 { fill_price } else { input.price },
+            take_profit: state.position.take_profit,
+            stop_loss: state.position.stop_loss,
+            reliable: state.position.exit_tp_reliable,
+            tick: state.ticks,
+        };
+    }
+
+    ModuleOutput {
+        debug: format!("order {:?} {} {:?} {:?}", direction, status, role, mark),
+        ..Default::default()
+    }
+}
+
+fn refresh_indicators(
+    input: &ModuleInput,
+    state: &mut EngineState,
     timeframes: &[i64],
+    is_init: bool,
 ) -> ModuleOutput {
     state.ticks = state.ticks.saturating_add(1);
     if timeframes.contains(&TF_1M) {
@@ -214,12 +211,7 @@ fn process(
         input.price,
     );
 
-    let snapshot = market_data::build_snapshot(
-        &state.history,
-        &input.indicators,
-        input.sug_info.as_ref(),
-        input.price,
-    );
+    let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
     vlines::update(
         &mut state.vlines,
         snapshot.tf1m.mrc.lines(),
@@ -227,14 +219,32 @@ fn process(
         state.ticks,
     );
 
-    let cas1 = if timeframes.contains(&TF_1M) || matches!(input.event, ModuleEvent::Init) {
-        cascade::update(&mut state.cascade_1m, &snapshot.tf1m)
-    } else {
-        cascade::CascadeSignal {
-            dir: state.cascade_1m.dir,
-            ..Default::default()
-        }
-    };
+    ModuleOutput {
+        debug: format!("indicators tfs={:?} init={}", timeframes, is_init),
+        ..Default::default()
+    }
+}
+
+fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
+    state.ticks = state.ticks.saturating_add(1);
+    sync_position_state(
+        state,
+        input
+            .positions
+            .long
+            .as_ref()
+            .map(|p| (p.entry_price, p.pnl)),
+        input
+            .positions
+            .short
+            .as_ref()
+            .map(|p| (p.entry_price, p.pnl)),
+        input.price,
+    );
+
+    let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    let sug_snapshot = market_data::build_sug_info_snapshot(input.sug_info.as_ref());
+
     let cas_sug = if let Some(sug) = input.sug_info.as_ref() {
         let candle = crate::model::Candle {
             open: sug.candle.enter,
@@ -256,49 +266,20 @@ fn process(
             ..Default::default()
         }
     };
-    let cas15 = if timeframes.contains(&TF_15M) || matches!(input.event, ModuleEvent::Init) {
-        cascade::update(&mut state.cascade_15m, &snapshot.tf15m)
-    } else {
-        cascade::CascadeSignal {
-            dir: state.cascade_15m.dir,
-            ..Default::default()
-        }
-    };
-    let cas1h = if timeframes.contains(&TF_1H) || matches!(input.event, ModuleEvent::Init) {
-        cascade::update(&mut state.cascade_1h, &snapshot.tf1h)
-    } else {
-        cascade::CascadeSignal {
-            dir: state.cascade_1h.dir,
-            ..Default::default()
-        }
-    };
-
-    let risk = if update_risk {
-        sharp_return::update(
-            &mut state.sharp_return,
-            snapshot.tf1m.candle,
-            &snapshot.tf1m.mrc,
-            state.bar_1m,
-        )
-    } else {
-        RiskSnapshot {
-            fail_streak: state.sharp_return.fail_streak,
-            active: state.sharp_return.active,
-        }
-    };
 
     let regime = regime::classify_regime(
         &snapshot.tf5m,
         &snapshot.tf15m,
         &snapshot.tf1h,
-        cas_sug,
-        cas15,
-        cas1h,
     );
-    let mut decision = decision::decide(regime, risk);
+    let mut decision = decision::decide(regime);
     let entry_reason = decision.entry_reason.clone();
     let mrc1 = mrc::analyze(&snapshot.tf1m.mrc, input.price);
-    if decision.market_state == MarketState::Sideways && mrc1.bullish_structure && cas1.dir > 0 {
+
+    if decision.market_state == MarketState::Sideways
+        && mrc1.bullish_structure
+        && cas_sug.dir > 0
+    {
         decision = TradeDecision {
             market_state: MarketState::Long,
             entry: match decision.entry {
@@ -315,7 +296,7 @@ fn process(
         };
     } else if decision.market_state == MarketState::Sideways
         && mrc1.bearish_structure
-        && cas1.dir < 0
+        && cas_sug.dir < 0
     {
         decision = TradeDecision {
             market_state: MarketState::Short,
@@ -335,8 +316,8 @@ fn process(
 
     if matches!(input.event, ModuleEvent::SugInfo)
         && matches!(decision.market_state, MarketState::Long | MarketState::Short)
-        && cas_sug.reversal
-        && snapshot.sug_candle.is_some()
+        && matches!(cas_sug.phase, cascade::MovementPhase::Reversal)
+        && sug_snapshot.sug_candle.is_some()
     {
         let started_at_ms = input
             .sug_info
@@ -349,20 +330,18 @@ fn process(
         });
     }
 
-    let execution = execution::evaluate(input, state, &snapshot, &decision);
+    let execution = execution::evaluate(input, state, &snapshot, &sug_snapshot, &decision);
 
     ModuleOutput {
         open_positions: execution.open_positions,
         close_positions: execution.close_positions,
-        place_orders: execution.place_orders,
+        place_orders: execution.tp_orders,
         cancel_orders: execution.cancel_orders,
         debug: debug::render(
             state,
             &snapshot,
             &regime,
-            &cas1,
             &cas_sug,
-            &risk,
             &decision,
             &execution.note,
         ),

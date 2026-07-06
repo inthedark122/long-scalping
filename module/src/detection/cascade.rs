@@ -1,4 +1,4 @@
-use crate::model::{Candle, TimeframeSnapshot};
+use crate::model::Candle;
 use crate::state::CascadeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,10 +23,6 @@ pub struct CascadeSignal {
     pub strength: f64,
     pub stretched: bool,
     pub phase: MovementPhase,
-    pub starting: bool,
-    pub established: bool,
-    pub counter_move: bool,
-    pub reversal: bool,
     pub completed_size: f64,
     pub average_size: f64,
     pub break_price: f64,
@@ -144,7 +140,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: 
         agreed_dir
     };
 
-    let reversal = if dir == 0 {
+    let phase_hint = if dir == 0 {
         false
     } else {
         update_block(memory, dir, high, low, close)
@@ -175,9 +171,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: 
         0.0
     };
     let stretched = strength >= 1.5;
-    let established = memory.samples >= 3 && strength >= 1.2;
-
-    let phase = if reversal {
+    let phase = if phase_hint {
         MovementPhase::Reversal
     } else if memory.cas_candles <= 1 {
         MovementPhase::Starting
@@ -194,65 +188,33 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: 
         strength,
         stretched,
         phase,
-        starting: matches!(phase, MovementPhase::Starting),
-        established,
-        counter_move: matches!(phase, MovementPhase::CounterMove),
-        reversal,
         completed_size: active_size,
         average_size,
         break_price: memory.breaks[memory.break_n.saturating_sub(1).min(memory.breaks.len() - 1)],
     }
 }
 
-pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
-    let dir_hint = if tf.dp_dir == tf.zz_dir && tf.dp_dir != 0 {
-        tf.dp_dir
-    } else {
-        0
-    };
-    update_from_candle(memory, &tf.candle, dir_hint)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Candle, MrcBands, TimeframeSnapshot};
+    use crate::model::Candle;
 
-    fn tf(open: f64, high: f64, low: f64, close: f64, dp: i8, zz: i8) -> TimeframeSnapshot {
-        TimeframeSnapshot {
-            candle: Candle {
-                open,
-                high,
-                low,
-                close,
-            },
-            mrc: MrcBands {
-                down_big: 80.0,
-                down_outer: 85.0,
-                down_small: 90.0,
-                down_inner: 95.0,
-                mean_line: 100.0,
-                up_inner: 105.0,
-                up_small: 110.0,
-                up_outer: 115.0,
-                up_big: 120.0,
-                current_cross: 100.0,
-                mean_line_slope: 0.0,
-            },
-            dp_dir: dp,
-            zz_dir: zz,
-            ..Default::default()
+    fn candle(open: f64, high: f64, low: f64, close: f64) -> Candle {
+        Candle {
+            open,
+            high,
+            low,
+            close,
         }
     }
 
     #[test]
     fn movement_starts_then_builds() {
         let mut state = CascadeState::default();
-        let first = update(&mut state, &tf(100.0, 101.0, 99.5, 100.8, 1, 1));
+        let first = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1);
         assert_eq!(first.phase, MovementPhase::Starting);
-        assert!(first.starting);
 
-        let second = update(&mut state, &tf(100.8, 103.0, 100.4, 102.5, 1, 1));
+        let second = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 1);
         assert!(matches!(second.phase, MovementPhase::Building | MovementPhase::Mature));
         assert!(second.dir > 0);
     }
@@ -260,10 +222,10 @@ mod tests {
     #[test]
     fn counter_move_and_reversal_are_flagged() {
         let mut state = CascadeState::default();
-        let _ = update(&mut state, &tf(100.0, 101.0, 99.5, 100.8, 1, 1));
-        let _ = update(&mut state, &tf(100.8, 103.0, 100.4, 102.5, 1, 1));
-        let reversal = update(&mut state, &tf(102.5, 102.8, 99.2, 99.8, -1, -1));
-        assert!(reversal.reversal);
+        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1);
+        let _ = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 1);
+        let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8), -1);
+        assert_eq!(reversal.phase, MovementPhase::Reversal);
         assert!(reversal.completed_size > 0.0);
     }
 }

@@ -1,5 +1,6 @@
-use crate::model::{Candle, IndicatorSnapshot, MrcBands, TimeframeSnapshot};
-use crate::model::{FastCandleSnapshot, SignalIndicatorSnapshot};
+use crate::detection::mrc;
+use crate::model::{Candle, FastCandleSnapshot, IndicatorSnapshot, MrcBands, SignalIndicatorSnapshot};
+use crate::model::{SugInfoSnapshot, TimeframeSnapshot};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
 use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
@@ -192,6 +193,7 @@ fn build_timeframe(
     TimeframeSnapshot {
         candle,
         mrc,
+        mrc_signal: mrc::analyze(&mrc, close),
         dp_dir: read_dir(history, timeframe, IndicatorKey::DPSignal),
         zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
         dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee"),
@@ -223,12 +225,21 @@ fn build_timeframe(
     }
 }
 
-pub fn build_snapshot(
+pub fn build_indicator_snapshot(
     history: &IndicatorHistory,
     raw: &RawIndicators,
-    sug_info: Option<&SuggestionInfo>,
     live_price: f64,
 ) -> IndicatorSnapshot {
+    IndicatorSnapshot {
+        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price)),
+        tf5m: build_timeframe(history, raw, TF_5M, None),
+        tf15m: build_timeframe(history, raw, TF_15M, None),
+        tf1h: build_timeframe(history, raw, TF_1H, None),
+        ..Default::default()
+    }
+}
+
+pub fn build_sug_info_snapshot(sug_info: Option<&SuggestionInfo>) -> SugInfoSnapshot {
     let fast_candle = sug_info.and_then(|info| {
         info.fast_candle.as_ref().map(|fc| FastCandleSnapshot {
             candle: Candle {
@@ -261,11 +272,7 @@ pub fn build_snapshot(
         }
     });
 
-    IndicatorSnapshot {
-        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price)),
-        tf5m: build_timeframe(history, raw, TF_5M, None),
-        tf15m: build_timeframe(history, raw, TF_15M, None),
-        tf1h: build_timeframe(history, raw, TF_1H, None),
+    SugInfoSnapshot {
         fast_candle,
         sug_candle,
         sug_direction,
@@ -348,12 +355,11 @@ mod tests {
     fn missing_fields_degrade_to_neutral() {
         let history = IndicatorHistory::default();
         let raw = BTreeMap::new();
-        let snap = build_snapshot(&history, &raw, None, 101.0);
+        let snap = build_indicator_snapshot(&history, &raw, 101.0);
         assert_eq!(snap.tf1m.dp_dir, 0);
         assert_eq!(snap.tf1m.zz_dir, 0);
         assert_eq!(snap.tf1m.mrc.range(), 0.0);
         assert_eq!(snap.tf1m.candle.close, 101.0);
-        assert!(snap.fast_candle.is_none());
         assert_eq!(snap.tf1m.volume_gain, 0.0);
         assert_eq!(snap.tf1m.gain_zone(), crate::model::GainZone::Weak);
     }
@@ -361,7 +367,7 @@ mod tests {
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
-        let snap = build_snapshot(&history, &raw, None, 106.0);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0);
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
@@ -371,7 +377,7 @@ mod tests {
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
         let (history, raw) = mk_history();
-        let snap = build_snapshot(&history, &raw, None, 106.0);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0);
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
         assert_eq!(snap.tf5m.mrc.down_big, 80.0);
@@ -423,10 +429,11 @@ mod tests {
             oi: None,
         };
 
-        let snap = build_snapshot(&history, &raw, Some(&sug_info), 106.0);
-        assert!(snap.fast_candle.is_some());
-        assert!(snap.fast_candle.unwrap().active);
-        assert_eq!(snap.signal.ntps, 77);
+        let sug_snap = build_sug_info_snapshot(Some(&sug_info));
+        assert!(sug_snap.fast_candle.is_some());
+        assert!(sug_snap.fast_candle.unwrap().active);
+        assert_eq!(sug_snap.signal.ntps, 77);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0);
         assert_eq!(snap.tf1m.volume_gain, 12.5);
         assert_eq!(snap.tf1m.volume_gain_min, 1.0);
         assert_eq!(snap.tf1m.volume_gain_max, 20.0);

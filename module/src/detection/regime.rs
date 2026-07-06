@@ -1,12 +1,10 @@
-use crate::detection::cascade::CascadeSignal;
-use crate::detection::mrc::{analyze, MrcSignal};
 use crate::model::{MarketState, RegimeSnapshot, TimeframeSnapshot};
 
-fn classify(tf: &TimeframeSnapshot, mrc: MrcSignal, cascade: CascadeSignal) -> MarketState {
+fn classify(tf: &TimeframeSnapshot) -> MarketState {
     let aligned = MarketState::from_dir_pair(tf.dp_dir, tf.zz_dir);
     match aligned {
-        MarketState::Long if mrc.bullish_structure && cascade.dir >= 0 => MarketState::Long,
-        MarketState::Short if mrc.bearish_structure && cascade.dir <= 0 => MarketState::Short,
+        MarketState::Long if tf.mrc_signal.bullish_structure => MarketState::Long,
+        MarketState::Short if tf.mrc_signal.bearish_structure => MarketState::Short,
         _ => MarketState::Sideways,
     }
 }
@@ -15,17 +13,10 @@ pub fn classify_regime(
     tf5: &TimeframeSnapshot,
     tf15: &TimeframeSnapshot,
     tf1h: &TimeframeSnapshot,
-    cas_sug: CascadeSignal,
-    cas15: CascadeSignal,
-    cas1h: CascadeSignal,
 ) -> RegimeSnapshot {
-    let mrc5 = analyze(&tf5.mrc, tf5.candle.close);
-    let mrc15 = analyze(&tf15.mrc, tf15.candle.close);
-    let mrc1h = analyze(&tf1h.mrc, tf1h.candle.close);
-
-    let primary = classify(tf5, mrc5, cas_sug);
-    let fallback = classify(tf15, mrc15, cas15);
-    let context_1h = classify(tf1h, mrc1h, cas1h);
+    let primary = classify(tf5);
+    let fallback = classify(tf15);
+    let context_1h = classify(tf1h);
 
     let fallback_used = primary == MarketState::Sideways && fallback != MarketState::Sideways;
     let provisional = if fallback_used { fallback } else { primary };
@@ -74,6 +65,22 @@ mod tests {
                 current_cross: 1.0,
                 mean_line_slope: slope,
             },
+            mrc_signal: crate::detection::mrc::analyze(
+                &MrcBands {
+                    down_big: 80.0,
+                    down_outer: 85.0,
+                    down_small: 90.0,
+                    down_inner: 95.0,
+                    mean_line: mean,
+                    up_inner: 105.0,
+                    up_small: 110.0,
+                    up_outer: 115.0,
+                    up_big: 120.0,
+                    current_cross: 1.0,
+                    mean_line_slope: slope,
+                },
+                close,
+            ),
             dp_dir: dp,
             zz_dir: zz,
             ..Default::default()
@@ -86,18 +93,6 @@ mod tests {
             &tf(1, 1, 1.0, 111.0, 100.0),
             &tf(1, 1, 1.0, 111.0, 100.0),
             &tf(1, 1, 1.0, 111.0, 100.0),
-            CascadeSignal {
-                dir: 1,
-                ..Default::default()
-            },
-            CascadeSignal {
-                dir: 1,
-                ..Default::default()
-            },
-            CascadeSignal {
-                dir: 1,
-                ..Default::default()
-            },
         );
         assert_eq!(long.confirmed, MarketState::Long);
 
@@ -105,18 +100,6 @@ mod tests {
             &tf(-1, -1, -1.0, 89.0, 100.0),
             &tf(-1, -1, -1.0, 89.0, 100.0),
             &tf(-1, -1, -1.0, 89.0, 100.0),
-            CascadeSignal {
-                dir: -1,
-                ..Default::default()
-            },
-            CascadeSignal {
-                dir: -1,
-                ..Default::default()
-            },
-            CascadeSignal {
-                dir: -1,
-                ..Default::default()
-            },
         );
         assert_eq!(short.confirmed, MarketState::Short);
 
@@ -124,9 +107,6 @@ mod tests {
             &tf(1, -1, 0.0, 100.0, 100.0),
             &tf(1, -1, 0.0, 100.0, 100.0),
             &tf(1, -1, 0.0, 100.0, 100.0),
-            CascadeSignal::default(),
-            CascadeSignal::default(),
-            CascadeSignal::default(),
         );
         assert_eq!(sideways.confirmed, MarketState::Sideways);
     }
@@ -137,15 +117,6 @@ mod tests {
             &tf(1, -1, 0.0, 100.0, 100.0),
             &tf(1, 1, 1.0, 111.0, 100.0),
             &tf(1, 1, 1.0, 111.0, 100.0),
-            CascadeSignal::default(),
-            CascadeSignal {
-                dir: 1,
-                ..Default::default()
-            },
-            CascadeSignal {
-                dir: 1,
-                ..Default::default()
-            },
         );
         assert!(regime.fallback_used);
         assert_eq!(regime.confirmed, MarketState::Long);

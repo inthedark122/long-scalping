@@ -67,14 +67,14 @@ pub(crate) fn limit_open(
 #[allow(dead_code)]
 pub(crate) fn tp_limit_order(
     direction: Direction,
-    amount: f64,
+    qty: f64,
     price: f64,
     mark: &str,
 ) -> ModulePlaceOrder {
     ModulePlaceOrder {
         direction,
-        amount: Some(amount),
-        qty: None,
+        amount: None,
+        qty: Some(qty),
         enter_price: price,
         take_profit: None,
         stop_loss: None,

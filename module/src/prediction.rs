@@ -2,7 +2,7 @@ use crate::detection::levels;
 use crate::exit;
 use crate::model::{
     EntryGate, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase, IndicatorSnapshot,
-    PositionState,
+    PositionState, SugInfoSnapshot,
 };
 use crate::state::EngineState;
 
@@ -15,16 +15,20 @@ fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
 
 fn candidate_exit_plan(
     snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
     price: f64,
     side: PositionState,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::plan(snapshot, price, side)
+    exit::plan(snapshot, sug_snapshot, price, side)
 }
 
-pub fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
+pub fn fast_candle_entry_block(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+) -> Option<String> {
     let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
     let small_candle = candle_pct <= 0.40;
-    let fc_phase = snapshot
+    let fc_phase = sug_snapshot
         .fast_candle
         .map(|fc| fc.phase(&snapshot.tf1m.candle))
         .unwrap_or(FastCandlePhase::Absent);
@@ -33,14 +37,14 @@ pub fn fast_candle_entry_block(snapshot: &IndicatorSnapshot) -> Option<String> {
         FastCandlePhase::Building | FastCandlePhase::Tiring => Some(format!(
             "fc-phase={:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
             fc_phase,
-            snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
+            sug_snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
             candle_pct,
             snapshot.tf1m.gain_zone(),
             snapshot.tf1m.gain_progress_pct()
         )),
         FastCandlePhase::Cooling if !small_candle => Some(format!(
             "fc-phase=Cooling candle-not-small fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
-            snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
+            sug_snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
             candle_pct,
             snapshot.tf1m.gain_zone(),
             snapshot.tf1m.gain_progress_pct()
@@ -56,14 +60,18 @@ fn dp_signal_band(snapshot: &IndicatorSnapshot, anchor: f64) -> f64 {
     span.max(anchor_gap) * 0.25
 }
 
-fn sug_entry_gate(snapshot: &IndicatorSnapshot, side: PositionState) -> Option<EntryGate> {
-    let sug = snapshot.sug_candle?;
+fn sug_entry_gate(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    side: PositionState,
+) -> Option<EntryGate> {
+    let sug = sug_snapshot.sug_candle?;
     let side_dir = match side {
         PositionState::Long => 1,
         PositionState::Short => -1,
         PositionState::Flat => return None,
     };
-    if snapshot.sug_direction != 0 && snapshot.sug_direction != side_dir {
+    if sug_snapshot.sug_direction != 0 && sug_snapshot.sug_direction != side_dir {
         return None;
     }
 
@@ -112,10 +120,11 @@ fn sug_entry_gate(snapshot: &IndicatorSnapshot, side: PositionState) -> Option<E
 
 pub fn entry_gate(
     snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
     state: &EngineState,
     side: PositionState,
 ) -> EntryGate {
-    if let Some(reason) = fast_candle_entry_block(snapshot) {
+    if let Some(reason) = fast_candle_entry_block(snapshot, sug_snapshot) {
         return EntryGate::Wait(EntryWait {
             reason: "fast-candle-wait".to_string(),
             solutions: vec![EntryWaitSolution::WaitForCooling {
@@ -219,11 +228,13 @@ pub fn entry_gate(
         }
     }
 
-    if let Some(gate) = sug_entry_gate(snapshot, side) {
+    if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, side) {
         return gate;
     }
 
-    let plan = if let Some(plan) = candidate_exit_plan(snapshot, snapshot.tf1m.candle.close, side) {
+    let plan = if let Some(plan) =
+        candidate_exit_plan(snapshot, sug_snapshot, snapshot.tf1m.candle.close, side)
+    {
         plan
     } else {
         return EntryGate::Open {
@@ -232,7 +243,7 @@ pub fn entry_gate(
     };
     let candle_pct = candle_range_pct(&snapshot.tf1m.candle);
     let small_candle = candle_pct <= 0.40;
-    let fc_phase = snapshot
+    let fc_phase = sug_snapshot
         .fast_candle
         .map(|fc| fc.phase(&snapshot.tf1m.candle))
         .unwrap_or(FastCandlePhase::Absent);

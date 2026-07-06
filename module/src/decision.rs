@@ -1,6 +1,6 @@
-use crate::model::{EntryGate, EntryWait, RegimeSnapshot, RiskSnapshot, TradeDecision};
+use crate::model::{EntryGate, EntryWait, RegimeSnapshot, TradeDecision};
 
-pub fn decide(regime: RegimeSnapshot, _risk: RiskSnapshot) -> TradeDecision {
+pub fn decide(regime: RegimeSnapshot) -> TradeDecision {
     let mut reason = if regime.fallback_used {
         "15m-fallback".to_string()
     } else {

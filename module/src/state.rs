@@ -34,16 +34,6 @@ pub struct VLineState {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SharpReturnState {
-    pub active: bool,
-    pub direction: i8,
-    pub ref_price: f64,
-    pub armed_bar: u64,
-    pub fail_streak: u32,
-    pub last_fail_price: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
 pub struct CascadeState {
     pub last_close: f64,
     pub dir: i8,
@@ -72,11 +62,7 @@ pub struct EngineState {
     pub position: PositionRuntime,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
-    pub sharp_return: SharpReturnState,
-    pub cascade_1m: CascadeState,
     pub cascade_sug: CascadeState,
-    pub cascade_15m: CascadeState,
-    pub cascade_1h: CascadeState,
     pub exit_memory: ExitMemory,
 }
 
@@ -91,11 +77,7 @@ impl Default for EngineState {
             position: PositionRuntime::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
-            sharp_return: SharpReturnState::default(),
-            cascade_1m: CascadeState::default(),
             cascade_sug: CascadeState::default(),
-            cascade_15m: CascadeState::default(),
-            cascade_1h: CascadeState::default(),
             exit_memory: ExitMemory::default(),
         }
     }

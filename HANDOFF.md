@@ -36,7 +36,6 @@ The module has been reset into a concern-based pipeline:
 - `detection/mrc.rs`: band zone and slope
 - `detection/cascade.rs`: candle-path movement tracking
 - `detection/vlines.rs`: MRC crossing memory
-- `detection/sharp_return.rs`: sharp move and fast return risk
 - `detection/regime.rs`: `5m` classification plus `15m` fallback and `1h` blocker
 - `decision.rs`: final market decision
 - `execution.rs`: entry, stop, TP, cooldown, post-SL sizing

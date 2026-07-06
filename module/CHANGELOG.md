@@ -64,7 +64,6 @@ Fresh baseline reset.
   - `detection/mrc.rs`
   - `detection/cascade.rs`
   - `detection/vlines.rs`
-  - `detection/sharp_return.rs`
   - `detection/regime.rs`
   - `decision.rs`
   - `execution.rs`

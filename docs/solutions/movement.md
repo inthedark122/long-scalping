@@ -1,6 +1,10 @@
 # Movement Cascade Research
 
-This note records why the movement layer exists, what we originally wanted to validate, and what the replay work has already shown.
+This note records why the movement layer exists and how it is split now:
+
+- completed movement is seeded from `Init` and refreshed only from indicator updates
+- live movement is provisional and comes only from `SugInfo`
+- realtime trading should consume the cached completed state plus the current `SugInfo` movement snapshot
 
 ## Why movement matters
 
@@ -17,8 +21,8 @@ The intended stack is:
 
 1. regime / structure for direction context
 2. SugInfo candle for default scalping execution
-3. movement average for continuation / reversal timing
-4. TP / SL from the projected movement, not from arbitrary static values
+3. completed movement from indicator refresh for continuation / reversal timing
+4. provisional SugInfo movement for the final live entry / exit price path
 
 ## Original research plan
 
@@ -28,12 +32,13 @@ The point of the research was to answer one question:
 
 The initial plan was to:
 
-- seed the movement state from the last 10 closed 1m candles on `Init`
+- seed the completed movement state from the last 10 closed 1m candles on `Init`
+- refresh completed movement only from `ModuleEvent::Indicators`
 - keep a rolling average of movement block size
 - wait for at least 3 reverses before trusting the average
 - treat a move above roughly `average * 1.3` as a reverse / maturity warning
 - treat a small block before a larger extension as a continuation candidate
-- use `sug_info.candle` as the better entry price source for scalping
+- use `sug_info.candle` as the provisional live movement source for scalping
 - derive TP / SL from the movement average instead of fixed percentages
 
 That plan is still the same. What changed is that we now have replay output to validate it.
@@ -88,11 +93,13 @@ Best practice from the replay:
 The movement logic should now be used like this:
 
 - use `1m` for movement timing
-- seed movement from the last 10 candles on `Init`
+- seed completed movement from the last 10 candles on `Init`
+- refresh completed movement only from `ModuleEvent::Indicators`
 - require at least 3 reverses before trusting the average
 - treat a block above roughly `average * 1.3` as a reverse / maturity warning
 - treat a smaller block before the larger push as a continuation candidate
-- use `sug_info.candle` for the default scalp entry / exit path
+- use `sug_info.candle` for the provisional live scalp entry / exit path
+- keep the completed indicator-backed movement cached for realtime decisions
 - keep structural regime logic as a fallback and higher-level context only
 - use the replay tool to compare thresholds before changing production logic
 - prefer symbol-specific threshold tuning when the replay output differs materially across tokens

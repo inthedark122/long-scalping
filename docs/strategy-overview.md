@@ -22,7 +22,6 @@ This is the limit-entry release for the structural scalping module.
 2. `detection/mrc.rs` computes zone, window position, and mean-line slope.
 3. `detection/cascade.rs` tracks directional movement using candle path plus DP/ZZ agreement.
 4. `detection/vlines.rs` tracks MRC crossing memory.
-5. `detection/sharp_return.rs` marks sharp moves that fail to return quickly.
 6. `detection/regime.rs` classifies `5m`, falls back to `15m`, and lets `1h` only block overconfident entries.
 7. `decision.rs` outputs one state and an entry allowance.
 8. `execution.rs` enforces one-position trading and a limit-only entry with the internal `cap_init` bankroll model plus `trading_amount` entry guard.

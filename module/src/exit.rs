@@ -1,5 +1,5 @@
 use crate::detection::levels;
-use crate::model::{IndicatorSnapshot, PositionState};
+use crate::model::{IndicatorSnapshot, PositionState, SugInfoSnapshot};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ExitPlan {
@@ -8,13 +8,18 @@ pub struct ExitPlan {
     pub tp_reliable: bool,
 }
 
-fn compute(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Option<ExitPlan> {
+fn compute(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    price: f64,
+    side: PositionState,
+) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
     }
 
-    if let Some(sug) = snapshot.sug_candle {
-        let sug_side = snapshot.sug_direction;
+    if let Some(sug) = sug_snapshot.sug_candle {
+        let sug_side = sug_snapshot.sug_direction;
         let side_dir = match side {
             PositionState::Long => 1,
             PositionState::Short => -1,
@@ -90,8 +95,13 @@ fn compute(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Opt
     }
 }
 
-pub fn plan(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Option<ExitPlan> {
-    compute(snapshot, price, side)
+pub fn plan(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    price: f64,
+    side: PositionState,
+) -> Option<ExitPlan> {
+    compute(snapshot, sug_snapshot, price, side)
 }
 
 pub fn describe(plan: Option<ExitPlan>) -> String {
@@ -113,7 +123,7 @@ pub fn describe(plan: Option<ExitPlan>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Candle, MrcBands, TimeframeSnapshot};
+    use crate::model::{Candle, MrcBands, SugInfoSnapshot, TimeframeSnapshot};
 
     fn tf(close: f64) -> TimeframeSnapshot {
         TimeframeSnapshot {
@@ -149,11 +159,10 @@ mod tests {
             tf5m: tf(100.0),
             tf15m: tf(100.0),
             tf1h: tf(100.0),
-            fast_candle: None,
-            signal: Default::default(),
             ..Default::default()
         };
-        let plan = plan(&snapshot, 100.0, PositionState::Long).unwrap();
+        let sug = SugInfoSnapshot::default();
+        let plan = plan(&snapshot, &sug, 100.0, PositionState::Long).unwrap();
         assert!(plan.take_profit > 100.0);
         assert!(plan.stop_loss < 100.0);
     }
@@ -165,11 +174,10 @@ mod tests {
             tf5m: tf(100.0),
             tf15m: tf(100.0),
             tf1h: tf(100.0),
-            fast_candle: None,
-            signal: Default::default(),
             ..Default::default()
         };
-        let plan = plan(&snapshot, 100.0, PositionState::Short).unwrap();
+        let sug = SugInfoSnapshot::default();
+        let plan = plan(&snapshot, &sug, 100.0, PositionState::Short).unwrap();
         assert!(plan.take_profit < 100.0);
         assert!(plan.stop_loss > 100.0);
     }
