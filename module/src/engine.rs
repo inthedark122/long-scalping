@@ -226,17 +226,28 @@ fn process(
     } else {
         cascade::CascadeSignal {
             dir: state.cascade_1m.dir,
-            strength: 0.0,
-            stretched: false,
+            ..Default::default()
         }
     };
-    let cas5 = if timeframes.contains(&300) || matches!(input.event, ModuleEvent::Init) {
-        cascade::update(&mut state.cascade_5m, &snapshot.tf5m)
+    let cas_sug = if let Some(sug) = input.sug_info.as_ref() {
+        let candle = crate::model::Candle {
+            open: sug.candle.enter,
+            high: sug.candle.max,
+            low: sug.candle.min,
+            close: sug.candle.exit,
+        };
+        let dir_hint = if sug.direction.is_long() {
+            1
+        } else if sug.direction.is_short() {
+            -1
+        } else {
+            0
+        };
+        cascade::update_from_candle(&mut state.cascade_sug, &candle, dir_hint)
     } else {
         cascade::CascadeSignal {
-            dir: state.cascade_5m.dir,
-            strength: 0.0,
-            stretched: false,
+            dir: state.cascade_sug.dir,
+            ..Default::default()
         }
     };
     let cas15 = if timeframes.contains(&900) || matches!(input.event, ModuleEvent::Init) {
@@ -244,8 +255,7 @@ fn process(
     } else {
         cascade::CascadeSignal {
             dir: state.cascade_15m.dir,
-            strength: 0.0,
-            stretched: false,
+            ..Default::default()
         }
     };
     let cas1h = if timeframes.contains(&3600) || matches!(input.event, ModuleEvent::Init) {
@@ -253,8 +263,7 @@ fn process(
     } else {
         cascade::CascadeSignal {
             dir: state.cascade_1h.dir,
-            strength: 0.0,
-            stretched: false,
+            ..Default::default()
         }
     };
 
@@ -276,7 +285,7 @@ fn process(
         &snapshot.tf5m,
         &snapshot.tf15m,
         &snapshot.tf1h,
-        cas5,
+        cas_sug,
         cas15,
         cas1h,
     );
@@ -322,7 +331,16 @@ fn process(
         close_positions: execution.close_positions,
         place_orders: execution.place_orders,
         cancel_orders: execution.cancel_orders,
-        debug: debug::render(state, &snapshot, &regime, &risk, &decision, &execution.note),
+        debug: debug::render(
+            state,
+            &snapshot,
+            &regime,
+            &cas1,
+            &cas_sug,
+            &risk,
+            &decision,
+            &execution.note,
+        ),
         ..Default::default()
     }
 }

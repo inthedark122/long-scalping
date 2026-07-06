@@ -56,6 +56,60 @@ fn dp_signal_band(snapshot: &IndicatorSnapshot, anchor: f64) -> f64 {
     span.max(anchor_gap) * 0.25
 }
 
+fn sug_entry_gate(snapshot: &IndicatorSnapshot, side: PositionState) -> Option<EntryGate> {
+    let sug = snapshot.sug_candle?;
+    let side_dir = match side {
+        PositionState::Long => 1,
+        PositionState::Short => -1,
+        PositionState::Flat => return None,
+    };
+    if snapshot.sug_direction != 0 && snapshot.sug_direction != side_dir {
+        return None;
+    }
+
+    let entry = match side {
+        PositionState::Long => sug.open.min(sug.close),
+        PositionState::Short => sug.open.max(sug.close),
+        PositionState::Flat => return None,
+    };
+    let target = match side {
+        PositionState::Long => sug.close.max(entry),
+        PositionState::Short => sug.close.min(entry),
+        PositionState::Flat => return None,
+    };
+    let range = (sug.high - sug.low).abs().max(f64::EPSILON);
+    let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
+    let price = snapshot.tf1m.candle.close;
+    let near_entry = (price - entry).abs() <= band;
+
+    if near_entry {
+        Some(EntryGate::Open {
+            notes: vec![
+                "sug-info-scalp".to_string(),
+                format!("entry={:.4}", entry),
+                format!("tp={:.4}", target),
+                format!("band={:.4}", band),
+            ],
+        })
+    } else {
+        Some(EntryGate::Wait(EntryWait {
+            reason: "sug-info-pullback-wait".to_string(),
+            solutions: vec![EntryWaitSolution::ReclaimLevel {
+                source: "sug-info".to_string(),
+                level: entry,
+                band_low: (entry - band).max(0.0),
+                band_high: entry + band,
+            }],
+            notes: vec![
+                "sug-info default scalping path".to_string(),
+                format!("entry={:.4}", entry),
+                format!("tp={:.4}", target),
+                format!("price={:.4}", price),
+            ],
+        }))
+    }
+}
+
 pub fn entry_gate(
     snapshot: &IndicatorSnapshot,
     state: &EngineState,
@@ -163,6 +217,10 @@ pub fn entry_gate(
             PositionState::Flat => {}
             _ => {}
         }
+    }
+
+    if let Some(gate) = sug_entry_gate(snapshot, side) {
+        return gate;
     }
 
     let plan = if let Some(plan) = candidate_exit_plan(snapshot, snapshot.tf1m.candle.close, side) {

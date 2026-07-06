@@ -1,3 +1,4 @@
+use crate::detection::cascade::CascadeSignal;
 use crate::model::{IndicatorSnapshot, RegimeSnapshot, RiskSnapshot, TradeDecision};
 use crate::state::EngineState;
 
@@ -5,6 +6,8 @@ pub fn render(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
     regime: &RegimeSnapshot,
+    cascade_1m: &CascadeSignal,
+    cascade_sug: &CascadeSignal,
     _risk: &RiskSnapshot,
     decision: &TradeDecision,
     execution_note: &str,
@@ -30,13 +33,24 @@ pub fn render(
         }
     };
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} trail={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cas1={:?} dir1={} start1={} est1={} sug_dir={} sug_ent={:.4} sug_exit={:.4} casSug={:?} dirSug={} startSug={} estSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} trail={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
         regime.fallback,
         regime.fallback_used,
         regime.context_1h,
+        cascade_1m.phase,
+        cascade_1m.dir,
+        cascade_1m.starting,
+        cascade_1m.established,
+        snapshot.sug_direction,
+        snapshot.sug_candle.map(|c| c.open).unwrap_or(0.0),
+        snapshot.sug_candle.map(|c| c.close).unwrap_or(0.0),
+        cascade_sug.phase,
+        cascade_sug.dir,
+        cascade_sug.starting,
+        cascade_sug.established,
         state.cfg.cap_init,
         state.cfg.trading_amount,
         state.trade_budget,

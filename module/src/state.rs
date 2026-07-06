@@ -53,6 +53,15 @@ pub struct CascadeState {
     pub avg_size: f64,
     pub samples: u32,
     pub last_break: f64,
+    pub cas_dir: i8,
+    pub cas_high: f64,
+    pub cas_low: f64,
+    pub cas_candles: u32,
+    pub sizes: [f64; 10],
+    pub sizes_pos: usize,
+    pub sizes_len: usize,
+    pub breaks: [f64; 5],
+    pub break_n: usize,
 }
 
 pub struct EngineState {
@@ -66,7 +75,7 @@ pub struct EngineState {
     pub vlines: [VLineState; 9],
     pub sharp_return: SharpReturnState,
     pub cascade_1m: CascadeState,
-    pub cascade_5m: CascadeState,
+    pub cascade_sug: CascadeState,
     pub cascade_15m: CascadeState,
     pub cascade_1h: CascadeState,
     pub exit_memory: ExitMemory,
@@ -85,7 +94,7 @@ impl Default for EngineState {
             vlines: [VLineState::default(); 9],
             sharp_return: SharpReturnState::default(),
             cascade_1m: CascadeState::default(),
-            cascade_5m: CascadeState::default(),
+            cascade_sug: CascadeState::default(),
             cascade_15m: CascadeState::default(),
             cascade_1h: CascadeState::default(),
             exit_memory: ExitMemory::default(),

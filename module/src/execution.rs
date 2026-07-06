@@ -946,6 +946,8 @@ mod tests {
                 tf15m: Default::default(),
                 tf1h: Default::default(),
                 fast_candle: None,
+                sug_candle: None,
+                sug_direction: 0,
                 signal: Default::default(),
             },
             &decision(MarketState::Long),

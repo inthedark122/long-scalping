@@ -12,6 +12,49 @@ fn compute(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Opt
     if !price.is_finite() || price <= 0.0 {
         return None;
     }
+
+    if let Some(sug) = snapshot.sug_candle {
+        let sug_side = snapshot.sug_direction;
+        let side_dir = match side {
+            PositionState::Long => 1,
+            PositionState::Short => -1,
+            PositionState::Flat => 0,
+        };
+        if sug_side == 0 || sug_side == side_dir {
+            let range = (sug.high - sug.low).abs();
+            if range > 0.0 {
+                let plan = match side {
+                    PositionState::Long => ExitPlan {
+                        take_profit: if sug.close > price {
+                            sug.close
+                        } else {
+                            sug.high.max(price + range * 0.25)
+                        },
+                        stop_loss: sug.low.min(price - range * 0.10),
+                        tp_reliable: true,
+                    },
+                    PositionState::Short => ExitPlan {
+                        take_profit: if sug.close < price {
+                            sug.close
+                        } else {
+                            sug.low.min(price - range * 0.25)
+                        },
+                        stop_loss: sug.high.max(price + range * 0.10),
+                        tp_reliable: true,
+                    },
+                    PositionState::Flat => ExitPlan::default(),
+                };
+                if plan.take_profit.is_finite()
+                    && plan.stop_loss.is_finite()
+                    && plan.take_profit > 0.0
+                    && plan.stop_loss > 0.0
+                {
+                    return Some(plan);
+                }
+            }
+        }
+    }
+
     let levels = levels::structural_levels(snapshot);
 
     match side {
@@ -108,6 +151,7 @@ mod tests {
             tf1h: tf(100.0),
             fast_candle: None,
             signal: Default::default(),
+            ..Default::default()
         };
         let plan = plan(&snapshot, 100.0, PositionState::Long).unwrap();
         assert!(plan.take_profit > 100.0);
@@ -123,6 +167,7 @@ mod tests {
             tf1h: tf(100.0),
             fast_candle: None,
             signal: Default::default(),
+            ..Default::default()
         };
         let plan = plan(&snapshot, 100.0, PositionState::Short).unwrap();
         assert!(plan.take_profit < 100.0);

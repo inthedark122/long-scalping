@@ -304,6 +304,8 @@ pub struct IndicatorSnapshot {
     pub tf15m: TimeframeSnapshot,
     pub tf1h: TimeframeSnapshot,
     pub fast_candle: Option<FastCandleSnapshot>,
+    pub sug_candle: Option<Candle>,
+    pub sug_direction: i8,
     pub signal: SignalIndicatorSnapshot,
 }
 

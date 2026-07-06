@@ -15,7 +15,7 @@ pub fn classify_regime(
     tf5: &TimeframeSnapshot,
     tf15: &TimeframeSnapshot,
     tf1h: &TimeframeSnapshot,
-    cas5: CascadeSignal,
+    cas_sug: CascadeSignal,
     cas15: CascadeSignal,
     cas1h: CascadeSignal,
 ) -> RegimeSnapshot {
@@ -23,7 +23,7 @@ pub fn classify_regime(
     let mrc15 = analyze(&tf15.mrc, tf15.candle.close);
     let mrc1h = analyze(&tf1h.mrc, tf1h.candle.close);
 
-    let primary = classify(tf5, mrc5, cas5);
+    let primary = classify(tf5, mrc5, cas_sug);
     let fallback = classify(tf15, mrc15, cas15);
     let context_1h = classify(tf1h, mrc1h, cas1h);
 
@@ -88,18 +88,15 @@ mod tests {
             &tf(1, 1, 1.0, 111.0, 100.0),
             CascadeSignal {
                 dir: 1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
             CascadeSignal {
                 dir: 1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
             CascadeSignal {
                 dir: 1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
         );
         assert_eq!(long.confirmed, MarketState::Long);
@@ -110,18 +107,15 @@ mod tests {
             &tf(-1, -1, -1.0, 89.0, 100.0),
             CascadeSignal {
                 dir: -1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
             CascadeSignal {
                 dir: -1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
             CascadeSignal {
                 dir: -1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
         );
         assert_eq!(short.confirmed, MarketState::Short);
@@ -146,13 +140,11 @@ mod tests {
             CascadeSignal::default(),
             CascadeSignal {
                 dir: 1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
             CascadeSignal {
                 dir: 1,
-                strength: 1.0,
-                stretched: false,
+                ..Default::default()
             },
         );
         assert!(regime.fallback_used);

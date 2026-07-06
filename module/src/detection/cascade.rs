@@ -1,16 +1,119 @@
-use crate::model::TimeframeSnapshot;
+use crate::model::{Candle, TimeframeSnapshot};
 use crate::state::CascadeState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementPhase {
+    Starting,
+    Building,
+    Mature,
+    CounterMove,
+    Reversal,
+    Unknown,
+}
+
+impl Default for MovementPhase {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CascadeSignal {
     pub dir: i8,
     pub strength: f64,
     pub stretched: bool,
+    pub phase: MovementPhase,
+    pub starting: bool,
+    pub established: bool,
+    pub counter_move: bool,
+    pub reversal: bool,
+    pub completed_size: f64,
+    pub average_size: f64,
+    pub break_price: f64,
 }
 
-pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
-    let close = tf.candle.close;
-    if close <= 0.0 {
+fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: f64) -> bool {
+    if memory.cas_dir == 0 {
+        memory.cas_dir = dir;
+        memory.cas_high = high;
+        memory.cas_low = low;
+        memory.cas_candles = 1;
+        memory.dir = dir;
+        memory.run_extreme = if dir >= 0 { high } else { low };
+        memory.run_size = high - low;
+        memory.last_close = close;
+        return false;
+    }
+
+    if dir == memory.cas_dir {
+        if high > memory.cas_high {
+            memory.cas_high = high;
+        }
+        if low < memory.cas_low {
+            memory.cas_low = low;
+        }
+        memory.cas_candles = memory.cas_candles.saturating_add(1);
+        return false;
+    }
+
+    let completed_size = (memory.cas_high - memory.cas_low).abs();
+    let threshold = if memory.avg_size > 0.0 {
+        memory.avg_size * 0.40
+    } else {
+        f64::MAX
+    };
+    let is_counter = memory.dir != memory.cas_dir;
+    let absorb = is_counter && completed_size < threshold;
+
+    if absorb {
+        let break_price = if memory.cas_dir == -1 {
+            memory.cas_low
+        } else {
+            memory.cas_high
+        };
+        if memory.break_n >= memory.breaks.len() {
+            memory.breaks.rotate_left(1);
+            if let Some(last) = memory.breaks.last_mut() {
+                *last = break_price;
+            }
+        } else {
+            memory.breaks[memory.break_n] = break_price;
+            memory.break_n += 1;
+        }
+        memory.cas_high = memory.cas_high.max(high);
+        memory.cas_low = memory.cas_low.min(low);
+        if dir == memory.cas_dir {
+            memory.cas_candles = memory.cas_candles.saturating_add(1);
+        }
+        false
+    } else {
+        let cas_size = (memory.cas_high - memory.cas_low).abs();
+        if cas_size > 0.0 {
+            memory.sizes[memory.sizes_pos] = cas_size;
+            memory.sizes_pos = (memory.sizes_pos + 1) % memory.sizes.len();
+            if memory.sizes_len < memory.sizes.len() {
+                memory.sizes_len += 1;
+            }
+            memory.samples = memory.sizes_len as u32;
+            memory.avg_size = memory.sizes[..memory.sizes_len].iter().sum::<f64>()
+                / memory.sizes_len as f64;
+        }
+        memory.last_break = memory.last_close;
+        memory.cas_dir = dir;
+        memory.cas_high = high.max(memory.cas_high);
+        memory.cas_low = low.min(memory.cas_low);
+        memory.cas_candles = 1;
+        memory.break_n = 0;
+        memory.breaks = [0.0; 5];
+        true
+    }
+}
+
+pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: i8) -> CascadeSignal {
+    let high = candle.high;
+    let low = candle.low;
+    let close = candle.close;
+    if high <= 0.0 || low <= 0.0 || close <= 0.0 {
         return CascadeSignal::default();
     }
 
@@ -22,68 +125,145 @@ pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSigna
         } else {
             0
         }
-    } else if tf.candle.close > tf.candle.open {
+    } else if candle.close > candle.open {
         1
-    } else if tf.candle.close < tf.candle.open {
+    } else if candle.close < candle.open {
         -1
     } else {
         0
     };
 
-    let agreed_dir = if tf.dp_dir == tf.zz_dir && tf.dp_dir != 0 {
-        tf.dp_dir
+    let agreed_dir = if dir_hint != 0 {
+        dir_hint
     } else {
         raw_dir
     };
-
-    let step = if memory.last_close > 0.0 {
-        (close - memory.last_close).abs()
+    let dir = if agreed_dir == 0 {
+        memory.dir
     } else {
-        (tf.candle.close - tf.candle.open).abs()
+        agreed_dir
     };
 
-    if memory.dir == 0 || agreed_dir == memory.dir || agreed_dir == 0 {
-        memory.dir = if agreed_dir == 0 {
-            memory.dir
-        } else {
-            agreed_dir
-        };
-        memory.run_extreme = if memory.run_extreme == 0.0 {
-            close
-        } else if memory.dir >= 0 {
-            memory.run_extreme.max(close)
-        } else {
-            memory.run_extreme.min(close).max(f64::MIN)
-        };
-        memory.run_size += step;
+    let reversal = if dir == 0 {
+        false
     } else {
-        if memory.run_size > 0.0 {
-            memory.avg_size = if memory.samples == 0 {
-                memory.run_size
-            } else {
-                (memory.avg_size * memory.samples as f64 + memory.run_size)
-                    / (memory.samples as f64 + 1.0)
-            };
-            memory.samples += 1;
-            memory.last_break = memory.last_close;
-        }
-        memory.dir = agreed_dir;
-        memory.run_size = step;
-        memory.run_extreme = close;
-    }
+        update_block(memory, dir, high, low, close)
+    };
 
+    memory.dir = if dir == 0 { memory.dir } else { dir };
     memory.last_close = close;
-    let strength = if memory.avg_size > 0.0 {
-        memory.run_size / memory.avg_size
-    } else if step > 0.0 {
+    memory.run_extreme = if memory.dir >= 0 {
+        if memory.run_extreme == 0.0 {
+            high
+        } else {
+            memory.run_extreme.max(high)
+        }
+    } else if memory.run_extreme == 0.0 {
+        low
+    } else {
+        memory.run_extreme.min(low)
+    };
+    memory.run_size = (memory.cas_high - memory.cas_low).abs();
+
+    let active_size = (memory.cas_high - memory.cas_low).abs();
+    let average_size = memory.avg_size;
+    let strength = if average_size > 0.0 {
+        active_size / average_size
+    } else if active_size > 0.0 {
         1.0
     } else {
         0.0
+    };
+    let stretched = strength >= 1.5;
+    let established = memory.samples >= 3 && strength >= 1.2;
+
+    let phase = if reversal {
+        MovementPhase::Reversal
+    } else if memory.cas_candles <= 1 {
+        MovementPhase::Starting
+    } else if strength >= 1.2 {
+        MovementPhase::Mature
+    } else if memory.break_n > 0 {
+        MovementPhase::CounterMove
+    } else {
+        MovementPhase::Building
     };
 
     CascadeSignal {
         dir: memory.dir,
         strength,
-        stretched: strength >= 1.5,
+        stretched,
+        phase,
+        starting: matches!(phase, MovementPhase::Starting),
+        established,
+        counter_move: matches!(phase, MovementPhase::CounterMove),
+        reversal,
+        completed_size: active_size,
+        average_size,
+        break_price: memory.breaks[memory.break_n.saturating_sub(1).min(memory.breaks.len() - 1)],
+    }
+}
+
+pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
+    let dir_hint = if tf.dp_dir == tf.zz_dir && tf.dp_dir != 0 {
+        tf.dp_dir
+    } else {
+        0
+    };
+    update_from_candle(memory, &tf.candle, dir_hint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Candle, MrcBands, TimeframeSnapshot};
+
+    fn tf(open: f64, high: f64, low: f64, close: f64, dp: i8, zz: i8) -> TimeframeSnapshot {
+        TimeframeSnapshot {
+            candle: Candle {
+                open,
+                high,
+                low,
+                close,
+            },
+            mrc: MrcBands {
+                down_big: 80.0,
+                down_outer: 85.0,
+                down_small: 90.0,
+                down_inner: 95.0,
+                mean_line: 100.0,
+                up_inner: 105.0,
+                up_small: 110.0,
+                up_outer: 115.0,
+                up_big: 120.0,
+                current_cross: 100.0,
+                mean_line_slope: 0.0,
+            },
+            dp_dir: dp,
+            zz_dir: zz,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn movement_starts_then_builds() {
+        let mut state = CascadeState::default();
+        let first = update(&mut state, &tf(100.0, 101.0, 99.5, 100.8, 1, 1));
+        assert_eq!(first.phase, MovementPhase::Starting);
+        assert!(first.starting);
+
+        let second = update(&mut state, &tf(100.8, 103.0, 100.4, 102.5, 1, 1));
+        assert!(matches!(second.phase, MovementPhase::Building | MovementPhase::Mature));
+        assert!(second.dir > 0);
+    }
+
+    #[test]
+    fn counter_move_and_reversal_are_flagged() {
+        let mut state = CascadeState::default();
+        let _ = update(&mut state, &tf(100.0, 101.0, 99.5, 100.8, 1, 1));
+        let _ = update(&mut state, &tf(100.8, 103.0, 100.4, 102.5, 1, 1));
+        let reversal = update(&mut state, &tf(102.5, 102.8, 99.2, 99.8, -1, -1));
+        assert!(reversal.reversal);
+        assert!(reversal.completed_size > 0.0);
     }
 }

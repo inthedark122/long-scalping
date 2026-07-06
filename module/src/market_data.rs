@@ -240,6 +240,21 @@ pub fn build_snapshot(
             active: info.status.is_fast(),
         })
     });
+    let sug_candle = sug_info.map(|info| Candle {
+        open: info.candle.enter,
+        high: info.candle.max,
+        low: info.candle.min,
+        close: info.candle.exit,
+    });
+    let sug_direction = sug_info.map_or(0, |info| {
+        if info.direction.is_long() {
+            1
+        } else if info.direction.is_short() {
+            -1
+        } else {
+            0
+        }
+    });
     let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| {
         SignalIndicatorSnapshot {
             ntps: info.indicator.ntps,
@@ -252,6 +267,8 @@ pub fn build_snapshot(
         tf15m: build_timeframe(history, raw, TF_15M, None),
         tf1h: build_timeframe(history, raw, TF_1H, None),
         fast_candle,
+        sug_candle,
+        sug_direction,
         signal,
     }
 }
