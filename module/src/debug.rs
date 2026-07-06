@@ -39,8 +39,9 @@ pub fn render(
             text
         }
     };
+    let (tp_src, sl_src, tp_struct, sl_struct) = debug_exit_sources(state);
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} casTf={} casSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} entry_reason={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} casTf={} casSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} entry_reason={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} tp_src={} tp_struct={:.4} sl_src={} sl_struct={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -64,6 +65,10 @@ pub fn render(
         },
         state.position.take_profit,
         state.position.stop_loss,
+        tp_src,
+        tp_struct,
+        sl_src,
+        sl_struct,
         vt.long_side.count,
         vt.short_side.count,
         snapshot.tf1m.volume_gain,
@@ -73,6 +78,20 @@ pub fn render(
         snapshot.tf1m.gain_is_late(),
         execution_note,
     )
+}
+
+fn debug_exit_sources(state: &EngineState) -> (&'static str, &'static str, f64, f64) {
+    let tp_src = if state.position.exit_mode.as_str() == "trail-after-virtual-sl" {
+        "trail"
+    } else {
+        "fast"
+    };
+    let sl_src = if state.position.exit_mode.as_str() == "trail-after-virtual-sl" {
+        "trail"
+    } else {
+        "fast"
+    };
+    (tp_src, sl_src, state.position.take_profit, state.position.stop_loss)
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
