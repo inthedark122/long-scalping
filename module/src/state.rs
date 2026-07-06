@@ -13,7 +13,6 @@ pub struct PositionRuntime {
     pub exit_tp_reliable: bool,
     pub exit_mode: ExitMode,
     pub tp_mark: String,
-    pub trail_anchor: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -147,7 +146,6 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
-                    trail_anchor: 0.0,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -168,7 +166,6 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
-                    trail_anchor: 0.0,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);

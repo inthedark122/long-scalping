@@ -96,7 +96,6 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 exit_tp_reliable: false,
                 exit_mode: ExitMode::Structural,
                 tp_mark: tp_mark(*direction),
-                trail_anchor: 0.0,
             };
             let side = dir_to_position(*direction);
             let snapshot = market_data::build_snapshot(

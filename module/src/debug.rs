@@ -33,7 +33,7 @@ pub fn render(
         }
     };
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cas1={:?} dir1={} start1={} est1={} sug_dir={} sug_ent={:.4} sug_exit={:.4} casSug={:?} dirSug={} startSug={} estSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} trail={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cas1={:?} dir1={} start1={} est1={} sug_dir={} sug_ent={:.4} sug_exit={:.4} casSug={:?} dirSug={} startSug={} estSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -65,7 +65,6 @@ pub fn render(
         },
         state.position.take_profit,
         state.position.stop_loss,
-        state.position.trail_anchor,
         vt.long_side.count,
         vt.short_side.count,
         snapshot.tf1m.volume_gain,

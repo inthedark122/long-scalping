@@ -84,11 +84,11 @@ fn tick_size(input: &ModuleInput) -> f64 {
     input.symbol_info.price_tick_size.max(f64::EPSILON)
 }
 
-fn trailing_tp_price(side: PositionState, anchor: f64, tick_size: f64) -> f64 {
+fn trailing_tp_price(side: PositionState, price: f64, tick_size: f64) -> f64 {
     match side {
-        PositionState::Long => (anchor - tick_size * 2.0).max(tick_size),
-        PositionState::Short => anchor + tick_size * 2.0,
-        PositionState::Flat => anchor,
+        PositionState::Long => (price - tick_size * 2.0).max(tick_size),
+        PositionState::Short => price + tick_size * 2.0,
+        PositionState::Flat => price,
     }
 }
 
@@ -173,25 +173,11 @@ fn ensure_active_exit_order(
 
     if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
         state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
-        state.position.trail_anchor = input.price;
         notes.push(format!("virtual-sl-hit={:.4}", state.position.stop_loss));
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        if state.position.trail_anchor <= 0.0 {
-            state.position.trail_anchor = input.price;
-        } else {
-            match side {
-                PositionState::Long => {
-                    state.position.trail_anchor = state.position.trail_anchor.max(input.price);
-                }
-                PositionState::Short => {
-                    state.position.trail_anchor = state.position.trail_anchor.min(input.price);
-                }
-                PositionState::Flat => {}
-            }
-        }
-        let desired_tp = trailing_tp_price(side, state.position.trail_anchor, tick);
+        let desired_tp = trailing_tp_price(side, input.price, tick);
         if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
             state.position.take_profit = desired_tp;
             notes.push(format!("tp-trail={:.4}", desired_tp));
@@ -199,9 +185,9 @@ fn ensure_active_exit_order(
             return (
                 vec![order],
                 format!(
-                    "exit={} anchor={:.4} {}",
+                    "exit={} price={:.4} {}",
                     state.position.exit_mode.as_str(),
-                    state.position.trail_anchor,
+                    input.price,
                     notes.join("|")
                 ),
             );
@@ -209,9 +195,9 @@ fn ensure_active_exit_order(
         return (
             Vec::new(),
             format!(
-                "exit={} anchor={:.4} tp={:.4} sl={:.4}",
+                "exit={} price={:.4} tp={:.4} sl={:.4}",
                 state.position.exit_mode.as_str(),
-                state.position.trail_anchor,
+                input.price,
                 state.position.take_profit,
                 state.position.stop_loss
             ),
@@ -719,7 +705,6 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
-            trail_anchor: 0.0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -771,7 +756,6 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
-            trail_anchor: 0.0,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
