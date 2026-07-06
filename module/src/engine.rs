@@ -10,16 +10,22 @@ use crate::risk;
 use crate::model::EntryReason;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
+use lte_strategy_bridge::indicator_access::TimeframeSec;
+
+const TF_1M: i64 = TimeframeSec::Tf1m.as_i64();
+const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
+const TF_15M: i64 = TimeframeSec::Tf15m.as_i64();
+const TF_1H: i64 = TimeframeSec::Tf1h.as_i64();
 
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
         ModuleEvent::Init => {
             state.history.init(&input.indicators);
-            process(input, state, true, &[60, 300, 900, 3600])
+            process(input, state, true, &[TF_1M, TF_5M, TF_15M, TF_1H])
         }
         ModuleEvent::Indicators { timeframes } => {
             state.history.update(&input.indicators, timeframes);
-            process(input, state, timeframes.contains(&60), timeframes)
+            process(input, state, timeframes.contains(&TF_1M), timeframes)
         }
         ModuleEvent::SugInfo => process(input, state, false, &[]),
         ModuleEvent::Signal { code, values, .. } => {
@@ -189,7 +195,7 @@ fn process(
     timeframes: &[i64],
 ) -> ModuleOutput {
     state.ticks = state.ticks.saturating_add(1);
-    if timeframes.contains(&60) {
+    if timeframes.contains(&TF_1M) {
         state.bar_1m = state.bar_1m.saturating_add(1);
     }
 
@@ -221,7 +227,7 @@ fn process(
         state.ticks,
     );
 
-    let cas1 = if timeframes.contains(&60) || matches!(input.event, ModuleEvent::Init) {
+    let cas1 = if timeframes.contains(&TF_1M) || matches!(input.event, ModuleEvent::Init) {
         cascade::update(&mut state.cascade_1m, &snapshot.tf1m)
     } else {
         cascade::CascadeSignal {
@@ -250,7 +256,7 @@ fn process(
             ..Default::default()
         }
     };
-    let cas15 = if timeframes.contains(&900) || matches!(input.event, ModuleEvent::Init) {
+    let cas15 = if timeframes.contains(&TF_15M) || matches!(input.event, ModuleEvent::Init) {
         cascade::update(&mut state.cascade_15m, &snapshot.tf15m)
     } else {
         cascade::CascadeSignal {
@@ -258,7 +264,7 @@ fn process(
             ..Default::default()
         }
     };
-    let cas1h = if timeframes.contains(&3600) || matches!(input.event, ModuleEvent::Init) {
+    let cas1h = if timeframes.contains(&TF_1H) || matches!(input.event, ModuleEvent::Init) {
         cascade::update(&mut state.cascade_1h, &snapshot.tf1h)
     } else {
         cascade::CascadeSignal {
