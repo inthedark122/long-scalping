@@ -239,38 +239,32 @@ pub fn build_indicator_snapshot(
     }
 }
 
-pub fn build_sug_info_snapshot(sug_info: Option<&SuggestionInfo>) -> SugInfoSnapshot {
-    let fast_candle = sug_info.and_then(|info| {
-        info.fast_candle.as_ref().map(|fc| FastCandleSnapshot {
-            candle: Candle {
-                open: fc.enter,
-                high: fc.max,
-                low: fc.min,
-                close: fc.exit,
-            },
-            active: info.status.is_fast(),
-        })
+pub fn build_sug_info_snapshot(sug_info: &SuggestionInfo) -> SugInfoSnapshot {
+    let fast_candle = sug_info.fast_candle.as_ref().map(|fc| FastCandleSnapshot {
+        candle: Candle {
+            open: fc.enter,
+            high: fc.max,
+            low: fc.min,
+            close: fc.exit,
+        },
+        active: sug_info.status.is_fast(),
     });
-    let sug_candle = sug_info.map(|info| Candle {
-        open: info.candle.enter,
-        high: info.candle.max,
-        low: info.candle.min,
-        close: info.candle.exit,
+    let sug_candle = Some(Candle {
+        open: sug_info.candle.enter,
+        high: sug_info.candle.max,
+        low: sug_info.candle.min,
+        close: sug_info.candle.exit,
     });
-    let sug_direction = sug_info.map_or(0, |info| {
-        if info.direction.is_long() {
-            1
-        } else if info.direction.is_short() {
-            -1
-        } else {
-            0
-        }
-    });
-    let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| {
-        SignalIndicatorSnapshot {
-            ntps: info.indicator.ntps,
-        }
-    });
+    let sug_direction = if sug_info.direction.is_long() {
+        1
+    } else if sug_info.direction.is_short() {
+        -1
+    } else {
+        0
+    };
+    let signal = SignalIndicatorSnapshot {
+        ntps: sug_info.indicator.ntps,
+    };
 
     SugInfoSnapshot {
         fast_candle,
@@ -429,7 +423,7 @@ mod tests {
             oi: None,
         };
 
-        let sug_snap = build_sug_info_snapshot(Some(&sug_info));
+        let sug_snap = build_sug_info_snapshot(&sug_info);
         assert!(sug_snap.fast_candle.is_some());
         assert!(sug_snap.fast_candle.unwrap().active);
         assert_eq!(sug_snap.signal.ntps, 77);

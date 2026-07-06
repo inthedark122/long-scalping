@@ -11,6 +11,7 @@ use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
 use lte_strategy_bridge::indicator_access::TimeframeSec;
+use lte_strategy_bridge::sug_info::SuggestionInfo;
 
 const TF_1M: i64 = TimeframeSec::Tf1m.as_i64();
 const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
@@ -27,7 +28,13 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             state.history.update(&input.indicators, timeframes);
             refresh_indicators(input, state, timeframes, false)
         }
-        ModuleEvent::SugInfo => process_realtime(input, state),
+        ModuleEvent::SugInfo => match input.sug_info.as_ref() {
+            Some(sug_info) => process_realtime(input, state, sug_info),
+            None => ModuleOutput {
+                debug: "sug-info missing".to_string(),
+                ..Default::default()
+            },
+        },
         ModuleEvent::Signal { code, values, .. } => handle_signal(code, values, state),
         ModuleEvent::Action { name, values } => handle_action(input, name, values),
         ModuleEvent::NewPosition {
@@ -103,8 +110,10 @@ fn handle_new_position(
 
     let side = dir_to_position(direction);
     let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
-    let sug_snapshot = market_data::build_sug_info_snapshot(input.sug_info.as_ref());
-    let plan = exit::plan(&snapshot, &sug_snapshot, input.price, side);
+    let plan = input.sug_info.as_ref().and_then(|sug_info| {
+        let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
+        exit::plan(&snapshot, &sug_snapshot, input.price, side)
+    });
     let mut tp_orders = Vec::new();
     if let Some(plan) = plan {
         state.position.take_profit = plan.take_profit;
@@ -212,6 +221,9 @@ fn refresh_indicators(
     );
 
     let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    if is_init || timeframes.contains(&TF_1M) {
+        cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
+    }
     vlines::update(
         &mut state.vlines,
         snapshot.tf1m.mrc.lines(),
@@ -225,7 +237,11 @@ fn refresh_indicators(
     }
 }
 
-fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
+fn process_realtime(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    sug_info: &SuggestionInfo,
+) -> ModuleOutput {
     state.ticks = state.ticks.saturating_add(1);
     sync_position_state(
         state,
@@ -243,29 +259,15 @@ fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutpu
     );
 
     let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
-    let sug_snapshot = market_data::build_sug_info_snapshot(input.sug_info.as_ref());
-
-    let cas_sug = if let Some(sug) = input.sug_info.as_ref() {
-        let candle = crate::model::Candle {
-            open: sug.candle.enter,
-            high: sug.candle.max,
-            low: sug.candle.min,
-            close: sug.candle.exit,
-        };
-        let dir_hint = if sug.direction.is_long() {
-            1
-        } else if sug.direction.is_short() {
-            -1
-        } else {
-            0
-        };
-        cascade::update_from_candle(&mut state.cascade_sug, &candle, dir_hint)
-    } else {
-        cascade::CascadeSignal {
-            dir: state.cascade_sug.dir,
-            ..Default::default()
-        }
+    let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
+    let candle = crate::model::Candle {
+        open: sug_info.candle.enter,
+        high: sug_info.candle.max,
+        low: sug_info.candle.min,
+        close: sug_info.candle.exit,
     };
+    let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
+    let cas_sug = cascade::update_from_candle(&mut state.cascade_sug, &candle);
 
     let regime = regime::classify_regime(
         &snapshot.tf5m,
@@ -278,7 +280,7 @@ fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutpu
 
     if decision.market_state == MarketState::Sideways
         && mrc1.bullish_structure
-        && cas_sug.dir > 0
+        && cas_tf.dir > 0
     {
         decision = TradeDecision {
             market_state: MarketState::Long,
@@ -296,7 +298,7 @@ fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutpu
         };
     } else if decision.market_state == MarketState::Sideways
         && mrc1.bearish_structure
-        && cas_sug.dir < 0
+        && cas_tf.dir < 0
     {
         decision = TradeDecision {
             market_state: MarketState::Short,
@@ -317,13 +319,8 @@ fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutpu
     if matches!(input.event, ModuleEvent::SugInfo)
         && matches!(decision.market_state, MarketState::Long | MarketState::Short)
         && matches!(cas_sug.phase, cascade::MovementPhase::Reversal)
-        && sug_snapshot.sug_candle.is_some()
     {
-        let started_at_ms = input
-            .sug_info
-            .as_ref()
-            .map(|info| info.system_time as u64)
-            .unwrap_or(0);
+        let started_at_ms = sug_info.system_time as u64;
         decision.entry_reason = Some(EntryReason::SugInfoMovement {
             price: input.price,
             started_at_ms,
@@ -341,6 +338,7 @@ fn process_realtime(input: &ModuleInput, state: &mut EngineState) -> ModuleOutpu
             state,
             &snapshot,
             &regime,
+            &cas_tf,
             &cas_sug,
             &decision,
             &execution.note,

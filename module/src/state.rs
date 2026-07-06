@@ -62,6 +62,7 @@ pub struct EngineState {
     pub position: PositionRuntime,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
+    pub cascade_tf: CascadeState,
     pub cascade_sug: CascadeState,
     pub exit_memory: ExitMemory,
 }
@@ -77,6 +78,7 @@ impl Default for EngineState {
             position: PositionRuntime::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
+            cascade_tf: CascadeState::default(),
             cascade_sug: CascadeState::default(),
             exit_memory: ExitMemory::default(),
         }

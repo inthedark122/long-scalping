@@ -1,4 +1,4 @@
-use crate::model::Candle;
+use crate::model::{Candle, TimeframeSnapshot};
 use crate::state::CascadeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
     }
 }
 
-pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: i8) -> CascadeSignal {
+pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> CascadeSignal {
     let high = candle.high;
     let low = candle.low;
     let close = candle.close;
@@ -129,15 +129,10 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: 
         0
     };
 
-    let agreed_dir = if dir_hint != 0 {
-        dir_hint
-    } else {
-        raw_dir
-    };
-    let dir = if agreed_dir == 0 {
+    let dir = if raw_dir == 0 {
         memory.dir
     } else {
-        agreed_dir
+        raw_dir
     };
 
     let phase_hint = if dir == 0 {
@@ -194,10 +189,19 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle, dir_hint: 
     }
 }
 
+pub fn preview_from_candle(memory: &CascadeState, candle: &Candle) -> CascadeSignal {
+    let mut preview = *memory;
+    update_from_candle(&mut preview, candle)
+}
+
+pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
+    update_from_candle(memory, &tf.candle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Candle;
+    use crate::model::{Candle, MrcBands};
 
     fn candle(open: f64, high: f64, low: f64, close: f64) -> Candle {
         Candle {
@@ -211,10 +215,10 @@ mod tests {
     #[test]
     fn movement_starts_then_builds() {
         let mut state = CascadeState::default();
-        let first = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1);
+        let first = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8));
         assert_eq!(first.phase, MovementPhase::Starting);
 
-        let second = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 1);
+        let second = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5));
         assert!(matches!(second.phase, MovementPhase::Building | MovementPhase::Mature));
         assert!(second.dir > 0);
     }
@@ -222,9 +226,9 @@ mod tests {
     #[test]
     fn counter_move_and_reversal_are_flagged() {
         let mut state = CascadeState::default();
-        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1);
-        let _ = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 1);
-        let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8), -1);
+        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8));
+        let _ = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5));
+        let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8));
         assert_eq!(reversal.phase, MovementPhase::Reversal);
         assert!(reversal.completed_size > 0.0);
     }
