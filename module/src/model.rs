@@ -317,14 +317,51 @@ pub struct RegimeSnapshot {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct RiskSnapshot {
-    pub risk_high: bool,
     pub fail_streak: u32,
     pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EntryWaitSolution {
+    ReclaimLevel {
+        source: String,
+        level: f64,
+        band_low: f64,
+        band_high: f64,
+    },
+    ReclaimDpsignal {
+        source: String,
+        anchor: f64,
+        distance_pct: f64,
+        band_low: f64,
+        band_high: f64,
+    },
+    WaitForCooling {
+        note: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntryWait {
+    pub reason: String,
+    pub solutions: Vec<EntryWaitSolution>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EntryGate {
+    Open { notes: Vec<String> },
+    Wait(EntryWait),
+}
+
+impl Default for EntryGate {
+    fn default() -> Self {
+        Self::Open { notes: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TradeDecision {
     pub market_state: MarketState,
-    pub allow_entry: bool,
-    pub reason: String,
+    pub entry: EntryGate,
 }

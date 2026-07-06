@@ -2,7 +2,6 @@ use crate::model::{Candle, MrcBands, RiskSnapshot};
 use crate::state::SharpReturnState;
 
 const RETURN_WINDOW_BARS: u64 = 3;
-const FAIL_THRESHOLD: u32 = 2;
 
 fn zone(mrc: &MrcBands, price: f64) -> i32 {
     if !mrc.ordered() {
@@ -61,7 +60,6 @@ pub fn update(
     }
 
     RiskSnapshot {
-        risk_high: memory.fail_streak >= FAIL_THRESHOLD,
         fail_streak: memory.fail_streak,
         active: memory.active,
     }
@@ -103,7 +101,7 @@ mod tests {
             1,
         );
         assert!(low_risk.active);
-        assert!(!low_risk.risk_high);
+        assert_eq!(low_risk.fail_streak, 0);
 
         update(
             &mut state,
@@ -151,6 +149,6 @@ mod tests {
             &mrc(),
             8,
         );
-        assert!(high_risk.risk_high);
+        assert_eq!(high_risk.fail_streak, 2);
     }
 }

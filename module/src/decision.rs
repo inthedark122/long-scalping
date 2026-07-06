@@ -1,6 +1,6 @@
-use crate::model::{RegimeSnapshot, RiskSnapshot, TradeDecision};
+use crate::model::{EntryGate, EntryWait, RegimeSnapshot, RiskSnapshot, TradeDecision};
 
-pub fn decide(regime: RegimeSnapshot, risk: RiskSnapshot) -> TradeDecision {
+pub fn decide(regime: RegimeSnapshot, _risk: RiskSnapshot) -> TradeDecision {
     let mut reason = if regime.fallback_used {
         "15m-fallback".to_string()
     } else {
@@ -10,13 +10,17 @@ pub fn decide(regime: RegimeSnapshot, risk: RiskSnapshot) -> TradeDecision {
     if regime.blocked_by_context {
         reason.push_str("|1h-block");
     }
-    if risk.risk_high {
-        reason.push_str("|risk-high");
-    }
 
     TradeDecision {
         market_state: regime.confirmed,
-        allow_entry: !risk.risk_high && !regime.blocked_by_context,
-        reason,
+        entry: if regime.blocked_by_context {
+            EntryGate::Wait(EntryWait {
+                reason,
+                solutions: vec![],
+                notes: vec!["1h context blocks overconfident entry".to_string()],
+            })
+        } else {
+            EntryGate::Open { notes: vec![reason] }
+        },
     }
 }

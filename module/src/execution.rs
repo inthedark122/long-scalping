@@ -1,5 +1,5 @@
 use crate::model::IndicatorSnapshot;
-use crate::model::{ExitKind, MarketState, PositionState, TradeDecision};
+use crate::model::{EntryGate, ExitKind, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open};
 use crate::exit;
 use crate::prediction;
@@ -29,10 +29,14 @@ fn open_note(
         Direction::Short => "short",
         _ => "both",
     };
+    let entry_note = match &decision.entry {
+        EntryGate::Open { notes } => notes.join("|"),
+        EntryGate::Wait(wait) => format!("wait:{}|{}", wait.reason, wait.notes.join("|")),
+    };
     format!(
         "open {} because {} price={:.4} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
-        decision.reason,
+        entry_note,
         price,
         amount,
         state.cfg.cap_init,
@@ -206,22 +210,35 @@ pub fn evaluate(
         };
     }
 
-    if !decision.allow_entry {
-        return ExecutionResult {
-            note: "entry-blocked".to_string(),
-            ..Default::default()
-        };
-    }
-
     let entry_side = match decision.market_state {
         MarketState::Long => PositionState::Long,
         MarketState::Short => PositionState::Short,
         MarketState::Sideways => PositionState::Flat,
     };
 
-    if let Some(reason) = prediction::entry_wait_reason(snapshot, state, entry_side) {
+    match &decision.entry {
+        EntryGate::Wait(wait) => {
+            return ExecutionResult {
+                note: format!(
+                    "entry-wait reason={} solutions={} notes={}",
+                    wait.reason,
+                    wait.solutions.len(),
+                    wait.notes.join("|")
+                ),
+                ..Default::default()
+            };
+        }
+        EntryGate::Open { .. } => {}
+    }
+
+    if let EntryGate::Wait(wait) = prediction::entry_gate(snapshot, state, entry_side) {
         return ExecutionResult {
-            note: format!("entry-blocked {}", reason),
+            note: format!(
+                "entry-wait reason={} solutions={} notes={}",
+                wait.reason,
+                wait.solutions.len(),
+                wait.notes.join("|")
+            ),
             ..Default::default()
         };
     }
@@ -306,6 +323,13 @@ mod tests {
         }
     }
 
+    fn decision(market_state: MarketState) -> TradeDecision {
+        TradeDecision {
+            market_state,
+            entry: crate::model::EntryGate::Open { notes: vec![] },
+        }
+    }
+
     #[test]
     fn cap_init_zero_blocks_entries() {
         let mut state = EngineState::default();
@@ -314,11 +338,7 @@ mod tests {
             &input(),
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
     }
@@ -330,11 +350,7 @@ mod tests {
             &input(),
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Sideways,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Sideways),
         );
         assert!(result.open_positions.is_empty());
     }
@@ -366,11 +382,7 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
         assert!(result.note.contains("fc-phase=Building"));
@@ -403,11 +415,7 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
         assert!(result.note.contains("fc-phase=Tiring"));
@@ -422,11 +430,7 @@ mod tests {
             &input(),
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].amount, Some(10.0));
@@ -459,11 +463,7 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
     }
@@ -499,11 +499,7 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
         assert!(result.note.contains("tp-unreliable"));
@@ -544,14 +540,52 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("post-sl-wait"));
+        assert!(result.note.contains("post-sl-recovery"));
+    }
+
+    #[test]
+    fn post_sl_wait_uses_dpsignal_band() {
+        let mut state = EngineState::default();
+        state.last_exit_kind = Some(ExitKind::StopLoss);
+        state.last_exit_side = PositionState::Long;
+        state.last_exit_price = 100.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 99.0,
+            high: 99.4,
+            low: 98.7,
+            close: 99.1,
+        };
+        snapshot.tf1m.dp_zee = 101.0;
+        snapshot.tf1m.dp_zee1 = 100.5;
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &snapshot,
+            &decision(MarketState::Long),
+        );
+        assert!(result.note.contains("post-sl-recovery"));
+        assert!(result.note.contains("solutions=3"));
     }
 
     #[test]
@@ -581,11 +615,7 @@ mod tests {
             &input(),
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
         assert!(result.note.contains("candle-not-small"));
@@ -638,11 +668,7 @@ mod tests {
             &inp,
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert_eq!(result.close_positions.len(), 1);
         assert!(result.note.contains("close-long tp"));
@@ -695,11 +721,7 @@ mod tests {
             &inp,
             &mut state,
             &snapshot,
-            &TradeDecision {
-                market_state: MarketState::Short,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Short),
         );
         assert_eq!(result.close_positions.len(), 1);
         assert!(result.note.contains("close-short sl"));
@@ -756,11 +778,7 @@ mod tests {
             &inp,
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Short,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Short),
         );
         assert!(result.open_positions.is_empty());
     }
@@ -774,11 +792,7 @@ mod tests {
             &inp,
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
         let open = &result.open_positions[0];
@@ -797,11 +811,7 @@ mod tests {
             &inp,
             &mut state,
             &IndicatorSnapshot::default(),
-            &TradeDecision {
-                market_state: MarketState::Short,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Short),
         );
         assert_eq!(result.open_positions.len(), 1);
         let open = &result.open_positions[0];
@@ -855,11 +865,7 @@ mod tests {
                 fast_candle: None,
                 signal: Default::default(),
             },
-            &TradeDecision {
-                market_state: MarketState::Long,
-                allow_entry: true,
-                reason: String::new(),
-            },
+            &decision(MarketState::Long),
         );
         assert_eq!(result.update_positions.len(), 1);
         assert!(result.note.contains("tp="));

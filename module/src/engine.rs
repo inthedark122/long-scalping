@@ -225,7 +225,6 @@ fn process(
         )
     } else {
         RiskSnapshot {
-            risk_high: state.sharp_return.fail_streak >= 2,
             fail_streak: state.sharp_return.fail_streak,
             active: state.sharp_return.active,
         }
@@ -244,8 +243,16 @@ fn process(
     if decision.market_state == MarketState::Sideways && mrc1.bullish_structure && cas1.dir > 0 {
         decision = TradeDecision {
             market_state: MarketState::Long,
-            allow_entry: decision.allow_entry,
-            reason: format!("{}|1m-recovery", decision.reason),
+            entry: match decision.entry {
+                crate::model::EntryGate::Open { mut notes } => {
+                    notes.push("1m-recovery".to_string());
+                    crate::model::EntryGate::Open { notes }
+                }
+                crate::model::EntryGate::Wait(mut wait) => {
+                    wait.notes.push("1m-recovery".to_string());
+                    crate::model::EntryGate::Wait(wait)
+                }
+            },
         };
     } else if decision.market_state == MarketState::Sideways
         && mrc1.bearish_structure
@@ -253,8 +260,16 @@ fn process(
     {
         decision = TradeDecision {
             market_state: MarketState::Short,
-            allow_entry: decision.allow_entry,
-            reason: format!("{}|1m-breakdown", decision.reason),
+            entry: match decision.entry {
+                crate::model::EntryGate::Open { mut notes } => {
+                    notes.push("1m-breakdown".to_string());
+                    crate::model::EntryGate::Open { notes }
+                }
+                crate::model::EntryGate::Wait(mut wait) => {
+                    wait.notes.push("1m-breakdown".to_string());
+                    crate::model::EntryGate::Wait(wait)
+                }
+            },
         };
     }
 
