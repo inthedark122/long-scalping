@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4
+
+Margin-sized entry and min-notional handling.
+
+- Fixed initial budget math so `entry_budget()` stays at margin size instead of multiplying by leverage too early.
+- Kept `trading_amount` as a guardrail for normal position sizing, with extra reserve only for specific multi-entry cases.
+- Removed the hardcoded min-notional fallback so symbols without a declared minimum can still trade small sizes.
+
 ## 1.0.3
 
 Fast-candle entry gating and exit-state tracking.
