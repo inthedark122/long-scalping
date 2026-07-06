@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3
+
+Fast-candle entry gating and exit-state tracking.
+
+- Restored `fast_candle_entry_block` as a dedicated confirmation gate for first entry and continuation filtering.
+- Kept entry wait policy layered on top of the FC gate with post-SL reclaim checks and TP reliability checks.
+- Added stored TP/SL tracking in position runtime so the next tick can reason about the last exit cleanly.
+- Preserved the one-position limit-only model and the current `cap_init` / `trading_amount` risk surface.
+
 ## 1.0.2
 
 `cap_init` risk-model reset.

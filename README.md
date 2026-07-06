@@ -1,6 +1,6 @@
 # Long Scalping
 
-`1.0.2` is the limit-only release for a one-position regime trader built for the LTE dynamic module bridge.
+`1.0.3` is the limit-only release for a one-position regime trader built for the LTE dynamic module bridge.
 
 The module uses only `MRC`, `DPSignal`, `ZigZagTrend`, candle OHLC, and live price. `5m` is the primary regime timeframe, `1m` handles execution, `15m` is the fallback confirmer, and `1h` is context only. The engine always classifies the market as `Long`, `Short`, or `Sideways`.
 
