@@ -16,10 +16,11 @@ fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
 fn candidate_exit_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
+    cascade: &crate::state::CascadeState,
     price: f64,
     side: PositionState,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::plan(snapshot, sug_snapshot, price, side)
+    exit::plan(snapshot, sug_snapshot, cascade, price, side)
 }
 
 pub fn fast_candle_entry_block(
@@ -233,7 +234,7 @@ pub fn entry_gate(
     }
 
     let plan = if let Some(plan) =
-        candidate_exit_plan(snapshot, sug_snapshot, snapshot.tf1m.candle.close, side)
+        candidate_exit_plan(snapshot, sug_snapshot, &state.cascade_sug, snapshot.tf1m.candle.close, side)
     {
         plan
     } else {

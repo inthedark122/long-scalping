@@ -201,7 +201,7 @@ pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSigna
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Candle, MrcBands};
+    use crate::model::Candle;
 
     fn candle(open: f64, high: f64, low: f64, close: f64) -> Candle {
         Candle {

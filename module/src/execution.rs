@@ -120,7 +120,12 @@ fn initialize_exit_plan(
         PositionState::Short => Direction::Short,
         PositionState::Flat => return None,
     };
-    let plan = exit::plan(snapshot, sug_snapshot, input.price, side)?;
+    let reference_price = if state.position.entry_price > 0.0 {
+        state.position.entry_price
+    } else {
+        input.price
+    };
+    let plan = exit::plan(snapshot, sug_snapshot, &state.cascade_sug, reference_price, side)?;
     state.position.take_profit = plan.take_profit;
     state.position.stop_loss = plan.stop_loss;
     state.position.exit_tp_reliable = plan.tp_reliable;

@@ -112,7 +112,7 @@ fn handle_new_position(
     let snapshot = market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
     let plan = input.sug_info.as_ref().and_then(|sug_info| {
         let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-        exit::plan(&snapshot, &sug_snapshot, input.price, side)
+        exit::plan(&snapshot, &sug_snapshot, &state.cascade_sug, entry_price, side)
     });
     let mut tp_orders = Vec::new();
     if let Some(plan) = plan {
