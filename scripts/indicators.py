@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Print the surviving indicator set for the 1.0.3 release.
+Print the surviving indicator set for the current release.
 """
 
 import argparse
@@ -68,7 +68,7 @@ def print_snapshot(symbol: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Indicator reader for the 1.0.3 release")
+    parser = argparse.ArgumentParser(description="Indicator reader for the current release")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--symbol", default=DEFAULT_SYMBOL)

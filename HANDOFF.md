@@ -4,9 +4,8 @@ Last updated 2026-07-06.
 
 ## Baseline
 
-This repo now tracks the `1.0.3` release only.
+This repo now tracks the current release only.
 
-- Module version: `1.0.3`
 - Rust crate: `module/`
 - Runtime model: one position at a time
 - Market states: `Long`, `Short`, `Sideways`
