@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.7
+
+Module release refresh.
+
+- Bumped the module crate and release metadata to `1.0.7`.
+- Aligned the active bot configuration and module manifest template with the new version.
+- Kept the current structural scalping runtime unchanged for this release.
+
 ## 1.0.6
 
 SugInfo scalping default and movement research refresh.
