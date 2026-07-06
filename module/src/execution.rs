@@ -1,4 +1,5 @@
 use crate::exit;
+use crate::detection::cascade::CascadeSignal;
 use crate::model::IndicatorSnapshot;
 use crate::model::{EntryGate, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::model::SugInfoSnapshot;
@@ -240,12 +241,31 @@ fn ensure_active_exit_order(
     )
 }
 
+#[cfg(test)]
 pub fn evaluate(
     input: &ModuleInput,
     state: &mut EngineState,
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     decision: &TradeDecision,
+) -> ExecutionResult {
+    evaluate_with_cascade(
+        input,
+        state,
+        snapshot,
+        sug_snapshot,
+        decision,
+        &CascadeSignal::default(),
+    )
+}
+
+pub fn evaluate_with_cascade(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    decision: &TradeDecision,
+    cascade: &CascadeSignal,
 ) -> ExecutionResult {
     let long = input
         .positions
@@ -318,7 +338,9 @@ pub fn evaluate(
         EntryGate::Open { .. } => {}
     }
 
-    if let EntryGate::Wait(wait) = prediction::entry_gate(snapshot, sug_snapshot, state, entry_side) {
+    if let EntryGate::Wait(wait) =
+        prediction::entry_gate(snapshot, sug_snapshot, cascade, state, entry_side)
+    {
         return ExecutionResult {
             note: format!(
                 "entry-wait reason={} solutions={} notes={}",

@@ -20,11 +20,13 @@ impl Default for MovementPhase {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CascadeSignal {
     pub dir: i8,
+    pub prev_dir: i8,
     pub strength: f64,
     pub stretched: bool,
     pub phase: MovementPhase,
     pub completed_size: f64,
     pub average_size: f64,
+    pub samples: u32,
     pub break_price: f64,
 }
 
@@ -141,6 +143,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         update_block(memory, dir, high, low, close)
     };
 
+    let prev_dir = memory.dir;
     memory.dir = if dir == 0 { memory.dir } else { dir };
     memory.last_close = close;
     memory.run_extreme = if memory.dir >= 0 {
@@ -180,11 +183,13 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
 
     CascadeSignal {
         dir: memory.dir,
+        prev_dir,
         strength,
         stretched,
         phase,
         completed_size: active_size,
         average_size,
+        samples: memory.samples,
         break_price: memory.breaks[memory.break_n.saturating_sub(1).min(memory.breaks.len() - 1)],
     }
 }

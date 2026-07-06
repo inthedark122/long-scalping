@@ -2,8 +2,9 @@ use crate::detection::levels;
 use crate::exit;
 use crate::model::{
     EntryGate, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase, IndicatorSnapshot,
-    PositionState, SugInfoSnapshot,
+    MarketState, PositionState, SugInfoSnapshot,
 };
+use crate::detection::cascade::CascadeSignal;
 use crate::state::EngineState;
 
 fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
@@ -21,6 +22,86 @@ fn candidate_exit_plan(
     side: PositionState,
 ) -> Option<crate::exit::ExitPlan> {
     exit::plan(snapshot, sug_snapshot, cascade, price, side)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementEntryKind {
+    ReverseReady,
+    SafeContinuation,
+}
+
+#[derive(Debug, Clone)]
+pub struct MovementEntryPlan {
+    pub market_state: MarketState,
+    pub price: f64,
+    pub notes: Vec<String>,
+}
+
+fn movement_fill_price(snapshot: &IndicatorSnapshot, market_state: MarketState) -> f64 {
+    match market_state {
+        MarketState::Long => snapshot.tf1m.candle.low.max(f64::EPSILON),
+        MarketState::Short => snapshot.tf1m.candle.high.max(f64::EPSILON),
+        MarketState::Sideways => snapshot.tf1m.candle.close.max(f64::EPSILON),
+    }
+}
+
+pub fn movement_entry_plan(
+    snapshot: &IndicatorSnapshot,
+    cascade: &CascadeSignal,
+) -> Option<MovementEntryPlan> {
+    if cascade.samples < 3 || cascade.average_size <= 0.0 || cascade.dir == 0 {
+        return None;
+    }
+
+    let stable = cascade.samples >= 3;
+    let kind = if stable && cascade.strength >= 1.3 {
+        Some(MovementEntryKind::ReverseReady)
+    } else if stable && cascade.strength <= 0.8 {
+        Some(MovementEntryKind::SafeContinuation)
+    } else {
+        None
+    }?;
+
+    let market_state = match kind {
+        MovementEntryKind::ReverseReady => match cascade.prev_dir {
+            1 => MarketState::Short,
+            -1 => MarketState::Long,
+            _ => return None,
+        },
+        MovementEntryKind::SafeContinuation => match cascade.dir {
+            1 => MarketState::Long,
+            -1 => MarketState::Short,
+            _ => return None,
+        },
+    };
+
+    let price = movement_fill_price(snapshot, market_state);
+    let mut notes = vec![
+        "movement-research".to_string(),
+        format!(
+            "kind={}",
+            match kind {
+                MovementEntryKind::ReverseReady => "reverse-ready",
+                MovementEntryKind::SafeContinuation => "safe-continuation",
+            }
+        ),
+        format!("dir={}", cascade.dir),
+        format!("prev_dir={}", cascade.prev_dir),
+        format!("strength={:.2}", cascade.strength),
+        format!("avg={:.4}", cascade.average_size),
+        format!("entry={:.4}", price),
+    ];
+    if matches!(kind, MovementEntryKind::ReverseReady) {
+        notes.push("reverse-entry".to_string());
+    } else {
+        notes.push("continuation-entry".to_string());
+    }
+
+    Some(MovementEntryPlan {
+        market_state,
+        price,
+        notes,
+    })
 }
 
 pub fn fast_candle_entry_block(
@@ -122,6 +203,7 @@ fn sug_entry_gate(
 pub fn entry_gate(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
+    cascade: &CascadeSignal,
     state: &EngineState,
     side: PositionState,
 ) -> EntryGate {
@@ -227,6 +309,12 @@ pub fn entry_gate(
             PositionState::Flat => {}
             _ => {}
         }
+    }
+
+    if let Some(plan) = movement_entry_plan(snapshot, cascade) {
+        return EntryGate::Open {
+            notes: plan.notes,
+        };
     }
 
     if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, side) {

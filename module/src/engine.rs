@@ -6,6 +6,7 @@ use crate::exit;
 use crate::market_data;
 use crate::model::EntryReason;
 use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, TradeDecision};
+use crate::prediction;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
@@ -275,7 +276,20 @@ fn process_realtime(
         &snapshot.tf1h,
     );
     let mut decision = decision::decide(regime);
-    let entry_reason = decision.entry_reason.clone();
+
+    if matches!(decision.entry, crate::model::EntryGate::Open { .. }) {
+        if let Some(plan) = prediction::movement_entry_plan(&snapshot, &cas_sug) {
+            decision.market_state = plan.market_state;
+            decision.entry = crate::model::EntryGate::Open {
+                notes: plan.notes.clone(),
+            };
+            decision.entry_reason = Some(EntryReason::SugInfoMovement {
+                price: plan.price,
+                started_at_ms: sug_info.system_time as u64,
+            });
+        }
+    }
+
     let mrc1 = mrc::analyze(&snapshot.tf1m.mrc, input.price);
 
     if decision.market_state == MarketState::Sideways
@@ -294,7 +308,7 @@ fn process_realtime(
                     crate::model::EntryGate::Wait(wait)
                 }
             },
-            entry_reason: entry_reason.clone(),
+            entry_reason: decision.entry_reason.clone(),
         };
     } else if decision.market_state == MarketState::Sideways
         && mrc1.bearish_structure
@@ -312,22 +326,18 @@ fn process_realtime(
                     crate::model::EntryGate::Wait(wait)
                 }
             },
-            entry_reason: entry_reason.clone(),
+            entry_reason: decision.entry_reason.clone(),
         };
     }
 
-    if matches!(input.event, ModuleEvent::SugInfo)
-        && matches!(decision.market_state, MarketState::Long | MarketState::Short)
-        && matches!(cas_sug.phase, cascade::MovementPhase::Reversal)
-    {
-        let started_at_ms = sug_info.system_time as u64;
-        decision.entry_reason = Some(EntryReason::SugInfoMovement {
-            price: input.price,
-            started_at_ms,
-        });
-    }
-
-    let execution = execution::evaluate(input, state, &snapshot, &sug_snapshot, &decision);
+    let execution = execution::evaluate_with_cascade(
+        input,
+        state,
+        &snapshot,
+        &sug_snapshot,
+        &decision,
+        &cas_sug,
+    );
 
     ModuleOutput {
         open_positions: execution.open_positions,
