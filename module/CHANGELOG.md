@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.10
+
+Created-order timeout and entry reason persistence.
+
+- Stored the live entry reason on position runtime so created-entry timing can be tracked directly.
+- Restored the created-order timeout backstop using the stored `started_at_ms` from the sug-info movement reason.
+- Kept the exact-zero `qty` check so unfilled created positions are not confused with short quantities.
+
 ## 1.0.9
 
 Movement entry alignment release.
