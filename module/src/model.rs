@@ -308,6 +308,7 @@ mod tests {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct RegimeSnapshot {
     pub primary: MarketState,
+    pub fallback: MarketState,
     pub confirmed: MarketState,
     pub fallback_used: bool,
     pub context_1h: MarketState,

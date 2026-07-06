@@ -36,6 +36,7 @@ pub fn classify_regime(
 
     RegimeSnapshot {
         primary,
+        fallback,
         confirmed: if blocked_by_context {
             MarketState::Sideways
         } else {
