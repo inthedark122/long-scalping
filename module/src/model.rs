@@ -379,6 +379,10 @@ pub struct RegimeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryWaitSolution {
+    WaitForSamples {
+        required: u32,
+        current: u32,
+    },
     ReclaimLevel {
         source: String,
         level: f64,

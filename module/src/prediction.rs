@@ -260,6 +260,20 @@ pub fn entry_gate(
         });
     }
 
+    if state.position.side == PositionState::Flat
+        && cascade.samples < 3
+        && sug_snapshot.sug_candle.is_some()
+    {
+        return EntryGate::Wait(EntryWait {
+            reason: "movement-warmup".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForSamples {
+                required: 3,
+                current: cascade.samples,
+            }],
+            notes: vec![format!("cascade-samples={}", cascade.samples)],
+        });
+    }
+
     if matches!(state.exit_memory.kind, Some(ExitKind::StopLoss))
         && state.exit_memory.side == side
         && state.exit_memory.price > 0.0
