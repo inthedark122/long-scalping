@@ -244,12 +244,20 @@ pub fn evaluate(
     }
 
     let amount = entry_budget(input, state);
-    let min_notional = input.symbol_info.min_notional.unwrap_or(1.0).max(1.0);
-    if amount < min_notional {
+    let leverage = (input.leverage as f64).max(1.0);
+    if amount <= 0.0 {
         return ExecutionResult {
             note: "budget-too-small".to_string(),
             ..Default::default()
         };
+    }
+    if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
+        if amount * leverage < min_notional {
+            return ExecutionResult {
+                note: "budget-too-small".to_string(),
+                ..Default::default()
+            };
+        }
     }
 
     match decision.market_state {
@@ -433,7 +441,7 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].amount, Some(10.0));
+        assert_eq!(result.open_positions[0].amount, Some(1.0));
     }
 
     #[test]
@@ -733,7 +741,7 @@ mod tests {
         state.cfg.cap_init = 2.0;
         state.cfg.trading_amount = 50.0;
         let amount = entry_budget(&input(), &mut state);
-        assert_eq!(amount, 10.0);
+        assert_eq!(amount, 1.0);
     }
 
     #[test]
@@ -742,13 +750,13 @@ mod tests {
         state.cfg.cap_init = 2.0;
         state.cfg.trading_amount = 10.0;
         let low = entry_budget(&input(), &mut state);
-        assert_eq!(low, 2.0);
+        assert_eq!(low, 0.2);
 
         let mut state = EngineState::default();
         state.cfg.cap_init = 2.0;
         state.cfg.trading_amount = 100.0;
         let full = entry_budget(&input(), &mut state);
-        assert_eq!(full, 20.0);
+        assert_eq!(full, 2.0);
     }
 
     #[test]

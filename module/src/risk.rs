@@ -9,24 +9,31 @@ fn cap_budget(input: &ModuleInput, state: &EngineState) -> f64 {
     max_trade_notional(input) * state.cfg.cap_ratio()
 }
 
+fn min_notional(input: &ModuleInput) -> Option<f64> {
+    input
+        .symbol_info
+        .min_notional
+        .filter(|value| *value > 0.0)
+}
+
 fn seed_budget(input: &ModuleInput, state: &EngineState) -> f64 {
     let cap_budget = cap_budget(input, state);
-    let min_notional = input.symbol_info.min_notional.unwrap_or(1.0).max(1.0);
     if cap_budget <= 0.0 {
         return 0.0;
     }
     let leverage = (input.leverage as f64).max(1.0);
-    cap_budget.max(min_notional / leverage)
+    match min_notional(input) {
+        Some(min_notional) => cap_budget.max(min_notional / leverage),
+        None => cap_budget,
+    }
 }
 
 pub fn entry_budget(input: &ModuleInput, state: &mut EngineState) -> f64 {
     if state.trade_budget <= 0.0 {
         state.trade_budget = seed_budget(input, state);
     }
-    let leverage = (input.leverage as f64).max(1.0);
-    let deployable = state.trade_budget * leverage;
-    let max_deployable = max_trade_notional(input) * leverage;
-    (deployable * state.cfg.trading_ratio()).min(max_deployable)
+    let max_budget = max_trade_notional(input).max(0.0);
+    (state.trade_budget * state.cfg.trading_ratio()).min(max_budget)
 }
 
 pub fn apply_close_pnl(input: &ModuleInput, state: &mut EngineState, pnl: f64) {
