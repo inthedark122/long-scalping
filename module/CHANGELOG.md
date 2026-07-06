@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.6
+
+SugInfo scalping default and movement research refresh.
+
+- Made `sug_info.candle` the default scalping entry / exit path when the projection data is available.
+- Kept regime and structure as a higher-level fallback for context.
+- Added the movement research note and runnable replay/live script for 1m cascade analysis.
+- Recorded the latest multi-symbol replay results for ETH, HYPE, LAB, and SLX.
+
 ## 1.0.5
 
 Exit memory cleanup and debug trim.
