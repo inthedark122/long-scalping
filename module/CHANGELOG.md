@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.8
+
+Fast TP/SL debug and movement release.
+
+- Routed TP/SL planning through the fast movement cascade path first.
+- Preserved structural TP/SL fallback values for grid and detection context.
+- Added debug source labels so runtime output shows which exit source is active.
+
 ## 1.0.7
 
 Module release refresh.
