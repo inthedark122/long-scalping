@@ -50,7 +50,7 @@ def tf_line(tf: int) -> str:
 
 def print_monitor(debug_line: str):
     os.system("clear")
-    print("Long Scalping")
+    print("Structural scalping")
     print("====================")
     for tf in [60, 300, 900, 3600]:
         print(tf_line(tf))

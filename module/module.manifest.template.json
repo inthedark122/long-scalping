@@ -1,6 +1,6 @@
 {
   "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-  "name": "Long Scalping",
+  "name": "Structural scalping",
   "version": "1.0.3",
   "runtime": "wasm",
   "target": "wasm32-wasip1",

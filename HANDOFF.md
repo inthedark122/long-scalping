@@ -1,4 +1,4 @@
-# long-scalping handoff
+# Structural scalping handoff
 
 Last updated 2026-07-06.
 

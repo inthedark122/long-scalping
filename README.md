@@ -1,4 +1,4 @@
-# Long Scalping
+# Structural scalping
 
 This module is the limit-only release for a one-position regime trader built for the LTE dynamic module bridge.
 

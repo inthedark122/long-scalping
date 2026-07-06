@@ -1,6 +1,6 @@
 # Strategy Overview
 
-This is the limit-entry release for the long-scalping module.
+This is the limit-entry release for the structural scalping module.
 
 ## Trading model
 - Detection regime: `5m`
