@@ -242,8 +242,6 @@ pub fn build_snapshot(
     });
     let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| SignalIndicatorSnapshot {
         ntps: info.indicator.ntps,
-        asset_01: info.indicator.asset_01,
-        asset_diff_01: info.indicator.asset_diff_01,
     });
 
     IndicatorSnapshot {

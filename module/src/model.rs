@@ -167,8 +167,6 @@ impl Default for FastCandlePhase {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SignalIndicatorSnapshot {
     pub ntps: i64,
-    pub asset_01: f64,
-    pub asset_diff_01: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
