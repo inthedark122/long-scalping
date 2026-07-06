@@ -169,6 +169,11 @@ pub struct SignalIndicatorSnapshot {
     pub ntps: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EntryReason {
+    SugInfoMovement { price: f64, started_at_ms: u64 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExitMode {
     Structural,
@@ -413,4 +418,6 @@ impl Default for EntryGate {
 pub struct TradeDecision {
     pub market_state: MarketState,
     pub entry: EntryGate,
+    #[serde(default)]
+    pub entry_reason: Option<EntryReason>,
 }

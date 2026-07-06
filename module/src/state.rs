@@ -101,7 +101,7 @@ impl Default for EngineState {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedState {
     ticks: u64,
     bar_1m: u64,

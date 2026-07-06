@@ -24,5 +24,6 @@ pub fn decide(regime: RegimeSnapshot, _risk: RiskSnapshot) -> TradeDecision {
                 notes: vec![reason],
             }
         },
+        entry_reason: None,
     }
 }

@@ -7,6 +7,7 @@ use crate::market_data;
 use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, RiskSnapshot, TradeDecision};
 use crate::orders::{limit_open, tp_limit_order, tp_mark};
 use crate::risk;
+use crate::model::EntryReason;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
 
@@ -289,6 +290,7 @@ fn process(
         cas1h,
     );
     let mut decision = decision::decide(regime, risk);
+    let entry_reason = decision.entry_reason.clone();
     let mrc1 = mrc::analyze(&snapshot.tf1m.mrc, input.price);
     if decision.market_state == MarketState::Sideways && mrc1.bullish_structure && cas1.dir > 0 {
         decision = TradeDecision {
@@ -303,6 +305,7 @@ fn process(
                     crate::model::EntryGate::Wait(wait)
                 }
             },
+            entry_reason: entry_reason.clone(),
         };
     } else if decision.market_state == MarketState::Sideways
         && mrc1.bearish_structure
@@ -320,7 +323,24 @@ fn process(
                     crate::model::EntryGate::Wait(wait)
                 }
             },
+            entry_reason: entry_reason.clone(),
         };
+    }
+
+    if matches!(input.event, ModuleEvent::SugInfo)
+        && matches!(decision.market_state, MarketState::Long | MarketState::Short)
+        && cas_sug.reversal
+        && snapshot.sug_candle.is_some()
+    {
+        let started_at_ms = input
+            .sug_info
+            .as_ref()
+            .map(|info| info.system_time as u64)
+            .unwrap_or(0);
+        decision.entry_reason = Some(EntryReason::SugInfoMovement {
+            price: input.price,
+            started_at_ms,
+        });
     }
 
     let execution = execution::evaluate(input, state, &snapshot, &decision);

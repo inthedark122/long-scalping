@@ -38,10 +38,23 @@ fn open_note(
         EntryGate::Open { notes } => notes.join("|"),
         EntryGate::Wait(wait) => format!("wait:{}|{}", wait.reason, wait.notes.join("|")),
     };
+    let reason_note = decision
+        .entry_reason
+        .as_ref()
+        .map(|reason| match reason {
+            crate::model::EntryReason::SugInfoMovement {
+                price,
+                started_at_ms,
+            } => {
+                format!("sug-info-movement price={:.4} started_at_ms={}", price, started_at_ms)
+            }
+        })
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "open {} because {} price={:.4} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        "open {} because {} reason={} price={:.4} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
         entry_note,
+        reason_note,
         price,
         amount,
         state.cfg.cap_init,
@@ -328,25 +341,36 @@ pub fn evaluate(
         }
     }
 
+    let entry_price = decision
+        .entry_reason
+        .as_ref()
+        .and_then(|reason| match reason {
+            crate::model::EntryReason::SugInfoMovement { price, .. } => Some(*price),
+        })
+        .unwrap_or(input.price);
+    let movement_reason = matches!(
+        decision.entry_reason,
+        Some(crate::model::EntryReason::SugInfoMovement { .. })
+    );
     match decision.market_state {
         MarketState::Long => ExecutionResult {
             open_positions: vec![limit_open(
                 Direction::Long,
                 amount,
-                input.price,
-                &open_note(Direction::Long, amount, input.price, decision, state),
+                entry_price,
+                &open_note(Direction::Long, amount, entry_price, decision, state),
             )],
-            note: "open-long".to_string(),
+            note: if movement_reason { "open-long-movement" } else { "open-long" }.to_string(),
             ..Default::default()
         },
         MarketState::Short => ExecutionResult {
             open_positions: vec![limit_open(
                 Direction::Short,
                 amount,
-                input.price,
-                &open_note(Direction::Short, amount, input.price, decision, state),
+                entry_price,
+                &open_note(Direction::Short, amount, entry_price, decision, state),
             )],
-            note: "open-short".to_string(),
+            note: if movement_reason { "open-short-movement" } else { "open-short" }.to_string(),
             ..Default::default()
         },
         _ => ExecutionResult {
@@ -387,6 +411,18 @@ mod tests {
         TradeDecision {
             market_state,
             entry: crate::model::EntryGate::Open { notes: vec![] },
+            entry_reason: None,
+        }
+    }
+
+    fn movement_decision(market_state: MarketState, price: f64) -> TradeDecision {
+        TradeDecision {
+            market_state,
+            entry: crate::model::EntryGate::Open { notes: vec![] },
+            entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
+                price,
+                started_at_ms: 1_000,
+            }),
         }
     }
 
@@ -886,6 +922,22 @@ mod tests {
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn movement_entry_uses_signal_price() {
+        let mut state = EngineState::default();
+        let mut inp = input();
+        inp.price = 99.5;
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &movement_decision(MarketState::Long, 99.5),
+        );
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].enter_price, Some(99.5));
+        assert_eq!(result.note, "open-long-movement");
     }
 
     #[test]

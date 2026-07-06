@@ -13,6 +13,12 @@ pub fn render(
     execution_note: &str,
 ) -> String {
     let vt = &state.vlines[4];
+    let entry_reason = match &decision.entry_reason {
+        Some(crate::model::EntryReason::SugInfoMovement { price, .. }) => {
+            format!("sug-info-movement price={:.4}", price)
+        }
+        None => "none".to_string(),
+    };
     let entry = match &decision.entry {
         crate::model::EntryGate::Open { notes } => {
             if notes.is_empty() {
@@ -33,7 +39,7 @@ pub fn render(
         }
     };
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cas1={:?} dir1={} start1={} est1={} sug_dir={} sug_ent={:.4} sug_exit={:.4} casSug={:?} dirSug={} startSug={} estSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cas1={:?} dir1={} start1={} est1={} sug_dir={} sug_ent={:.4} sug_exit={:.4} casSug={:?} dirSug={} startSug={} estSug={} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} entry_reason={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -56,6 +62,7 @@ pub fn render(
         state.trade_budget,
         state.position.side,
         entry,
+        entry_reason,
         state.exit_memory.summary(),
         state.position.exit_mode.as_str(),
         if state.position.tp_mark.is_empty() {
