@@ -11,6 +11,14 @@ pub(crate) fn close(direction: Direction, reason: &str) -> ModuleClosePosition {
     }
 }
 
+pub(crate) fn tp_mark(direction: Direction) -> String {
+    match direction {
+        Direction::Long => "tp-long".to_string(),
+        Direction::Short => "tp-short".to_string(),
+        Direction::Both => "tp-both".to_string(),
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn limit_order(
     direction: Direction,
@@ -57,12 +65,11 @@ pub(crate) fn limit_open(
 }
 
 #[allow(dead_code)]
-pub(crate) fn tp_order_with_band(
+pub(crate) fn tp_limit_order(
     direction: Direction,
     amount: f64,
     price: f64,
     mark: &str,
-    band: &str,
 ) -> ModulePlaceOrder {
     ModulePlaceOrder {
         direction,
@@ -71,7 +78,7 @@ pub(crate) fn tp_order_with_band(
         enter_price: price,
         take_profit: None,
         stop_loss: None,
-        mark: format!("{}:{}", mark, band),
+        mark: mark.to_string(),
         order_side: match direction {
             Direction::Long => ModuleOrderSide::Sell,
             Direction::Short => ModuleOrderSide::Buy,

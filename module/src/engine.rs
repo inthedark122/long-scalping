@@ -1,14 +1,14 @@
 use crate::debug;
 use crate::decision;
 use crate::detection::{cascade, mrc, regime, sharp_return, vlines};
-use crate::exit;
 use crate::execution;
+use crate::exit;
 use crate::market_data;
-use crate::model::{MarketState, RiskSnapshot, TradeDecision};
-use crate::orders::limit_open;
+use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, RiskSnapshot, TradeDecision};
+use crate::orders::{limit_open, tp_limit_order, tp_mark};
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
-use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput};
+use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
 
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
@@ -94,27 +94,46 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 take_profit: 0.0,
                 stop_loss: 0.0,
                 exit_tp_reliable: false,
+                exit_mode: ExitMode::Structural,
+                tp_mark: tp_mark(*direction),
+                trail_anchor: 0.0,
             };
             let side = dir_to_position(*direction);
-            let plan = exit::plan(
-                &market_data::build_snapshot(
-                    &state.history,
-                    &input.indicators,
-                    input.sug_info.as_ref(),
-                    input.price,
-                ),
+            let snapshot = market_data::build_snapshot(
+                &state.history,
+                &input.indicators,
+                input.sug_info.as_ref(),
                 input.price,
-                side,
             );
+            let plan = exit::plan(&snapshot, input.price, side);
+            let mut place_orders = Vec::new();
             if let Some(plan) = plan {
                 state.position.take_profit = plan.take_profit;
                 state.position.stop_loss = plan.stop_loss;
+                let amount = input
+                    .positions
+                    .long
+                    .as_ref()
+                    .map(|p| p.notional)
+                    .or_else(|| input.positions.short.as_ref().map(|p| p.notional))
+                    .unwrap_or(0.0);
+                if amount > 0.0 {
+                    place_orders.push(tp_limit_order(
+                        *direction,
+                        amount,
+                        plan.take_profit,
+                        &state.position.tp_mark,
+                    ));
+                }
             }
             ModuleOutput {
-                update_positions: plan
-                    .map(|plan| vec![exit::update_position(side, plan)])
-                    .unwrap_or_default(),
-                debug: format!("new-position {:?} {}", direction, exit::describe(plan)),
+                place_orders,
+                debug: format!(
+                    "new-position {:?} {}",
+                    direction,
+                    plan.map(|plan| exit::describe(Some(plan)))
+                        .unwrap_or_else(|| "tp=n/a sl=n/a".to_string())
+                ),
                 ..Default::default()
             }
         }
@@ -131,12 +150,35 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
         ModuleEvent::OrderUpdate {
             direction,
             status,
+            role,
+            fill_price,
             mark,
             ..
-        } => ModuleOutput {
-            debug: format!("order {:?} {} {:?}", direction, status, mark),
-            ..Default::default()
-        },
+        } => {
+            if matches!(role, OrderRole::TakeProfit | OrderRole::StopLoss) {
+                state.exit_memory = ExitMemory {
+                    side: dir_to_position(*direction),
+                    kind: Some(match role {
+                        OrderRole::TakeProfit => ExitKind::TakeProfit,
+                        OrderRole::StopLoss => ExitKind::StopLoss,
+                        OrderRole::Entry | OrderRole::Other => ExitKind::TakeProfit,
+                    }),
+                    price: if *fill_price > 0.0 {
+                        *fill_price
+                    } else {
+                        input.price
+                    },
+                    take_profit: state.position.take_profit,
+                    stop_loss: state.position.stop_loss,
+                    reliable: state.position.exit_tp_reliable,
+                    tick: state.ticks,
+                };
+            }
+            ModuleOutput {
+                debug: format!("order {:?} {} {:?} {:?}", direction, status, role, mark),
+                ..Default::default()
+            }
+        }
     }
 }
 
@@ -278,7 +320,8 @@ fn process(
     ModuleOutput {
         open_positions: execution.open_positions,
         close_positions: execution.close_positions,
-        update_positions: execution.update_positions,
+        place_orders: execution.place_orders,
+        cancel_orders: execution.cancel_orders,
         debug: debug::render(state, &snapshot, &regime, &risk, &decision, &execution.note),
         ..Default::default()
     }

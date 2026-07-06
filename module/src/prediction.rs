@@ -64,37 +64,43 @@ pub fn entry_gate(
     if let Some(reason) = fast_candle_entry_block(snapshot) {
         return EntryGate::Wait(EntryWait {
             reason: "fast-candle-wait".to_string(),
-            solutions: vec![EntryWaitSolution::WaitForCooling { note: reason.clone() }],
+            solutions: vec![EntryWaitSolution::WaitForCooling {
+                note: reason.clone(),
+            }],
             notes: vec![reason],
         });
     }
 
-    if matches!(state.last_exit_kind, Some(ExitKind::StopLoss))
-        && state.last_exit_side == side
-        && state.last_exit_price > 0.0
+    if matches!(state.exit_memory.kind, Some(ExitKind::StopLoss))
+        && state.exit_memory.side == side
+        && state.exit_memory.price > 0.0
     {
         let price = snapshot.tf1m.candle.close;
         let level_book = levels::structural_levels(snapshot);
-        let band = dp_signal_band(snapshot, state.last_exit_price);
-        let band_low = (state.last_exit_price - band).max(0.0);
-        let band_high = state.last_exit_price + band;
+        let band = dp_signal_band(snapshot, state.exit_memory.price);
+        let band_low = (state.exit_memory.price - band).max(0.0);
+        let band_high = state.exit_memory.price + band;
         let notes = vec![
-            format!("failed_price={:.4}", state.last_exit_price),
+            format!("failed_price={:.4}", state.exit_memory.price),
             format!("current={:.4}", price),
-            format!("dp_distance={:.4}%", if price > 0.0 {
-                ((price - snapshot.tf1m.dp_zee1).abs() / price) * 100.0
-            } else {
-                0.0
-            }),
+            format!(
+                "dp_distance={:.4}%",
+                if price > 0.0 {
+                    ((price - snapshot.tf1m.dp_zee1).abs() / price) * 100.0
+                } else {
+                    0.0
+                }
+            ),
+            state.exit_memory.summary(),
         ];
         match side {
-            PositionState::Long if price < state.last_exit_price => {
+            PositionState::Long if price < state.exit_memory.price => {
                 return EntryGate::Wait(EntryWait {
                     reason: "post-sl-recovery wait-reclaim-above".to_string(),
                     solutions: vec![
                         EntryWaitSolution::ReclaimLevel {
                             source: "failed-level".to_string(),
-                            level: state.last_exit_price,
+                            level: state.exit_memory.price,
                             band_low,
                             band_high,
                         },
@@ -113,7 +119,7 @@ pub fn entry_gate(
                             source: "structural".to_string(),
                             level: level_book
                                 .nearest_above(price)
-                                .unwrap_or(state.last_exit_price),
+                                .unwrap_or(state.exit_memory.price),
                             band_low,
                             band_high,
                         },
@@ -121,13 +127,13 @@ pub fn entry_gate(
                     notes,
                 });
             }
-            PositionState::Short if price > state.last_exit_price => {
+            PositionState::Short if price > state.exit_memory.price => {
                 return EntryGate::Wait(EntryWait {
                     reason: "post-sl-recovery wait-reclaim-below".to_string(),
                     solutions: vec![
                         EntryWaitSolution::ReclaimLevel {
                             source: "failed-level".to_string(),
-                            level: state.last_exit_price,
+                            level: state.exit_memory.price,
                             band_low,
                             band_high,
                         },
@@ -146,7 +152,7 @@ pub fn entry_gate(
                             source: "structural".to_string(),
                             level: level_book
                                 .nearest_below(price)
-                                .unwrap_or(state.last_exit_price),
+                                .unwrap_or(state.exit_memory.price),
                             band_low,
                             band_high,
                         },
@@ -182,7 +188,10 @@ pub fn entry_gate(
         };
         let band = dp_signal_band(snapshot, anchor);
         return EntryGate::Wait(EntryWait {
-            reason: format!("tp-unreliable tp={:.4} sl={:.4}", plan.take_profit, plan.stop_loss),
+            reason: format!(
+                "tp-unreliable tp={:.4} sl={:.4}",
+                plan.take_profit, plan.stop_loss
+            ),
             solutions: vec![
                 EntryWaitSolution::ReclaimDpsignal {
                     source: "dpsignal".to_string(),
@@ -202,9 +211,13 @@ pub fn entry_gate(
                 EntryWaitSolution::ReclaimLevel {
                     source: "structural".to_string(),
                     level: if matches!(side, PositionState::Long) {
-                        level_book.nearest_above(snapshot.tf1m.candle.close).unwrap_or(anchor)
+                        level_book
+                            .nearest_above(snapshot.tf1m.candle.close)
+                            .unwrap_or(anchor)
                     } else {
-                        level_book.nearest_below(snapshot.tf1m.candle.close).unwrap_or(anchor)
+                        level_book
+                            .nearest_below(snapshot.tf1m.candle.close)
+                            .unwrap_or(anchor)
                     },
                     band_low: (anchor - band).max(0.0),
                     band_high: anchor + band,
@@ -214,13 +227,14 @@ pub fn entry_gate(
                 format!("tp={:.4}", plan.take_profit),
                 format!("sl={:.4}", plan.stop_loss),
                 format!("tp_reliable={}", plan.tp_reliable),
+                state.exit_memory.summary(),
             ],
         });
     }
 
-    if matches!(state.last_exit_kind, Some(ExitKind::TakeProfit))
-        && state.last_exit_side == side
-        && !state.last_exit_tp_reliable
+    if matches!(state.exit_memory.kind, Some(ExitKind::TakeProfit))
+        && state.exit_memory.side == side
+        && !state.exit_memory.reliable
     {
         return EntryGate::Wait(EntryWait {
             reason: "post-tp-tight".to_string(),
@@ -234,12 +248,14 @@ pub fn entry_gate(
                 } else {
                     0.0
                 },
-                band_low: (snapshot.tf1m.dp_zee1 - dp_signal_band(snapshot, snapshot.tf1m.dp_zee1)).max(0.0),
+                band_low: (snapshot.tf1m.dp_zee1 - dp_signal_band(snapshot, snapshot.tf1m.dp_zee1))
+                    .max(0.0),
                 band_high: snapshot.tf1m.dp_zee1 + dp_signal_band(snapshot, snapshot.tf1m.dp_zee1),
             }],
             notes: vec![
                 format!("tp={:.4}", plan.take_profit),
                 format!("sl={:.4}", plan.stop_loss),
+                state.exit_memory.summary(),
             ],
         });
     }

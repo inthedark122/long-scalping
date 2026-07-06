@@ -30,7 +30,10 @@ fn add_level(levels: &mut Vec<f64>, value: f64) {
     if !value.is_finite() || value <= 0.0 {
         return;
     }
-    if levels.iter().any(|existing| (existing - value).abs() < f64::EPSILON) {
+    if levels
+        .iter()
+        .any(|existing| (existing - value).abs() < f64::EPSILON)
+    {
         return;
     }
     levels.push(value);
@@ -55,12 +58,7 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
     let mut above = Vec::new();
     let mut below = Vec::new();
 
-    for tf in [
-        snapshot.tf1m,
-        snapshot.tf5m,
-        snapshot.tf15m,
-        snapshot.tf1h,
-    ] {
+    for tf in [snapshot.tf1m, snapshot.tf5m, snapshot.tf15m, snapshot.tf1h] {
         add_level(&mut above, tf.mrc.up_small);
         add_level(&mut above, tf.mrc.up_inner);
         add_level(&mut above, tf.mrc.up_outer);

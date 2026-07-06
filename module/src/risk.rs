@@ -10,10 +10,7 @@ fn cap_budget(input: &ModuleInput, state: &EngineState) -> f64 {
 }
 
 fn min_notional(input: &ModuleInput) -> Option<f64> {
-    input
-        .symbol_info
-        .min_notional
-        .filter(|value| *value > 0.0)
+    input.symbol_info.min_notional.filter(|value| *value > 0.0)
 }
 
 fn seed_budget(input: &ModuleInput, state: &EngineState) -> f64 {

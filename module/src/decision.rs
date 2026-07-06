@@ -20,7 +20,9 @@ pub fn decide(regime: RegimeSnapshot, _risk: RiskSnapshot) -> TradeDecision {
                 notes: vec!["1h context blocks overconfident entry".to_string()],
             })
         } else {
-            EntryGate::Open { notes: vec![reason] }
+            EntryGate::Open {
+                notes: vec![reason],
+            }
         },
     }
 }

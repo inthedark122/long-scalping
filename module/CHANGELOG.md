@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5
+
+Exit memory cleanup and debug trim.
+
+- Removed the live `ExitTrace` object and replaced it with a compact persisted exit memory.
+- Stopped printing trace deltas in debug output.
+- Kept structural TP/SL planning and post-exit memory for re-entry gating.
+
 ## 1.0.4
 
 Margin-sized entry and min-notional handling.

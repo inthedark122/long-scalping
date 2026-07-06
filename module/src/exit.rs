@@ -1,11 +1,5 @@
 use crate::detection::levels;
 use crate::model::{IndicatorSnapshot, PositionState};
-use lte_strategy_bridge::abi::{Direction, ModuleUpdatePosition};
-
-const TP_MIN_PCT: f64 = 1.0;
-const TP_MAX_PCT: f64 = 3.0;
-const SL_MIN_PCT: f64 = 0.45;
-const SL_MAX_PCT: f64 = 1.20;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ExitPlan {
@@ -14,89 +8,47 @@ pub struct ExitPlan {
     pub tp_reliable: bool,
 }
 
-pub fn plan(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Option<ExitPlan> {
+fn compute(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
     }
     let levels = levels::structural_levels(snapshot);
-    let basis = price;
 
     match side {
         PositionState::Long => {
-            let mut tp = levels
-                .nearest_above(price)
-                .unwrap_or(basis * (1.0 + TP_MIN_PCT / 100.0));
-            let mut sl = levels
-                .nearest_below(price)
-                .unwrap_or(basis * (1.0 - SL_MIN_PCT / 100.0));
-
-            tp = tp.min(basis * (1.0 + TP_MAX_PCT / 100.0));
-            sl = sl.max(basis * (1.0 - SL_MAX_PCT / 100.0));
-
-            if tp <= price {
-                tp = basis * (1.0 + TP_MIN_PCT / 100.0);
-            }
-            if sl >= price {
-                sl = basis * (1.0 - SL_MIN_PCT / 100.0);
-            }
-
-            let tp_gap_pct = if basis > 0.0 {
-                (tp - basis).abs() / basis * 100.0
-            } else {
-                0.0
+            let Some(raw_tp) = levels.nearest_above(price) else {
+                return None;
+            };
+            let Some(raw_sl) = levels.nearest_below(price) else {
+                return None;
             };
 
             Some(ExitPlan {
-                take_profit: tp,
-                stop_loss: sl,
-                tp_reliable: tp_gap_pct >= TP_MIN_PCT,
+                take_profit: raw_tp,
+                stop_loss: raw_sl,
+                tp_reliable: true,
             })
         }
         PositionState::Short => {
-            let mut tp = levels
-                .nearest_below(price)
-                .unwrap_or(basis * (1.0 - TP_MIN_PCT / 100.0));
-            let mut sl = levels
-                .nearest_above(price)
-                .unwrap_or(basis * (1.0 + SL_MIN_PCT / 100.0));
-
-            tp = tp.max(basis * (1.0 - TP_MAX_PCT / 100.0));
-            sl = sl.min(basis * (1.0 + SL_MAX_PCT / 100.0));
-
-            if tp >= price {
-                tp = basis * (1.0 - TP_MIN_PCT / 100.0);
-            }
-            if sl <= price {
-                sl = basis * (1.0 + SL_MIN_PCT / 100.0);
-            }
-
-            let tp_gap_pct = if basis > 0.0 {
-                (basis - tp).abs() / basis * 100.0
-            } else {
-                0.0
+            let Some(raw_tp) = levels.nearest_below(price) else {
+                return None;
+            };
+            let Some(raw_sl) = levels.nearest_above(price) else {
+                return None;
             };
 
             Some(ExitPlan {
-                take_profit: tp,
-                stop_loss: sl,
-                tp_reliable: tp_gap_pct >= TP_MIN_PCT,
+                take_profit: raw_tp,
+                stop_loss: raw_sl,
+                tp_reliable: true,
             })
         }
         PositionState::Flat => None,
     }
 }
 
-pub fn update_position(side: PositionState, plan: ExitPlan) -> ModuleUpdatePosition {
-    ModuleUpdatePosition {
-        direction: match side {
-            PositionState::Long => Direction::Long,
-            PositionState::Short => Direction::Short,
-            PositionState::Flat => Direction::Both,
-        },
-        enter_price: None,
-        take_profit: Some(plan.take_profit),
-        stop_loss: Some(plan.stop_loss),
-    }
+pub fn plan(snapshot: &IndicatorSnapshot, price: f64, side: PositionState) -> Option<ExitPlan> {
+    compute(snapshot, price, side)
 }
 
 pub fn describe(plan: Option<ExitPlan>) -> String {
@@ -105,7 +57,11 @@ pub fn describe(plan: Option<ExitPlan>) -> String {
             "tp={:.4} sl={:.4} tp_note={}",
             plan.take_profit,
             plan.stop_loss,
-            if plan.tp_reliable { "reliable" } else { "tight" }
+            if plan.tp_reliable {
+                "reliable"
+            } else {
+                "tight"
+            }
         ),
         None => "tp=n/a sl=n/a".to_string(),
     }

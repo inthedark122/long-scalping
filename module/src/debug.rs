@@ -10,10 +10,6 @@ pub fn render(
     execution_note: &str,
 ) -> String {
     let vt = &state.vlines[4];
-    let fc = snapshot
-        .fast_candle
-        .map(|fc| format!("{:?} {:.4}->{:.4}", fc.phase(&snapshot.tf1m.candle), fc.candle.open, fc.candle.close))
-        .unwrap_or_else(|| "na".to_string());
     let entry = match &decision.entry {
         crate::model::EntryGate::Open { notes } => {
             if notes.is_empty() {
@@ -34,7 +30,7 @@ pub fn render(
         }
     };
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} vml={}/{} fc={} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} cap_init={:.2}% trading_amount={:.2}% budget={:.4} pos={:?} entry={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} trail={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -46,9 +42,18 @@ pub fn render(
         state.trade_budget,
         state.position.side,
         entry,
+        state.exit_memory.summary(),
+        state.position.exit_mode.as_str(),
+        if state.position.tp_mark.is_empty() {
+            "na"
+        } else {
+            &state.position.tp_mark
+        },
+        state.position.take_profit,
+        state.position.stop_loss,
+        state.position.trail_anchor,
         vt.long_side.count,
         vt.short_side.count,
-        fc,
         snapshot.tf1m.volume_gain,
         snapshot.tf1m.gain_zone(),
         snapshot.tf1m.gain_progress_pct(),

@@ -6,9 +6,9 @@ mod execution;
 mod exit;
 mod market_data;
 mod model;
+mod orders;
 mod prediction;
 mod risk;
-mod orders;
 mod state;
 
 use lte_strategy_bridge::run_loop;

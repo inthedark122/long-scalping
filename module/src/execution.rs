@@ -1,19 +1,24 @@
-use crate::model::IndicatorSnapshot;
-use crate::model::{EntryGate, ExitKind, MarketState, PositionState, TradeDecision};
-use crate::orders::{close, limit_open};
 use crate::exit;
+use crate::model::IndicatorSnapshot;
+use crate::model::{EntryGate, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::orders::{close, limit_open, tp_limit_order, tp_mark};
 use crate::prediction;
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
-    Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModuleUpdatePosition,
+    Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
+    ModulePositionSummary,
 };
+
+#[cfg(test)]
+use crate::model::ExitKind;
 
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
     pub close_positions: Vec<ModuleClosePosition>,
-    pub update_positions: Vec<ModuleUpdatePosition>,
+    pub place_orders: Vec<ModulePlaceOrder>,
+    pub cancel_orders: Vec<String>,
     pub note: String,
 }
 
@@ -48,41 +53,187 @@ fn open_note(
 fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     format!(
         "close because {} price={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
-        reason,
-        price,
-        state.cfg.cap_init,
-        state.cfg.trading_amount,
-        state.trade_budget
+        reason, price, state.cfg.cap_init, state.cfg.trading_amount, state.trade_budget
     )
 }
 
-fn exit_hit_reason(
+fn active_position<'a>(
+    input: &'a ModuleInput,
     side: PositionState,
-    price: f64,
-    take_profit: f64,
-    stop_loss: f64,
-) -> Option<&'static str> {
+) -> Option<&'a ModulePositionSummary> {
     match side {
-        PositionState::Long => {
-            if take_profit > 0.0 && price >= take_profit {
-                Some("tp")
-            } else if stop_loss > 0.0 && price <= stop_loss {
-                Some("sl")
-            } else {
-                None
-            }
-        }
-        PositionState::Short => {
-            if take_profit > 0.0 && price <= take_profit {
-                Some("tp")
-            } else if stop_loss > 0.0 && price >= stop_loss {
-                Some("sl")
-            } else {
-                None
-            }
-        }
+        PositionState::Long => input.positions.long.as_ref(),
+        PositionState::Short => input.positions.short.as_ref(),
         PositionState::Flat => None,
     }
+}
+
+fn position_notional(input: &ModuleInput, side: PositionState) -> f64 {
+    active_position(input, side)
+        .map(|position| {
+            if position.notional > 0.0 {
+                position.notional
+            } else {
+                (position.qty.max(0.0)) * input.price.max(0.0)
+            }
+        })
+        .unwrap_or(0.0)
+}
+
+fn tick_size(input: &ModuleInput) -> f64 {
+    input.symbol_info.price_tick_size.max(f64::EPSILON)
+}
+
+fn trailing_tp_price(side: PositionState, anchor: f64, tick_size: f64) -> f64 {
+    match side {
+        PositionState::Long => (anchor - tick_size * 2.0).max(tick_size),
+        PositionState::Short => anchor + tick_size * 2.0,
+        PositionState::Flat => anchor,
+    }
+}
+
+fn initialize_exit_plan(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    side: PositionState,
+) -> Option<ModulePlaceOrder> {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return None,
+    };
+    let plan = exit::plan(snapshot, input.price, side)?;
+    state.position.take_profit = plan.take_profit;
+    state.position.stop_loss = plan.stop_loss;
+    state.position.exit_tp_reliable = plan.tp_reliable;
+    state.position.exit_mode = ExitMode::Structural;
+    if state.position.tp_mark.is_empty() {
+        state.position.tp_mark = tp_mark(direction);
+    }
+    let amount = position_notional(input, side);
+    if amount <= 0.0 {
+        return None;
+    }
+    Some(tp_limit_order(
+        direction,
+        amount,
+        plan.take_profit,
+        &state.position.tp_mark,
+    ))
+}
+
+fn ensure_active_exit_order(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    side: PositionState,
+) -> (Vec<ModulePlaceOrder>, String) {
+    if side == PositionState::Flat {
+        return (Vec::new(), "exit=flat".to_string());
+    }
+
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => Direction::Both,
+    };
+    if state.position.tp_mark.is_empty() {
+        state.position.tp_mark = tp_mark(direction);
+    }
+
+    let mut notes = Vec::new();
+    let amount = position_notional(input, side);
+    if amount <= 0.0 {
+        return (
+            Vec::new(),
+            format!("exit={} amount=0", state.position.exit_mode.as_str()),
+        );
+    }
+
+    if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
+        if let Some(order) = initialize_exit_plan(input, state, snapshot, side) {
+            notes.push("tp-init".to_string());
+            notes.push(format!("tp={:.4}", state.position.take_profit));
+            notes.push(format!("sl={:.4}", state.position.stop_loss));
+            return (vec![order], notes.join("|"));
+        }
+        return (
+            Vec::new(),
+            format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
+        );
+    }
+
+    let tick = tick_size(input);
+    let virtual_sl_hit = match side {
+        PositionState::Long => input.price <= state.position.stop_loss,
+        PositionState::Short => input.price >= state.position.stop_loss,
+        PositionState::Flat => false,
+    };
+
+    if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
+        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
+        state.position.trail_anchor = input.price;
+        notes.push(format!("virtual-sl-hit={:.4}", state.position.stop_loss));
+    }
+
+    if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
+        if state.position.trail_anchor <= 0.0 {
+            state.position.trail_anchor = input.price;
+        } else {
+            match side {
+                PositionState::Long => {
+                    state.position.trail_anchor = state.position.trail_anchor.max(input.price);
+                }
+                PositionState::Short => {
+                    state.position.trail_anchor = state.position.trail_anchor.min(input.price);
+                }
+                PositionState::Flat => {}
+            }
+        }
+        let desired_tp = trailing_tp_price(side, state.position.trail_anchor, tick);
+        if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
+            state.position.take_profit = desired_tp;
+            notes.push(format!("tp-trail={:.4}", desired_tp));
+            let order = tp_limit_order(direction, amount, desired_tp, &state.position.tp_mark);
+            return (
+                vec![order],
+                format!(
+                    "exit={} anchor={:.4} {}",
+                    state.position.exit_mode.as_str(),
+                    state.position.trail_anchor,
+                    notes.join("|")
+                ),
+            );
+        }
+        return (
+            Vec::new(),
+            format!(
+                "exit={} anchor={:.4} tp={:.4} sl={:.4}",
+                state.position.exit_mode.as_str(),
+                state.position.trail_anchor,
+                state.position.take_profit,
+                state.position.stop_loss
+            ),
+        );
+    }
+
+    if state.position.take_profit > 0.0 {
+        return (
+            Vec::new(),
+            format!(
+                "exit={} tp={:.4} sl={:.4}",
+                state.position.exit_mode.as_str(),
+                state.position.take_profit,
+                state.position.stop_loss
+            ),
+        );
+    }
+
+    (
+        Vec::new(),
+        format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
+    )
 }
 
 pub fn evaluate(
@@ -115,97 +266,28 @@ pub fn evaluate(
                     &close_reason("one-position-invariant", state, input.price),
                 ),
             ],
+            cancel_orders: vec![tp_mark(Direction::Long), tp_mark(Direction::Short)],
             note: "flatten-both".to_string(),
             ..Default::default()
         };
     }
 
     if input.positions.long.is_some() {
-        if let Some(hit) = exit_hit_reason(
-            PositionState::Long,
-            input.price,
-            state.position.take_profit,
-            state.position.stop_loss,
-        ) {
-            let exit_kind = if hit == "tp" {
-                ExitKind::TakeProfit
-            } else {
-                ExitKind::StopLoss
-            };
-            state.last_exit_kind = Some(exit_kind);
-            state.last_exit_side = PositionState::Long;
-            state.last_exit_price = input.price;
-            state.last_exit_tick = state.ticks;
-            state.last_exit_tp_reliable = state.position.exit_tp_reliable;
-            return ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Long,
-                    &format!(
-                        "tp/sl hit={} price={:.4} tp={:.4} sl={:.4}",
-                        hit, input.price, state.position.take_profit, state.position.stop_loss
-                    ),
-                )],
-                note: format!("close-long {}", hit),
-                ..Default::default()
-            };
-        }
-
-        let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Long);
-        if let Some(plan) = plan {
-            state.position.take_profit = plan.take_profit;
-            state.position.stop_loss = plan.stop_loss;
-            state.position.exit_tp_reliable = plan.tp_reliable;
-        }
+        let (place_orders, note) =
+            ensure_active_exit_order(input, state, snapshot, PositionState::Long);
         return ExecutionResult {
-            update_positions: plan
-                .map(|plan| vec![exit::update_position(crate::model::PositionState::Long, plan)])
-                .unwrap_or_default(),
-            note: format!("hold-long {}", exit::describe(plan)),
+            place_orders,
+            note: format!("hold-long {}", note),
             ..Default::default()
         };
     }
 
     if input.positions.short.is_some() {
-        if let Some(hit) = exit_hit_reason(
-            PositionState::Short,
-            input.price,
-            state.position.take_profit,
-            state.position.stop_loss,
-        ) {
-            let exit_kind = if hit == "tp" {
-                ExitKind::TakeProfit
-            } else {
-                ExitKind::StopLoss
-            };
-            state.last_exit_kind = Some(exit_kind);
-            state.last_exit_side = PositionState::Short;
-            state.last_exit_price = input.price;
-            state.last_exit_tick = state.ticks;
-            state.last_exit_tp_reliable = state.position.exit_tp_reliable;
-            return ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Short,
-                    &format!(
-                        "tp/sl hit={} price={:.4} tp={:.4} sl={:.4}",
-                        hit, input.price, state.position.take_profit, state.position.stop_loss
-                    ),
-                )],
-                note: format!("close-short {}", hit),
-                ..Default::default()
-            };
-        }
-
-        let plan = exit::plan(snapshot, input.price, crate::model::PositionState::Short);
-        if let Some(plan) = plan {
-            state.position.take_profit = plan.take_profit;
-            state.position.stop_loss = plan.stop_loss;
-            state.position.exit_tp_reliable = plan.tp_reliable;
-        }
+        let (place_orders, note) =
+            ensure_active_exit_order(input, state, snapshot, PositionState::Short);
         return ExecutionResult {
-            update_positions: plan
-                .map(|plan| vec![exit::update_position(crate::model::PositionState::Short, plan)])
-                .unwrap_or_default(),
-            note: format!("hold-short {}", exit::describe(plan)),
+            place_orders,
+            note: format!("hold-short {}", note),
             ..Default::default()
         };
     }
@@ -261,42 +343,26 @@ pub fn evaluate(
     }
 
     match decision.market_state {
-        MarketState::Long => {
-            ExecutionResult {
-                open_positions: vec![limit_open(
-                    Direction::Long,
-                    amount,
-                    input.price,
-                    &open_note(
-                        Direction::Long,
-                        amount,
-                        input.price,
-                        decision,
-                        state,
-                    ),
-                )],
-                note: "open-long".to_string(),
-                ..Default::default()
-            }
-        }
-        MarketState::Short => {
-            ExecutionResult {
-                open_positions: vec![limit_open(
-                    Direction::Short,
-                    amount,
-                    input.price,
-                    &open_note(
-                        Direction::Short,
-                        amount,
-                        input.price,
-                        decision,
-                        state,
-                    ),
-                )],
-                note: "open-short".to_string(),
-                ..Default::default()
-            }
-        }
+        MarketState::Long => ExecutionResult {
+            open_positions: vec![limit_open(
+                Direction::Long,
+                amount,
+                input.price,
+                &open_note(Direction::Long, amount, input.price, decision, state),
+            )],
+            note: "open-long".to_string(),
+            ..Default::default()
+        },
+        MarketState::Short => ExecutionResult {
+            open_positions: vec![limit_open(
+                Direction::Short,
+                amount,
+                input.price,
+                &open_note(Direction::Short, amount, input.price, decision, state),
+            )],
+            note: "open-short".to_string(),
+            ..Default::default()
+        },
         _ => ExecutionResult {
             note: "flat".to_string(),
             ..Default::default()
@@ -477,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn unreliable_tp_blocks_entries() {
+    fn structural_exit_allows_entries() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         snapshot.tf1m.candle = crate::model::Candle {
@@ -509,17 +575,22 @@ mod tests {
             &snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("tp-unreliable"));
+        assert_eq!(result.open_positions.len(), 1);
+        assert!(result.note.contains("open-long"));
     }
 
     #[test]
     fn post_sl_wait_requires_reclaim() {
         let mut state = EngineState::default();
-        state.last_exit_kind = Some(ExitKind::StopLoss);
-        state.last_exit_side = PositionState::Long;
-        state.last_exit_price = 100.0;
-        state.last_exit_tick = 10;
+        state.exit_memory = crate::model::ExitMemory {
+            side: PositionState::Long,
+            kind: Some(ExitKind::StopLoss),
+            price: 100.0,
+            take_profit: 102.0,
+            stop_loss: 95.0,
+            reliable: true,
+            tick: 10,
+        };
         let mut snapshot = IndicatorSnapshot::default();
         snapshot.tf1m.candle = crate::model::Candle {
             open: 99.0,
@@ -557,9 +628,15 @@ mod tests {
     #[test]
     fn post_sl_wait_uses_dpsignal_band() {
         let mut state = EngineState::default();
-        state.last_exit_kind = Some(ExitKind::StopLoss);
-        state.last_exit_side = PositionState::Long;
-        state.last_exit_price = 100.0;
+        state.exit_memory = crate::model::ExitMemory {
+            side: PositionState::Long,
+            kind: Some(ExitKind::StopLoss),
+            price: 100.0,
+            take_profit: 102.0,
+            stop_loss: 95.0,
+            reliable: true,
+            tick: 10,
+        };
         let mut snapshot = IndicatorSnapshot::default();
         snapshot.tf1m.candle = crate::model::Candle {
             open: 99.0,
@@ -637,9 +714,12 @@ mod tests {
             entry_price: 100.0,
             peak_price: 103.0,
             trough_price: 99.0,
-            take_profit: 102.5,
-            stop_loss: 95.0,
+            take_profit: 0.0,
+            stop_loss: 0.0,
             exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            trail_anchor: 0.0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -672,14 +752,10 @@ mod tests {
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
         snapshot.tf1h = snapshot.tf1m;
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &decision(MarketState::Long),
-        );
-        assert_eq!(result.close_positions.len(), 1);
-        assert!(result.note.contains("close-long tp"));
+        let result = evaluate(&inp, &mut state, &snapshot, &decision(MarketState::Long));
+        assert_eq!(result.place_orders.len(), 1);
+        assert!(result.close_positions.is_empty());
+        assert!(result.note.contains("tp-init"));
     }
 
     #[test]
@@ -693,6 +769,9 @@ mod tests {
             take_profit: 97.5,
             stop_loss: 100.5,
             exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-short".to_string(),
+            trail_anchor: 0.0,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -725,14 +804,10 @@ mod tests {
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
         snapshot.tf1h = snapshot.tf1m;
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &decision(MarketState::Short),
-        );
-        assert_eq!(result.close_positions.len(), 1);
-        assert!(result.note.contains("close-short sl"));
+        let result = evaluate(&inp, &mut state, &snapshot, &decision(MarketState::Short));
+        assert_eq!(result.place_orders.len(), 1);
+        assert!(result.close_positions.is_empty());
+        assert!(result.note.contains("trail-after-virtual-sl"));
     }
 
     #[test]
@@ -875,8 +950,7 @@ mod tests {
             },
             &decision(MarketState::Long),
         );
-        assert_eq!(result.update_positions.len(), 1);
-        assert!(result.note.contains("tp="));
-        assert!(result.note.contains("sl="));
+        assert_eq!(result.place_orders.len(), 1);
+        assert!(result.note.contains("tp-init"));
     }
 }

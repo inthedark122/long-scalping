@@ -170,6 +170,56 @@ pub struct SignalIndicatorSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExitMode {
+    Structural,
+    TrailAfterVirtualSl,
+}
+
+impl Default for ExitMode {
+    fn default() -> Self {
+        Self::Structural
+    }
+}
+
+impl ExitMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Structural => "structural",
+            Self::TrailAfterVirtualSl => "trail-after-virtual-sl",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExitMemory {
+    pub side: PositionState,
+    pub kind: Option<ExitKind>,
+    pub price: f64,
+    pub take_profit: f64,
+    pub stop_loss: f64,
+    pub reliable: bool,
+    pub tick: u64,
+}
+
+impl ExitMemory {
+    pub fn summary(&self) -> String {
+        match self.kind {
+            Some(kind) if self.price > 0.0 => format!(
+                "side={:?} kind={:?} price={:.4} tp={:.4} sl={:.4} reliable={} tick={}",
+                self.side,
+                kind,
+                self.price,
+                self.take_profit,
+                self.stop_loss,
+                self.reliable,
+                self.tick
+            ),
+            _ => "exit-mem=na".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExitKind {
     TakeProfit,
     StopLoss,
@@ -197,8 +247,7 @@ impl TimeframeSnapshot {
         if self.volume_gain_max <= self.volume_gain_min {
             return 0.0;
         }
-        ((self.volume_gain - self.volume_gain_min)
-            / (self.volume_gain_max - self.volume_gain_min))
+        ((self.volume_gain - self.volume_gain_min) / (self.volume_gain_max - self.volume_gain_min))
             .clamp(0.0, 1.0)
     }
 

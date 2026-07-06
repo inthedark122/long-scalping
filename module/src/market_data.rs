@@ -1,10 +1,10 @@
 use crate::model::{Candle, IndicatorSnapshot, MrcBands, TimeframeSnapshot};
 use crate::model::{FastCandleSnapshot, SignalIndicatorSnapshot};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
-use lte_strategy_bridge::sug_info::SuggestionInfo;
 use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
+use lte_strategy_bridge::sug_info::SuggestionInfo;
 use std::collections::{BTreeMap, HashMap};
 
 const TF_1M: TimeframeSec = TimeframeSec::Tf1m;
@@ -240,8 +240,10 @@ pub fn build_snapshot(
             active: info.status.is_fast(),
         })
     });
-    let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| SignalIndicatorSnapshot {
-        ntps: info.indicator.ntps,
+    let signal = sug_info.map_or(SignalIndicatorSnapshot::default(), |info| {
+        SignalIndicatorSnapshot {
+            ntps: info.indicator.ntps,
+        }
     });
 
     IndicatorSnapshot {
@@ -312,16 +314,11 @@ mod tests {
             );
             candle.insert(
                 "volume_50".to_string(),
-                HashMap::from([(
-                    "Gain".to_string(),
-                    ModuleIndicatorValue::Float(12.5),
-                ), (
-                    "Min".to_string(),
-                    ModuleIndicatorValue::Float(1.0),
-                ), (
-                    "Max".to_string(),
-                    ModuleIndicatorValue::Float(20.0),
-                )]),
+                HashMap::from([
+                    ("Gain".to_string(), ModuleIndicatorValue::Float(12.5)),
+                    ("Min".to_string(), ModuleIndicatorValue::Float(1.0)),
+                    ("Max".to_string(), ModuleIndicatorValue::Float(20.0)),
+                ]),
             );
             snapshot.insert(tf, vec![candle.clone(), candle]);
         }
