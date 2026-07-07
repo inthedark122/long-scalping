@@ -1,6 +1,9 @@
 use crate::model::{Candle, TimeframeSnapshot};
 use crate::state::CascadeState;
 
+const CASCADE_SAMPLE_WINDOW: usize = 30;
+const CASCADE_TP_PERCENTILE: f64 = 0.90;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementPhase {
     Starting,
@@ -110,7 +113,7 @@ fn rolling_average(memory: &CascadeState) -> f64 {
     if memory.sizes_len == 0 {
         return 0.0;
     }
-    let len = memory.sizes_len.min(memory.sizes.len());
+    let len = memory.sizes_len.min(CASCADE_SAMPLE_WINDOW);
     let mut total = 0.0;
     if memory.sizes_len < memory.sizes.len() {
         for idx in 0..len {
@@ -130,7 +133,7 @@ pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
     if memory.sizes_len == 0 {
         return Vec::new();
     }
-    let len = memory.sizes_len.min(memory.sizes.len());
+    let len = memory.sizes_len.min(CASCADE_SAMPLE_WINDOW);
     let mut out = Vec::with_capacity(len);
     if memory.sizes_len < memory.sizes.len() {
         out.extend_from_slice(&memory.sizes[..len]);
@@ -141,6 +144,27 @@ pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
         }
     }
     out
+}
+
+pub fn percentile_window(memory: &CascadeState, percentile: f64) -> Option<f64> {
+    if memory.sizes_len == 0 {
+        return None;
+    }
+
+    let mut values = sample_window(memory);
+    if values.is_empty() {
+        return None;
+    }
+
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = percentile.clamp(0.0, 1.0);
+    let rank = ((values.len() as f64) * pct).ceil() as usize;
+    let idx = rank.saturating_sub(1).min(values.len().saturating_sub(1));
+    values.get(idx).copied()
+}
+
+pub fn cascade_take_profit_distance(memory: &CascadeState) -> Option<f64> {
+    percentile_window(memory, CASCADE_TP_PERCENTILE)
 }
 
 pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> CascadeSignal {

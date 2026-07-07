@@ -47,7 +47,7 @@ pub struct CascadeState {
     pub cas_high: f64,
     pub cas_low: f64,
     pub cas_candles: u32,
-    pub sizes: [f64; 10],
+    pub sizes: [f64; 30],
     pub sizes_pos: usize,
     pub sizes_len: usize,
     pub breaks: [f64; 5],

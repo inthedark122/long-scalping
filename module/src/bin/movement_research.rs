@@ -216,19 +216,20 @@ fn open_virtual_trade(
     tp_mult: f64,
     sl_mult: f64,
 ) -> Option<VirtualTrade> {
-    if side == 0 || state.avg_size <= 0.0 {
+    let tp_base = cascade::cascade_take_profit_distance(state).unwrap_or(state.avg_size);
+    if side == 0 || tp_base <= 0.0 {
         return None;
     }
     let entry_pct = best_fill(candle, side);
     let (tp_pct, sl_pct) = if side > 0 {
         (
-            entry_pct + state.avg_size * tp_mult,
-            entry_pct - state.avg_size * sl_mult,
+            entry_pct + tp_base * tp_mult,
+            entry_pct - tp_base * sl_mult,
         )
     } else {
         (
-            entry_pct - state.avg_size * tp_mult,
-            entry_pct + state.avg_size * sl_mult,
+            entry_pct - tp_base * tp_mult,
+            entry_pct + tp_base * sl_mult,
         )
     };
     Some(VirtualTrade {
@@ -361,8 +362,12 @@ fn simulate(candles: &[CandleRow], tp_mult: f64, sl_mult: f64) -> (Vec<TradeResu
         let signal_kind = movement_signal(&signal);
         let size_pct = block_pct(signal.completed_size, cur.close);
         let avg_pct = block_pct(signal.average_size, cur.close);
+        let tp_p90_pct = block_pct(
+            cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size),
+            cur.close,
+        );
         traces.push(format!(
-            "{} candle={:.4}% dir={} phase={:?} signal={} size={:.4}% avg={:.4}% samples={} window={} gain={:.4} ntps={}",
+            "{} candle={:.4}% dir={} phase={:?} signal={} size={:.4}% avg={:.4}% tp_p90={:.4}% samples={} window={} gain={:.4} ntps={}",
             fmt_time(cur.time_ms),
             candle_pct(cur),
             if signal.dir > 0 { "LONG" } else if signal.dir < 0 { "SHORT" } else { "FLAT" },
@@ -370,6 +375,7 @@ fn simulate(candles: &[CandleRow], tp_mult: f64, sl_mult: f64) -> (Vec<TradeResu
             signal_kind,
             size_pct,
             avg_pct,
+            tp_p90_pct,
             signal.samples,
             cascade_window(&state, cur.close),
             cur.gain,
@@ -579,17 +585,21 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
         };
         let signal = cascade::update_from_candle(&mut state, &to_candle(&row));
 
-        println!(
-            "{} dir={} phase={:?} signal={} candle={:.4}% avg={:.4}% size={:.4}% samples={}",
-            fmt_time(row.time_ms),
-            if signal.dir > 0 { "LONG" } else if signal.dir < 0 { "SHORT" } else { "FLAT" },
-            signal.phase,
-            movement_signal(&signal),
-            candle_pct(&row),
-            block_pct(signal.average_size, row.close),
-            block_pct(signal.completed_size, row.close),
-            cascade_window(&state, row.close)
-        );
+            println!(
+                "{} dir={} phase={:?} signal={} candle={:.4}% avg={:.4}% tp_p90={:.4}% size={:.4}% samples={}",
+                fmt_time(row.time_ms),
+                if signal.dir > 0 { "LONG" } else if signal.dir < 0 { "SHORT" } else { "FLAT" },
+                signal.phase,
+                movement_signal(&signal),
+                candle_pct(&row),
+                block_pct(signal.average_size, row.close),
+                block_pct(
+                    cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size),
+                    row.close,
+                ),
+                block_pct(signal.completed_size, row.close),
+                cascade_window(&state, row.close)
+            );
 
         if active.is_none() && movement_signal(&signal) == "reverse-ready" && signal.dir != 0 {
             active = open_virtual_trade(&state, &row, -signal.dir, "reverse-entry", 1.0, 0.8);

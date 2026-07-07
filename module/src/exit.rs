@@ -60,8 +60,9 @@ fn movement_plan(
         return None;
     }
 
-    let tp_distance = cascade.avg_size;
-    let sl_distance = cascade.avg_size * 0.8;
+    let tp_distance = crate::detection::cascade::cascade_take_profit_distance(cascade)
+        .unwrap_or(cascade.avg_size);
+    let sl_distance = (tp_distance * 0.8).max(cascade.avg_size * 0.8);
     let (structural_take_profit, structural_stop_loss) = structural.unwrap_or((0.0, 0.0));
 
     let plan = match side {

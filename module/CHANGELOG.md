@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.13
+
+Cascade TP release for research and testing.
+
+- Raised the cascade movement TP anchor to the 90th percentile over a 30-sample window.
+- Mirrored the percentile TP source in `movement_research` so replay/live testing matches the module.
+- Kept the created-order timeout at `10_000 ms`.
+- Prepared a fresh module build for bot-group testing.
+
+## 1.0.12
+
+Created-order timeout extension.
+
+- Increased the created-position age timeout to `10_000 ms`.
+- Switched cascade movement TP sizing to a 90th percentile over a 30-sample window.
+- Kept the current structural scalping and sug-info movement flow unchanged.
+- Prepared a new module release for the active bot groups.
+
 ## 1.0.11
 
 Module release refresh.
