@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.11
+
+Module release refresh.
+
+- Bumped the structural scalping module to `1.0.11`.
+- Kept the cascade research and sug-info movement pipeline intact for the next deploy.
+- Updated the active bot groups to the new module version.
+
 ## 1.0.10
 
 Created-order timeout and entry reason persistence.

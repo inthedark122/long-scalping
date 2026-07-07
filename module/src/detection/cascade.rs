@@ -125,6 +125,7 @@ fn rolling_average(memory: &CascadeState) -> f64 {
     total / len as f64
 }
 
+#[allow(dead_code)]
 pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
     if memory.sizes_len == 0 {
         return Vec::new();
