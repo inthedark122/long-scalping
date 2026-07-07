@@ -15,7 +15,7 @@ use lte_strategy_bridge::abi::{
 #[cfg(test)]
 use crate::model::ExitKind;
 
-const CREATED_MAX_AGE_MS: u64 = 2_000;
+const CREATED_MAX_AGE_MS: u64 = 10_000;
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
