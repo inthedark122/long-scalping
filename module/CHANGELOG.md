@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.14
+
+Close-timeout visibility release.
+
+- Expanded timeout-close logs to include the live position snapshot, raw and derived qty, entry price, TP/SL, exit mode, and start time.
+- Kept the existing one-position timeout behavior unchanged.
+
 ## 1.0.13
 
 Cascade TP release for research and testing.

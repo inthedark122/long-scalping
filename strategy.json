@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.13",
+      "module_version": "1.0.14",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.13"
+          "module_version": "1.0.14"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.13 limit-entry release using compiled defaults or cap_init/trading_amount overrides. Cascade TP now uses a 90th percentile over 30 samples.",
+      "description": "Start the 1.0.14 limit-entry release using compiled defaults or cap_init/trading_amount overrides. Close-timeout logs now include the live position snapshot.",
       "params": [
         {
           "code": "cap_init",
@@ -53,7 +53,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.13",
+    "version": "1.0.14",
     "defaults": {}
   }
 }

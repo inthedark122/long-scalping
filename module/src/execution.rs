@@ -74,6 +74,34 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     )
 }
 
+fn position_snapshot(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+) -> String {
+    let position = active_position(input, side);
+    let raw_qty = position.map(|position| position.qty).unwrap_or(0.0);
+    let notional = position.map(|position| position.notional).unwrap_or(0.0);
+    let pnl = position.map(|position| position.pnl).unwrap_or(0.0);
+    let abs_qty = position_qty(input, side);
+    format!(
+        "pos={:?} raw_qty={:.8} abs_qty={:.8} notional={:.4} pnl={:.4} entry_price={:.4} tp={:.4} sl={:.4} exit_mode={} started_at_ms={}",
+        side,
+        raw_qty,
+        abs_qty,
+        notional,
+        pnl,
+        state.position.entry_price,
+        state.position.take_profit,
+        state.position.stop_loss,
+        state.position.exit_mode.as_str(),
+        match state.position.entry_reason.as_ref() {
+            Some(EntryReason::SugInfoMovement { started_at_ms, .. }) => *started_at_ms,
+            None => 0,
+        }
+    )
+}
+
 fn active_position<'a>(
     input: &'a ModuleInput,
     side: PositionState,
@@ -114,8 +142,12 @@ fn created_entry_timeout_reason(input: &ModuleInput, state: &EngineState) -> Opt
     }
 
     Some(format!(
-        "created-timeout age_ms={} max_ms={} started_at_ms={}",
-        age_ms, CREATED_MAX_AGE_MS, started_at_ms
+        "created-timeout age_ms={} max_ms={} started_at_ms={} current_ms={} filled={}",
+        age_ms,
+        CREATED_MAX_AGE_MS,
+        started_at_ms,
+        current_ms,
+        state.position.side != PositionState::Flat
     ))
 }
 
@@ -331,9 +363,17 @@ pub fn evaluate_with_cascade(
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Long,
-                    &close_reason(&reason, state, input.price),
+                    &format!(
+                        "{} {}",
+                        close_reason(&reason, state, input.price),
+                        position_snapshot(input, state, PositionState::Long)
+                    ),
                 )],
-                note: format!("close-long {}", reason),
+                note: format!(
+                    "close-long {} {}",
+                    reason,
+                    position_snapshot(input, state, PositionState::Long)
+                ),
                 ..Default::default()
             };
         }
@@ -351,9 +391,17 @@ pub fn evaluate_with_cascade(
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Short,
-                    &close_reason(&reason, state, input.price),
+                    &format!(
+                        "{} {}",
+                        close_reason(&reason, state, input.price),
+                        position_snapshot(input, state, PositionState::Short)
+                    ),
                 )],
-                note: format!("close-short {}", reason),
+                note: format!(
+                    "close-short {} {}",
+                    reason,
+                    position_snapshot(input, state, PositionState::Short)
+                ),
                 ..Default::default()
             };
         }
