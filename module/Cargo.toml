@@ -3,9 +3,17 @@ name = "long-scalping"
 version = "1.0.10"
 edition = "2021"
 
+[features]
+movement-research = []
+
 [[bin]]
 name = "module_entry"
 path = "src/main.rs"
+
+[[bin]]
+name = "movement_research"
+path = "src/bin/movement_research.rs"
+required-features = ["movement-research"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

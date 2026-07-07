@@ -93,18 +93,53 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
                 memory.sizes_len += 1;
             }
             memory.samples = memory.sizes_len as u32;
-            memory.avg_size =
-                memory.sizes[..memory.sizes_len].iter().sum::<f64>() / memory.sizes_len as f64;
+            memory.avg_size = rolling_average(memory);
         }
         memory.last_break = memory.last_close;
         memory.cas_dir = dir;
-        memory.cas_high = high.max(memory.cas_high);
-        memory.cas_low = low.min(memory.cas_low);
+        memory.cas_high = high;
+        memory.cas_low = low;
         memory.cas_candles = 1;
         memory.break_n = 0;
         memory.breaks = [0.0; 5];
         true
     }
+}
+
+fn rolling_average(memory: &CascadeState) -> f64 {
+    if memory.sizes_len == 0 {
+        return 0.0;
+    }
+    let len = memory.sizes_len.min(memory.sizes.len());
+    let mut total = 0.0;
+    if memory.sizes_len < memory.sizes.len() {
+        for idx in 0..len {
+            total += memory.sizes[idx];
+        }
+    } else {
+        let start = memory.sizes_pos % memory.sizes.len();
+        for idx in 0..len {
+            total += memory.sizes[(start + idx) % memory.sizes.len()];
+        }
+    }
+    total / len as f64
+}
+
+pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
+    if memory.sizes_len == 0 {
+        return Vec::new();
+    }
+    let len = memory.sizes_len.min(memory.sizes.len());
+    let mut out = Vec::with_capacity(len);
+    if memory.sizes_len < memory.sizes.len() {
+        out.extend_from_slice(&memory.sizes[..len]);
+    } else {
+        let start = memory.sizes_pos % memory.sizes.len();
+        for idx in 0..len {
+            out.push(memory.sizes[(start + idx) % memory.sizes.len()]);
+        }
+    }
+    out
 }
 
 pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> CascadeSignal {
@@ -238,5 +273,42 @@ mod tests {
         let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8));
         assert_eq!(reversal.phase, MovementPhase::Reversal);
         assert!(reversal.completed_size > 0.0);
+    }
+
+    #[test]
+    fn rolling_average_tracks_the_last_ten_completed_blocks() {
+        let mut state = CascadeState::default();
+        for size in 1..=10 {
+            state.sizes[state.sizes_pos] = size as f64;
+            state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
+            state.sizes_len += 1;
+        }
+        state.avg_size = rolling_average(&state);
+        assert_eq!(sample_window(&state), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert!((state.avg_size - 5.5).abs() < 1e-9);
+
+        state.sizes[state.sizes_pos] = 100.0;
+        state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
+        state.sizes[state.sizes_pos] = 110.0;
+        state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
+        state.avg_size = rolling_average(&state);
+
+        assert_eq!(
+            sample_window(&state),
+            vec![3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 100.0, 110.0]
+        );
+        assert!((state.avg_size - 26.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn new_block_starts_from_current_candle_after_reversal() {
+        let mut state = CascadeState::default();
+        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.0, 100.5));
+        let _ = update_from_candle(&mut state, &candle(100.5, 106.0, 100.0, 105.5));
+        let _ = update_from_candle(&mut state, &candle(105.5, 105.8, 104.8, 104.9));
+
+        assert!(state.cas_high <= 105.8 + f64::EPSILON);
+        assert!(state.cas_low >= 104.8 - f64::EPSILON);
+        assert!((state.cas_high - state.cas_low).abs() <= 1.1);
     }
 }
