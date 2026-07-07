@@ -151,6 +151,12 @@ fn created_entry_timeout_reason(input: &ModuleInput, state: &EngineState) -> Opt
     ))
 }
 
+fn position_qty_is_zero(input: &ModuleInput, side: PositionState) -> bool {
+    active_position(input, side)
+        .map(|position| position.qty == 0.0)
+        .unwrap_or(true)
+}
+
 fn trailing_tp_price(side: PositionState, price: f64, tick_size: f64) -> f64 {
     match side {
         PositionState::Long => (price - tick_size * 2.0).max(tick_size),
@@ -359,23 +365,25 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.long.is_some() {
-        if let Some(reason) = created_entry_timeout_reason(input, state) {
-            return ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Long,
-                    &format!(
-                        "{} {}",
-                        close_reason(&reason, state, input.price),
+        if position_qty_is_zero(input, PositionState::Long) {
+            if let Some(reason) = created_entry_timeout_reason(input, state) {
+                return ExecutionResult {
+                    close_positions: vec![close(
+                        Direction::Long,
+                        &format!(
+                            "{} {}",
+                            close_reason(&reason, state, input.price),
+                            position_snapshot(input, state, PositionState::Long)
+                        ),
+                    )],
+                    note: format!(
+                        "close-long {} {}",
+                        reason,
                         position_snapshot(input, state, PositionState::Long)
                     ),
-                )],
-                note: format!(
-                    "close-long {} {}",
-                    reason,
-                    position_snapshot(input, state, PositionState::Long)
-                ),
-                ..Default::default()
-            };
+                    ..Default::default()
+                };
+            }
         }
         let (tp_orders, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Long);
@@ -387,23 +395,25 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.short.is_some() {
-        if let Some(reason) = created_entry_timeout_reason(input, state) {
-            return ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Short,
-                    &format!(
-                        "{} {}",
-                        close_reason(&reason, state, input.price),
+        if position_qty_is_zero(input, PositionState::Short) {
+            if let Some(reason) = created_entry_timeout_reason(input, state) {
+                return ExecutionResult {
+                    close_positions: vec![close(
+                        Direction::Short,
+                        &format!(
+                            "{} {}",
+                            close_reason(&reason, state, input.price),
+                            position_snapshot(input, state, PositionState::Short)
+                        ),
+                    )],
+                    note: format!(
+                        "close-short {} {}",
+                        reason,
                         position_snapshot(input, state, PositionState::Short)
                     ),
-                )],
-                note: format!(
-                    "close-short {} {}",
-                    reason,
-                    position_snapshot(input, state, PositionState::Short)
-                ),
-                ..Default::default()
-            };
+                    ..Default::default()
+                };
+            }
         }
         let (tp_orders, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Short);

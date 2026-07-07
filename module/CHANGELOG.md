@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.15
+
+Timeout close guard release.
+
+- Kept the timeout-close log expansion from `1.0.14`.
+- Restricted created-order timeout closes to unfilled positions only (`qty == 0.0`).
+- Preserved the live position snapshot in close logs for filled long and short positions.
+
 ## 1.0.14
 
 Close-timeout visibility release.
