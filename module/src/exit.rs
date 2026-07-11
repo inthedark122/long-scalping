@@ -123,10 +123,7 @@ fn sideway_plan(reason: &EntryReason, side: PositionState) -> Option<ExitPlan> {
             (*block_high).max(*price + buffer),
             (*block_low - buffer).max(f64::EPSILON),
         ),
-        PositionState::Short => (
-            (*block_low).max(f64::EPSILON),
-            *block_high + buffer,
-        ),
+        PositionState::Short => ((*block_low).max(f64::EPSILON), *block_high + buffer),
         PositionState::Flat => return None,
     };
 

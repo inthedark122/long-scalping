@@ -406,10 +406,7 @@ fn sideway_entry_gate(
         return Some(EntryGate::Wait(EntryWait {
             reason: "sideway-opposite-wait".to_string(),
             solutions: vec![EntryWaitSolution::WaitForCooling {
-                note: format!(
-                    "sideway={} side={:?} need-ready",
-                    signal.reason, side
-                ),
+                note: format!("sideway={} side={:?} need-ready", signal.reason, side),
             }],
             notes: vec![
                 format!("sideway={}", signal.reason),

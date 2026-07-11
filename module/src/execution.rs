@@ -3,13 +3,13 @@ use crate::exit;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
 use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
-use crate::orders::{close, limit_open, tp_limit_order, tp_mark};
+use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
-    ModulePositionSummary,
+    ModulePositionSummary, ModuleUpdatePosition,
 };
 
 #[cfg(test)]
@@ -20,6 +20,7 @@ const CREATED_MAX_AGE_MS: u64 = 10_000;
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
     pub close_positions: Vec<ModuleClosePosition>,
+    pub update_positions: Vec<ModuleUpdatePosition>,
     pub tp_orders: Vec<ModulePlaceOrder>,
     pub cancel_orders: Vec<String>,
     pub note: String,
@@ -134,21 +135,22 @@ fn tick_size(input: &ModuleInput) -> f64 {
     input.symbol_info.price_tick_size.max(f64::EPSILON)
 }
 
-fn created_entry_timeout_reason(input: &ModuleInput, state: &EngineState) -> Option<String> {
+fn created_entry_timeout_reason(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+) -> Option<String> {
     let started_at_ms = state.position.entry_reason.as_ref()?.started_at_ms();
     let current_ms = input.sug_info.as_ref()?.system_time as u64;
     let age_ms = current_ms.saturating_sub(started_at_ms);
     if age_ms < CREATED_MAX_AGE_MS {
         return None;
     }
+    let qty = position_qty(input, side);
 
     Some(format!(
-        "created-timeout age_ms={} max_ms={} started_at_ms={} current_ms={} filled={}",
-        age_ms,
-        CREATED_MAX_AGE_MS,
-        started_at_ms,
-        current_ms,
-        state.position.side != PositionState::Flat
+        "created-timeout age_ms={} max_ms={} started_at_ms={} current_ms={} qty={:.8}",
+        age_ms, CREATED_MAX_AGE_MS, started_at_ms, current_ms, qty
     ))
 }
 
@@ -164,6 +166,34 @@ fn trailing_tp_price(side: PositionState, price: f64, tick_size: f64) -> f64 {
         PositionState::Short => price + tick_size * 2.0,
         PositionState::Flat => price,
     }
+}
+
+fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
+    matches!(
+        (position_side, decision_state),
+        (PositionState::Long, MarketState::Short) | (PositionState::Short, MarketState::Long)
+    )
+}
+
+fn created_position_update(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    side: PositionState,
+) -> Option<ModuleUpdatePosition> {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return None,
+    };
+    let desired_price = state
+        .position
+        .entry_reason
+        .as_ref()
+        .map(|reason| reason.price())
+        .filter(|price| *price > 0.0)
+        .unwrap_or(input.price);
+    state.position.entry_price = desired_price;
+    Some(update_position(direction, Some(desired_price), None, None))
 }
 
 fn initialize_exit_plan(
@@ -376,19 +406,39 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.long.is_some() {
+        if direction_changed(PositionState::Long, decision.market_state) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Long,
+                    &format!(
+                        "{} {}",
+                        close_reason("direction-changed", state, input.price),
+                        position_snapshot(input, state, PositionState::Long)
+                    ),
+                )],
+                note: format!(
+                    "close-long direction-changed {}",
+                    position_snapshot(input, state, PositionState::Long)
+                ),
+                ..Default::default()
+            };
+        }
         if position_qty_is_zero(input, PositionState::Long) {
-            if let Some(reason) = created_entry_timeout_reason(input, state) {
-                return ExecutionResult {
-                    close_positions: vec![close(
-                        Direction::Long,
-                        &format!(
-                            "{} {}",
-                            close_reason(&reason, state, input.price),
+            if let Some(reason) = created_entry_timeout_reason(input, state, PositionState::Long) {
+                if let Some(update) = created_position_update(input, state, PositionState::Long) {
+                    return ExecutionResult {
+                        update_positions: vec![update],
+                        note: format!(
+                            "update-long {} {}",
+                            reason,
                             position_snapshot(input, state, PositionState::Long)
                         ),
-                    )],
+                        ..Default::default()
+                    };
+                }
+                return ExecutionResult {
                     note: format!(
-                        "close-long {} {}",
+                        "hold-long {} {}",
                         reason,
                         position_snapshot(input, state, PositionState::Long)
                     ),
@@ -406,19 +456,39 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.short.is_some() {
+        if direction_changed(PositionState::Short, decision.market_state) {
+            return ExecutionResult {
+                close_positions: vec![close(
+                    Direction::Short,
+                    &format!(
+                        "{} {}",
+                        close_reason("direction-changed", state, input.price),
+                        position_snapshot(input, state, PositionState::Short)
+                    ),
+                )],
+                note: format!(
+                    "close-short direction-changed {}",
+                    position_snapshot(input, state, PositionState::Short)
+                ),
+                ..Default::default()
+            };
+        }
         if position_qty_is_zero(input, PositionState::Short) {
-            if let Some(reason) = created_entry_timeout_reason(input, state) {
-                return ExecutionResult {
-                    close_positions: vec![close(
-                        Direction::Short,
-                        &format!(
-                            "{} {}",
-                            close_reason(&reason, state, input.price),
+            if let Some(reason) = created_entry_timeout_reason(input, state, PositionState::Short) {
+                if let Some(update) = created_position_update(input, state, PositionState::Short) {
+                    return ExecutionResult {
+                        update_positions: vec![update],
+                        note: format!(
+                            "update-short {} {}",
+                            reason,
                             position_snapshot(input, state, PositionState::Short)
                         ),
-                    )],
+                        ..Default::default()
+                    };
+                }
+                return ExecutionResult {
                     note: format!(
-                        "close-short {} {}",
+                        "hold-short {} {}",
                         reason,
                         position_snapshot(input, state, PositionState::Short)
                     ),
@@ -570,6 +640,25 @@ mod tests {
                 price,
                 started_at_ms: 1_000,
             }),
+        }
+    }
+
+    fn sug_info(system_time: i64) -> lte_strategy_bridge::SuggestionInfo {
+        lte_strategy_bridge::SuggestionInfo {
+            time: system_time,
+            system_time,
+            symbol: "TEST".to_string(),
+            symbol_id: 1,
+            symbol_key: "TEST".to_string(),
+            status: lte_strategy_bridge::AlgoSuggestionTradeStatus::Normal,
+            price: 100.0,
+            candle: lte_strategy_bridge::SuggestionInfoCandle::new(100.0),
+            klines: Default::default(),
+            fast_candle: None,
+            direction: lte_strategy_bridge::Direction::Both,
+            indicator: Default::default(),
+            order_book: None,
+            oi: None,
         }
     }
 
@@ -1274,6 +1363,85 @@ mod tests {
         assert!(result.tp_orders[0].amount.is_none());
         assert!(result.close_positions.is_empty());
         assert!(result.note.contains("trail-after-virtual-sl"));
+    }
+
+    #[test]
+    fn created_long_timeout_updates_entry_price() {
+        let mut state = EngineState::default();
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 0.0,
+            exit_tp_reliable: false,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
+                price: 101.5,
+                started_at_ms: 1_000,
+            }),
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+        inp.sug_info = Some(sug_info(12_500));
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert_eq!(result.update_positions.len(), 1);
+        assert!(result.close_positions.is_empty());
+        assert_eq!(result.update_positions[0].direction, Direction::Long);
+        assert_eq!(result.update_positions[0].enter_price, Some(101.5));
+        assert!(result.note.contains("created-timeout"));
+        assert!(result.note.contains("update-long"));
+    }
+
+    #[test]
+    fn created_short_timeout_closes_on_direction_change() {
+        let mut state = EngineState::default();
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Short,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 0.0,
+            exit_tp_reliable: false,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-short".to_string(),
+            entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
+                price: 99.2,
+                started_at_ms: 1_000,
+            }),
+        };
+        let mut inp = input();
+        inp.positions.short = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+        inp.sug_info = Some(sug_info(12_500));
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert_eq!(result.close_positions.len(), 1);
+        assert!(result.update_positions.is_empty());
+        assert!(result.note.contains("direction-changed"));
     }
 
     #[test]

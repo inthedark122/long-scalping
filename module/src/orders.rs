@@ -2,6 +2,7 @@
 
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleOpenPosition, ModuleOrderSide, ModulePlaceOrder,
+    ModuleUpdatePosition,
 };
 
 pub(crate) fn close(direction: Direction, reason: &str) -> ModuleClosePosition {
@@ -89,5 +90,19 @@ pub(crate) fn tp_limit_order(
             _ => ModuleOrderSide::Buy,
         },
         reduce_only: true,
+    }
+}
+
+pub(crate) fn update_position(
+    direction: Direction,
+    enter_price: Option<f64>,
+    take_profit: Option<f64>,
+    stop_loss: Option<f64>,
+) -> ModuleUpdatePosition {
+    ModuleUpdatePosition {
+        direction,
+        enter_price,
+        take_profit,
+        stop_loss,
     }
 }

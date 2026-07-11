@@ -183,7 +183,10 @@ pub struct SugInfoSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryReason {
-    SugInfoMovement { price: f64, started_at_ms: u64 },
+    SugInfoMovement {
+        price: f64,
+        started_at_ms: u64,
+    },
     SidewayScalp {
         price: f64,
         block_low: f64,

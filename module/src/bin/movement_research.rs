@@ -423,7 +423,9 @@ fn summarize_sideway_probe(event: SidewayEvent, candles: &[CandleRow], idx: usiz
         if future.low < low {
             low = future.low;
         }
-        if future.close >= event.block_low - tolerance && future.close <= event.block_high + tolerance {
+        if future.close >= event.block_low - tolerance
+            && future.close <= event.block_high + tolerance
+        {
             persist_candles += 1;
         } else {
             breakout_index = Some(future_idx);
@@ -513,7 +515,10 @@ fn print_sideway_summary(label: &str, probes: &[SidewayProbe]) {
     let avg_long_mae = probes.iter().map(|p| p.long_mae_pct).sum::<f64>() / probes.len() as f64;
     let avg_short_mfe = probes.iter().map(|p| p.short_mfe_pct).sum::<f64>() / probes.len() as f64;
     let avg_short_mae = probes.iter().map(|p| p.short_mae_pct).sum::<f64>() / probes.len() as f64;
-    let over_1pct = max_moves.iter().filter(|move_pct| **move_pct >= 1.0).count();
+    let over_1pct = max_moves
+        .iter()
+        .filter(|move_pct| **move_pct >= 1.0)
+        .count();
     let over_1pct_after_breakout = probes
         .iter()
         .filter(|probe| probe.move_gt_1pct_after_breakout)

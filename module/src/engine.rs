@@ -426,6 +426,7 @@ fn process_realtime(
     ModuleOutput {
         open_positions: execution.open_positions,
         close_positions: execution.close_positions,
+        update_positions: execution.update_positions,
         place_orders: execution.tp_orders,
         cancel_orders: execution.cancel_orders,
         debug: debug::render(
