@@ -309,20 +309,25 @@ mod tests {
             state.sizes_len += 1;
         }
         state.avg_size = rolling_average(&state);
-        assert_eq!(sample_window(&state), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(
+            sample_window(&state),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        );
         assert!((state.avg_size - 5.5).abs() < 1e-9);
 
         state.sizes[state.sizes_pos] = 100.0;
         state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
+        state.sizes_len += 1;
         state.sizes[state.sizes_pos] = 110.0;
         state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
+        state.sizes_len += 1;
         state.avg_size = rolling_average(&state);
 
         assert_eq!(
             sample_window(&state),
-            vec![3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 100.0, 110.0]
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 100.0, 110.0]
         );
-        assert!((state.avg_size - 26.2).abs() < 1e-9);
+        assert!((state.avg_size - 22.083333333333332).abs() < 1e-9);
     }
 
     #[test]

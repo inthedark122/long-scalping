@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.16
+
+Sideway scalp release.
+
+- Added a live contrarian sideway entry path that opens on the opposite block edge.
+- Routed sideway entries into dedicated entry reasons and debug output.
+- Tied sideway TP/SL planning to the detected block bounds instead of generic structural fallback.
+
 ## 1.0.15
 
 Timeout close guard release.

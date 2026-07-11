@@ -48,9 +48,16 @@ fn open_note(
             EntryReason::SugInfoMovement {
                 price,
                 started_at_ms,
+            }
+            | EntryReason::SidewayScalp {
+                price,
+                started_at_ms,
+                ..
             } => format!(
-                "sug-info-movement price={:.4} started_at_ms={}",
-                price, started_at_ms
+                "{} price={:.4} started_at_ms={}",
+                reason.label(),
+                price,
+                started_at_ms
             ),
         })
         .unwrap_or_else(|| "none".to_string());
@@ -74,11 +81,7 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     )
 }
 
-fn position_snapshot(
-    input: &ModuleInput,
-    state: &EngineState,
-    side: PositionState,
-) -> String {
+fn position_snapshot(input: &ModuleInput, state: &EngineState, side: PositionState) -> String {
     let position = active_position(input, side);
     let raw_qty = position.map(|position| position.qty).unwrap_or(0.0);
     let notional = position.map(|position| position.notional).unwrap_or(0.0);
@@ -96,7 +99,7 @@ fn position_snapshot(
         state.position.stop_loss,
         state.position.exit_mode.as_str(),
         match state.position.entry_reason.as_ref() {
-            Some(EntryReason::SugInfoMovement { started_at_ms, .. }) => *started_at_ms,
+            Some(reason) => reason.started_at_ms(),
             None => 0,
         }
     )
@@ -132,9 +135,7 @@ fn tick_size(input: &ModuleInput) -> f64 {
 }
 
 fn created_entry_timeout_reason(input: &ModuleInput, state: &EngineState) -> Option<String> {
-    let started_at_ms = match state.position.entry_reason.as_ref()? {
-        EntryReason::SugInfoMovement { started_at_ms, .. } => *started_at_ms,
-    };
+    let started_at_ms = state.position.entry_reason.as_ref()?.started_at_ms();
     let current_ms = input.sug_info.as_ref()?.system_time as u64;
     let age_ms = current_ms.saturating_sub(started_at_ms);
     if age_ms < CREATED_MAX_AGE_MS {
@@ -188,6 +189,7 @@ fn initialize_exit_plan(
         &state.cascade_sug,
         reference_price,
         side,
+        state.position.entry_reason.as_ref(),
     )?;
     state.position.take_profit = plan.take_profit;
     state.position.stop_loss = plan.stop_loss;
@@ -481,14 +483,13 @@ pub fn evaluate_with_cascade(
     let entry_price = decision
         .entry_reason
         .as_ref()
-        .and_then(|reason| match reason {
-            EntryReason::SugInfoMovement { price, .. } => Some(*price),
-        })
+        .map(|reason| reason.price())
         .unwrap_or(input.price);
-    let movement_reason = matches!(
-        decision.entry_reason,
-        Some(EntryReason::SugInfoMovement { .. })
-    );
+    let entry_tag = match decision.entry_reason {
+        Some(EntryReason::SugInfoMovement { .. }) => "movement",
+        Some(EntryReason::SidewayScalp { .. }) => "sideway",
+        None => "default",
+    };
     match decision.market_state {
         MarketState::Long => ExecutionResult {
             open_positions: vec![limit_open(
@@ -497,12 +498,7 @@ pub fn evaluate_with_cascade(
                 entry_price,
                 &open_note(Direction::Long, amount, entry_price, decision, state),
             )],
-            note: if movement_reason {
-                "open-long-movement"
-            } else {
-                "open-long"
-            }
-            .to_string(),
+            note: format!("open-long-{}", entry_tag),
             ..Default::default()
         },
         MarketState::Short => ExecutionResult {
@@ -512,12 +508,7 @@ pub fn evaluate_with_cascade(
                 entry_price,
                 &open_note(Direction::Short, amount, entry_price, decision, state),
             )],
-            note: if movement_reason {
-                "open-short-movement"
-            } else {
-                "open-short"
-            }
-            .to_string(),
+            note: format!("open-short-{}", entry_tag),
             ..Default::default()
         },
         _ => ExecutionResult {

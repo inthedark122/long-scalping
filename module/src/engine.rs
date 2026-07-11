@@ -1,11 +1,11 @@
 use crate::debug;
 use crate::decision;
-use crate::detection::{cascade, mrc, regime, vlines};
+use crate::detection::{cascade, direction_lock, mrc, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
 use crate::model::EntryReason;
-use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, TradeDecision};
+use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
 use crate::risk;
@@ -72,6 +72,8 @@ fn handle_signal(
 ) -> ModuleOutput {
     if code == "start" {
         state.trade_budget = 0.0;
+        state.direction_lock = Default::default();
+        state.movement_entry_pending = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -127,6 +129,12 @@ fn handle_new_position(
     let side = dir_to_position(direction);
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    direction_lock::refresh(
+        &mut state.direction_lock,
+        &snapshot.tf1m,
+        input.price,
+        state.ticks,
+    );
     let plan = input.sug_info.as_ref().and_then(|sug_info| {
         let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
         exit::plan(
@@ -135,6 +143,7 @@ fn handle_new_position(
             &state.cascade_sug,
             entry_price,
             side,
+            state.position.entry_reason.as_ref(),
         )
     });
     let mut tp_orders = Vec::new();
@@ -249,6 +258,12 @@ fn refresh_indicators(
 
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    direction_lock::refresh(
+        &mut state.direction_lock,
+        &snapshot.tf1m,
+        input.price,
+        state.ticks,
+    );
     if is_init || timeframes.contains(&TF_1M) {
         cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
     }
@@ -288,6 +303,12 @@ fn process_realtime(
 
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    direction_lock::refresh(
+        &mut state.direction_lock,
+        &snapshot.tf1m,
+        input.price,
+        state.ticks,
+    );
     let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
     let candle = crate::model::Candle {
         open: sug_info.candle.enter,
@@ -297,11 +318,30 @@ fn process_realtime(
     };
     let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
     let cas_sug = cascade::update_from_candle(&mut state.cascade_sug, &candle);
+    let sideway = sideways::analyze(state, &snapshot.tf1m);
 
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     let mut decision = decision::decide(regime);
 
-    if matches!(decision.entry, crate::model::EntryGate::Open { .. }) {
+    if state.position.side == PositionState::Flat {
+        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway) {
+            decision.market_state = plan.market_state;
+            decision.entry = crate::model::EntryGate::Open {
+                notes: plan.notes.clone(),
+            };
+            decision.entry_reason = Some(EntryReason::SidewayScalp {
+                price: plan.price,
+                block_low: sideway.block_low,
+                block_high: sideway.block_high,
+                started_at_ms: sug_info.system_time as u64,
+                source: format!("{:?}", sideway.source),
+            });
+        }
+    }
+
+    if matches!(decision.entry, crate::model::EntryGate::Open { .. })
+        && decision.entry_reason.is_none()
+    {
         if let Some(plan) = prediction::movement_entry_plan(&snapshot, &sug_snapshot, &cas_sug) {
             decision.market_state = plan.market_state;
             decision.entry = crate::model::EntryGate::Open {

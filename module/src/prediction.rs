@@ -1,9 +1,9 @@
 use crate::detection::cascade::CascadeSignal;
-use crate::detection::levels;
+use crate::detection::{levels, sideways};
 use crate::exit;
 use crate::model::{
-    EntryGate, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase, IndicatorSnapshot,
-    MarketState, PositionState, SugInfoSnapshot,
+    EntryGate, EntryReason, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase,
+    IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot,
 };
 use crate::state::EngineState;
 
@@ -20,8 +20,9 @@ fn candidate_exit_plan(
     cascade: &crate::state::CascadeState,
     price: f64,
     side: PositionState,
+    entry_reason: Option<&EntryReason>,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::plan(snapshot, sug_snapshot, cascade, price, side)
+    exit::plan(snapshot, sug_snapshot, cascade, price, side, entry_reason)
 }
 
 fn signal_candle<'a>(
@@ -47,6 +48,13 @@ pub struct MovementEntryPlan {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SidewayEntryPlan {
+    pub market_state: MarketState,
+    pub price: f64,
+    pub notes: Vec<String>,
+}
+
 fn movement_fill_price(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
@@ -58,6 +66,55 @@ fn movement_fill_price(
         MarketState::Short => candle.high.max(f64::EPSILON),
         MarketState::Sideways => candle.close.max(f64::EPSILON),
     }
+}
+
+pub fn sideway_entry_plan(
+    snapshot: &IndicatorSnapshot,
+    signal: &sideways::SidewaySignal,
+) -> Option<SidewayEntryPlan> {
+    if !signal.active || signal.block_high <= signal.block_low {
+        return None;
+    }
+
+    let market_state = match signal.price_bias {
+        -1 => MarketState::Long,
+        1 => MarketState::Short,
+        _ => return None,
+    };
+
+    let width = (signal.block_high - signal.block_low).abs();
+    let buffer = (width * 0.10)
+        .max(snapshot.tf1m.mrc.range() * 0.005)
+        .max(snapshot.tf1m.candle.close * 0.0002)
+        .max(f64::EPSILON);
+
+    let (price, take_profit, stop_loss) = match market_state {
+        MarketState::Long => (
+            signal.block_low.max(f64::EPSILON),
+            signal.block_high.max(signal.block_low + buffer),
+            (signal.block_low - buffer).max(f64::EPSILON),
+        ),
+        MarketState::Short => (
+            signal.block_high.max(f64::EPSILON),
+            signal.block_low.max(f64::EPSILON),
+            signal.block_high + buffer,
+        ),
+        MarketState::Sideways => return None,
+    };
+
+    Some(SidewayEntryPlan {
+        market_state,
+        price,
+        notes: vec![
+            "sideway-scalp".to_string(),
+            format!("source={:?}", signal.source),
+            format!("bias={}", signal.price_bias),
+            format!("block={:.4}-{:.4}", signal.block_low, signal.block_high),
+            format!("entry={:.4}", price),
+            format!("tp={:.4}", take_profit),
+            format!("sl={:.4}", stop_loss),
+        ],
+    })
 }
 
 fn movement_continuation_band(
@@ -185,9 +242,143 @@ fn dp_signal_band(snapshot: &IndicatorSnapshot, price: f64, anchor: f64) -> f64 
     span.max(anchor_gap) * 0.25
 }
 
+fn direction_lock_gate(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    desired: MarketState,
+) -> Option<EntryGate> {
+    let lock = &state.direction_lock;
+    if lock.direction == MarketState::Sideways || lock.direction == desired {
+        return None;
+    }
+
+    Some(EntryGate::Wait(EntryWait {
+        reason: "direction-frozen".to_string(),
+        solutions: vec![EntryWaitSolution::WaitForDirectionBreak {
+            source: "zigzagtrend+dpsignal".to_string(),
+            direction: lock.direction,
+            break_price: lock.break_price,
+        }],
+        notes: vec![
+            format!("lock={}", lock.label()),
+            format!("plan={:?}", desired),
+            format!("price={:.4}", snapshot.tf1m.candle.close),
+        ],
+    }))
+}
+
+fn movement_entry_confirmation_gate(
+    state: &mut EngineState,
+    plan: &MovementEntryPlan,
+) -> Option<EntryGate> {
+    match state.movement_entry_pending.as_ref() {
+        Some(pending) if pending.direction == plan.market_state => {
+            if state.ticks > pending.armed_tick {
+                state.movement_entry_pending = None;
+                None
+            } else {
+                Some(EntryGate::Wait(EntryWait {
+                    reason: "movement-confirming".to_string(),
+                    solutions: vec![EntryWaitSolution::WaitForConfirmation {
+                        source: "movement".to_string(),
+                        direction: plan.market_state,
+                        armed_tick: pending.armed_tick,
+                        price: pending.price,
+                    }],
+                    notes: vec![
+                        format!("pending={:?}", pending.direction),
+                        format!("armed_tick={}", pending.armed_tick),
+                        format!("price={:.4}", pending.price),
+                        "wait-next-signal".to_string(),
+                    ],
+                }))
+            }
+        }
+        _ => {
+            state.movement_entry_pending = Some(crate::state::PendingEntryState {
+                direction: plan.market_state,
+                armed_tick: state.ticks,
+                price: plan.price,
+                reason: "movement-realized".to_string(),
+            });
+            Some(EntryGate::Wait(EntryWait {
+                reason: "movement-realized".to_string(),
+                solutions: vec![EntryWaitSolution::WaitForConfirmation {
+                    source: "movement".to_string(),
+                    direction: plan.market_state,
+                    armed_tick: state.ticks,
+                    price: plan.price,
+                }],
+                notes: vec![
+                    format!("pending={:?}", plan.market_state),
+                    format!("armed_tick={}", state.ticks),
+                    format!("price={:.4}", plan.price),
+                    "wait-next-enter".to_string(),
+                ],
+            }))
+        }
+    }
+}
+
+fn sideway_reentry_gate(
+    snapshot: &IndicatorSnapshot,
+    state: &EngineState,
+    side: PositionState,
+) -> Option<EntryGate> {
+    if state.exit_memory.kind != Some(ExitKind::TakeProfit) || state.exit_memory.side != side {
+        return None;
+    }
+
+    let signal = sideways::analyze(state, &snapshot.tf1m);
+    if sideways::reentry_ready(&signal, side) {
+        return None;
+    }
+
+    Some(EntryGate::Wait(EntryWait {
+        reason: "sideway-reentry-wait".to_string(),
+        solutions: vec![EntryWaitSolution::WaitForCooling {
+            note: format!(
+                "sideway={} reentry-side={:?} need-zone={}",
+                signal.reason,
+                side,
+                if matches!(side, PositionState::Long) {
+                    "-1..-2"
+                } else {
+                    "1..2"
+                }
+            ),
+        }],
+        notes: vec![
+            format!("sideway={}", signal.reason),
+            format!("last_tp_side={:?}", state.exit_memory.side),
+            format!("price={:.4}", snapshot.tf1m.candle.close),
+        ],
+    }))
+}
+
+fn sideway_entry_gate(
+    snapshot: &IndicatorSnapshot,
+    state: &EngineState,
+    side: PositionState,
+) -> Option<EntryGate> {
+    let signal = sideways::analyze(state, &snapshot.tf1m);
+    let plan = sideway_entry_plan(snapshot, &signal)?;
+    let desired_side = match plan.market_state {
+        MarketState::Long => PositionState::Long,
+        MarketState::Short => PositionState::Short,
+        MarketState::Sideways => PositionState::Flat,
+    };
+    if desired_side != side {
+        return None;
+    }
+
+    Some(EntryGate::Open { notes: plan.notes })
+}
+
 fn sug_entry_gate(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
+    state: &EngineState,
     side: PositionState,
 ) -> Option<EntryGate> {
     let sug = sug_snapshot.sug_candle?;
@@ -210,6 +401,17 @@ fn sug_entry_gate(
         PositionState::Short => sug.close.min(entry),
         PositionState::Flat => return None,
     };
+    if let Some(wait) = direction_lock_gate(
+        state,
+        snapshot,
+        match side {
+            PositionState::Long => MarketState::Long,
+            PositionState::Short => MarketState::Short,
+            PositionState::Flat => MarketState::Sideways,
+        },
+    ) {
+        return Some(wait);
+    }
     let range = (sug.high - sug.low).abs().max(f64::EPSILON);
     let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
     let price = sug.close;
@@ -247,9 +449,13 @@ pub fn entry_gate(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeSignal,
-    state: &EngineState,
+    state: &mut EngineState,
     side: PositionState,
 ) -> EntryGate {
+    if let Some(gate) = sideway_entry_gate(snapshot, state, side) {
+        return gate;
+    }
+
     if let Some(reason) = fast_candle_entry_block(snapshot, sug_snapshot) {
         return EntryGate::Wait(EntryWait {
             reason: "fast-candle-wait".to_string(),
@@ -272,6 +478,10 @@ pub fn entry_gate(
             }],
             notes: vec![format!("cascade-samples={}", cascade.samples)],
         });
+    }
+
+    if let Some(wait) = sideway_reentry_gate(snapshot, state, side) {
+        return wait;
     }
 
     if matches!(state.exit_memory.kind, Some(ExitKind::StopLoss))
@@ -369,10 +579,19 @@ pub fn entry_gate(
     }
 
     if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
+        if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
+            state.movement_entry_pending = None;
+            return wait;
+        }
+        if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
+            return wait;
+        }
         return EntryGate::Open { notes: plan.notes };
     }
 
-    if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, side) {
+    state.movement_entry_pending = None;
+
+    if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, state, side) {
         return gate;
     }
 
@@ -383,6 +602,7 @@ pub fn entry_gate(
         &state.cascade_sug,
         current_price,
         side,
+        state.position.entry_reason.as_ref(),
     ) {
         plan
     } else {

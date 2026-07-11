@@ -1,5 +1,5 @@
 use crate::detection::levels;
-use crate::model::{IndicatorSnapshot, PositionState, SugInfoSnapshot};
+use crate::model::{EntryReason, IndicatorSnapshot, PositionState, SugInfoSnapshot};
 use crate::state::CascadeState;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -8,6 +8,7 @@ pub enum ExitSource {
     Structural,
     SugInfo,
     Movement,
+    Sideway,
 }
 
 impl ExitSource {
@@ -16,6 +17,7 @@ impl ExitSource {
             Self::Structural => "structural",
             Self::SugInfo => "sug-info",
             Self::Movement => "movement",
+            Self::Sideway => "sideway",
         }
     }
 }
@@ -96,15 +98,62 @@ fn movement_plan(
     }
 }
 
+fn sideway_plan(reason: &EntryReason, side: PositionState) -> Option<ExitPlan> {
+    let EntryReason::SidewayScalp {
+        price,
+        block_low,
+        block_high,
+        ..
+    } = reason
+    else {
+        return None;
+    };
+
+    if !price.is_finite() || !block_low.is_finite() || !block_high.is_finite() {
+        return None;
+    }
+    if block_high <= block_low {
+        return None;
+    }
+
+    let width = (block_high - block_low).abs();
+    let buffer = (width * 0.10).max((*price * 0.0005).max(f64::EPSILON));
+    let (take_profit, stop_loss) = match side {
+        PositionState::Long => (
+            (*block_high).max(*price + buffer),
+            (*block_low - buffer).max(f64::EPSILON),
+        ),
+        PositionState::Short => (
+            (*block_low).max(f64::EPSILON),
+            *block_high + buffer,
+        ),
+        PositionState::Flat => return None,
+    };
+
+    Some(ExitPlan {
+        take_profit,
+        stop_loss,
+        tp_reliable: true,
+        source: ExitSource::Sideway,
+        structural_take_profit: take_profit,
+        structural_stop_loss: stop_loss,
+    })
+}
+
 fn compute(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
+    entry_reason: Option<&EntryReason>,
 ) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
+    }
+
+    if let Some(reason) = entry_reason.and_then(|reason| sideway_plan(reason, side)) {
+        return Some(reason);
     }
 
     let levels = levels::structural_levels(snapshot);
@@ -207,8 +256,9 @@ pub fn plan(
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
+    entry_reason: Option<&EntryReason>,
 ) -> Option<ExitPlan> {
-    compute(snapshot, sug_snapshot, cascade, price, side)
+    compute(snapshot, sug_snapshot, cascade, price, side, entry_reason)
 }
 
 pub fn describe(plan: Option<ExitPlan>) -> String {
@@ -277,7 +327,7 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Long).unwrap();
+        let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Long, None).unwrap();
         assert!(plan.take_profit > 100.0);
         assert!(plan.stop_loss < 100.0);
     }
@@ -297,8 +347,40 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Short).unwrap();
+        let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Short, None).unwrap();
         assert!(plan.take_profit < 100.0);
         assert!(plan.stop_loss > 100.0);
+    }
+
+    #[test]
+    fn sideway_plan_uses_block_edges() {
+        let snapshot = IndicatorSnapshot {
+            tf1m: tf(100.0),
+            tf5m: tf(100.0),
+            tf15m: tf(100.0),
+            tf1h: tf(100.0),
+            ..Default::default()
+        };
+        let sug = SugInfoSnapshot::default();
+        let cascade = CascadeState::default();
+        let reason = EntryReason::SidewayScalp {
+            price: 99.0,
+            block_low: 98.0,
+            block_high: 102.0,
+            started_at_ms: 1,
+            source: "OrderBlock".to_string(),
+        };
+        let plan = plan(
+            &snapshot,
+            &sug,
+            &cascade,
+            99.0,
+            PositionState::Long,
+            Some(&reason),
+        )
+        .unwrap();
+        assert_eq!(plan.source, ExitSource::Sideway);
+        assert!(plan.take_profit >= 102.0);
+        assert!(plan.stop_loss < 98.0);
     }
 }

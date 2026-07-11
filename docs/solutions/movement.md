@@ -5,6 +5,7 @@ This note records why the movement layer exists and how it is split now:
 - completed movement is seeded from `Init` and refreshed only from indicator updates
 - live movement is provisional and comes only from `SugInfo`
 - realtime trading should consume the cached completed state plus the current `SugInfo` movement snapshot
+- 1m movement can sit on top of `sug_info` movement as a timing overlay
 
 ## Why movement matters
 
@@ -20,9 +21,30 @@ We need it because:
 The intended stack is:
 
 1. regime / structure for direction context
-2. SugInfo candle for default scalping execution
-3. completed movement from indicator refresh for continuation / reversal timing
-4. provisional SugInfo movement for the final live entry / exit price path
+2. completed 1m movement for continuation / reversal timing
+3. `sug_info.candle` for the live scalp entry / exit price path
+4. ZigZag + DPSignal for direction lock and break confirmation
+
+## 1m overlay on top of `sug_info`
+
+The current research question is not whether to replace `sug_info`.
+It is whether we can add a 1m overlay that helps the bot trade inside the live scalp path without flipping direction too early.
+
+The Rust module is now the runtime source of truth for this overlay.
+The Python script is only the replay/live mirror used to validate the behavior.
+
+The working model is:
+
+- 1m movement decides whether the move is starting, building, or late
+- `sug_info.candle` supplies the live scalp price path
+- ZigZag + DPSignal define a frozen direction bias
+- the frozen direction stays active until the ZigZag break level is broken and DP still agrees with the flip
+
+This gives us a simple rule:
+
+- trade continuation while 1m movement and frozen direction agree
+- wait when 1m movement flips but ZigZag has not broken yet
+- allow reversal only after the ZigZag break is confirmed by DPSignal
 
 ## Original research plan
 
@@ -43,9 +65,19 @@ The initial plan was to:
 
 That plan is still the same. What changed is that we now have replay output to validate it.
 
+For the new overlay pass, the target symbol to inspect is:
+
+- `OKX#EDGE-USDT-SWAP#SWAP`
+
+Use it to compare:
+
+- raw 1m movement direction
+- frozen ZigZag + DPSignal direction
+- live `sug_info` movement behavior
+
 ## What we verified
 
-The replay tool is now runnable as `scripts/movement_research.py`.
+The replay tool is now runnable as the Rust binary `movement_research` with the `movement-research` feature.
 
 It seeds the 1m movement state from the first 10 candles, then replays the rest of the sample and reports:
 
@@ -104,9 +136,9 @@ The movement logic should now be used like this:
 - use the replay tool to compare thresholds before changing production logic
 - prefer symbol-specific threshold tuning when the replay output differs materially across tokens
 
-## How to use the script
+## How to use the binary
 
-`scripts/movement_research.py` is the research entry point.
+`movement_research` is the research entry point.
 
 Useful modes:
 
@@ -120,7 +152,8 @@ Useful modes:
 Example batch run:
 
 ```bash
-python3 scripts/movement_research.py --mode replay --history 60 \
+cargo run --locked --features movement-research --bin movement_research -- \
+  --mode replay --history 60 \
   --symbols OKX#ETH-USDT-SWAP#SWAP,OKX#SLX-USDT-SWAP#SWAP,OKX#LAB-USDT-SWAP#SWAP
 ```
 
@@ -129,8 +162,9 @@ python3 scripts/movement_research.py --mode replay --history 60 \
 What remains open is mostly threshold tuning:
 
 - compare `1.2x`, `1.3x`, and `1.5x` reverse thresholds
+- compare how long the ZigZag + DPSignal direction lock should remain sticky before the next break
 - compare continuation entry quality across symbols
 - rerun LAB with a longer wait or a more resilient fetch path
-- compare how often SugInfo entry / exit beats the structural fallback on live trading
+- compare how often the 1m overlay beats the pure `sug_info` scalp path on live trading
 
-The script should stay simple. The point is to expose movement behavior and live scalping behavior, not to hide it behind a heavy backtest framework.
+The binary should stay simple. The point is to expose movement behavior and live scalping behavior, not to hide it behind a heavy backtest framework.

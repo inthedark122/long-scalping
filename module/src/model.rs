@@ -184,6 +184,36 @@ pub struct SugInfoSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryReason {
     SugInfoMovement { price: f64, started_at_ms: u64 },
+    SidewayScalp {
+        price: f64,
+        block_low: f64,
+        block_high: f64,
+        started_at_ms: u64,
+        source: String,
+    },
+}
+
+impl EntryReason {
+    pub fn price(&self) -> f64 {
+        match self {
+            Self::SugInfoMovement { price, .. } => *price,
+            Self::SidewayScalp { price, .. } => *price,
+        }
+    }
+
+    pub fn started_at_ms(&self) -> u64 {
+        match self {
+            Self::SugInfoMovement { started_at_ms, .. } => *started_at_ms,
+            Self::SidewayScalp { started_at_ms, .. } => *started_at_ms,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::SugInfoMovement { .. } => "sug-info-movement",
+            Self::SidewayScalp { .. } => "sideway-scalp",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +412,17 @@ pub enum EntryWaitSolution {
     WaitForSamples {
         required: u32,
         current: u32,
+    },
+    WaitForDirectionBreak {
+        source: String,
+        direction: MarketState,
+        break_price: f64,
+    },
+    WaitForConfirmation {
+        source: String,
+        direction: MarketState,
+        armed_tick: u64,
+        price: f64,
     },
     ReclaimLevel {
         source: String,

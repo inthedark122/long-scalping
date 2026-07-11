@@ -1,3 +1,4 @@
+use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, PositionState};
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
@@ -54,6 +55,56 @@ pub struct CascadeState {
     pub break_n: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct DirectionLockState {
+    pub direction: MarketState,
+    pub break_price: f64,
+    pub last_tick: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingEntryState {
+    pub direction: MarketState,
+    pub armed_tick: u64,
+    pub price: f64,
+    pub reason: String,
+}
+
+impl Default for PendingEntryState {
+    fn default() -> Self {
+        Self {
+            direction: MarketState::Sideways,
+            armed_tick: 0,
+            price: 0.0,
+            reason: "na".to_string(),
+        }
+    }
+}
+
+impl Default for DirectionLockState {
+    fn default() -> Self {
+        Self {
+            direction: MarketState::Sideways,
+            break_price: 0.0,
+            last_tick: 0,
+            reason: "na".to_string(),
+        }
+    }
+}
+
+impl DirectionLockState {
+    pub fn label(&self) -> String {
+        if self.direction == MarketState::Sideways {
+            return "na".to_string();
+        }
+        format!(
+            "{:?}:{:.4}:{}",
+            self.direction, self.break_price, self.reason
+        )
+    }
+}
+
 pub struct EngineState {
     pub ticks: u64,
     pub bar_1m: u64,
@@ -63,6 +114,8 @@ pub struct EngineState {
     pub position: PositionRuntime,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
+    pub direction_lock: DirectionLockState,
+    pub movement_entry_pending: Option<PendingEntryState>,
     pub cascade_tf: CascadeState,
     pub cascade_sug: CascadeState,
     pub exit_memory: ExitMemory,
@@ -79,6 +132,8 @@ impl Default for EngineState {
             position: PositionRuntime::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
+            direction_lock: DirectionLockState::default(),
+            movement_entry_pending: None,
             cascade_tf: CascadeState::default(),
             cascade_sug: CascadeState::default(),
             exit_memory: ExitMemory::default(),
