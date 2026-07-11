@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.18
+
+Clear entry solution release.
+
+- Made `sug_info` the primary scalp entry path and required 1m confirmation for the live open.
+- Kept movement as a fallback and reserved sideways for stop-loss-driven reversal entries.
+- Added a dedicated `SugInfoScalp` entry reason so the runtime and debug output show the new primary path.
+
 ## 1.0.17
 
 Created-entry amend release.
