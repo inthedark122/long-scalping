@@ -55,6 +55,15 @@ pub struct SidewayEntryPlan {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SugEntryPlan {
+    pub market_state: MarketState,
+    pub entry: f64,
+    pub target: f64,
+    pub band: f64,
+    pub notes: Vec<String>,
+}
+
 fn movement_fill_price(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
@@ -397,6 +406,10 @@ fn sideway_entry_gate(
     state: &EngineState,
     side: PositionState,
 ) -> Option<EntryGate> {
+    if state.exit_memory.kind != Some(ExitKind::StopLoss) {
+        return None;
+    }
+
     let signal = sideways::analyze(state, &snapshot.tf1m);
     let plan = sideway_entry_plan(snapshot, &signal)?;
     if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
@@ -427,12 +440,13 @@ fn sideway_entry_gate(
     Some(EntryGate::Open { notes: plan.notes })
 }
 
-fn sug_entry_gate(
+pub fn sug_entry_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     state: &EngineState,
+    cascade: &CascadeSignal,
     side: PositionState,
-) -> Option<EntryGate> {
+) -> Option<SugEntryPlan> {
     let sug = sug_snapshot.sug_candle?;
     let side_dir = match side {
         PositionState::Long => 1,
@@ -440,6 +454,24 @@ fn sug_entry_gate(
         PositionState::Flat => return None,
     };
     if sug_snapshot.sug_direction != 0 && sug_snapshot.sug_direction != side_dir {
+        return None;
+    }
+
+    if direction_lock_gate(
+        state,
+        snapshot,
+        match side {
+            PositionState::Long => MarketState::Long,
+            PositionState::Short => MarketState::Short,
+            PositionState::Flat => MarketState::Sideways,
+        },
+    )
+    .is_some()
+    {
+        return None;
+    }
+
+    if cascade.samples < 3 || cascade.dir != side_dir {
         return None;
     }
 
@@ -453,6 +485,62 @@ fn sug_entry_gate(
         PositionState::Short => sug.close.min(entry),
         PositionState::Flat => return None,
     };
+    let range = (sug.high - sug.low).abs().max(f64::EPSILON);
+    let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
+    let price = sug.close;
+    let near_entry = (price - entry).abs() <= band;
+
+    let mut notes = vec![
+        "sug-info-scalp".to_string(),
+        format!("entry={:.4}", entry),
+        format!("tp={:.4}", target),
+        format!("band={:.4}", band),
+        format!("cascade_dir={}", cascade.dir),
+        format!("cascade_samples={}", cascade.samples),
+    ];
+    if near_entry {
+        notes.push("1m-confirmed".to_string());
+        Some(SugEntryPlan {
+            market_state: match side {
+                PositionState::Long => MarketState::Long,
+                PositionState::Short => MarketState::Short,
+                PositionState::Flat => return None,
+            },
+            entry,
+            target,
+            band,
+            notes,
+        })
+    } else {
+        None
+    }
+}
+
+fn sug_entry_gate(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    state: &EngineState,
+    cascade: &CascadeSignal,
+    side: PositionState,
+) -> Option<EntryGate> {
+    let sug = sug_snapshot.sug_candle?;
+    let side_dir = match side {
+        PositionState::Long => 1,
+        PositionState::Short => -1,
+        PositionState::Flat => return None,
+    };
+    if sug_snapshot.sug_direction != 0 && sug_snapshot.sug_direction != side_dir {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "sug-info-direction-mismatch".to_string(),
+            solutions: vec![],
+            notes: vec![
+                "sug-info default scalping path".to_string(),
+                format!("sug_dir={}", sug_snapshot.sug_direction),
+                format!("plan={:?}", side),
+            ],
+        }));
+    }
+
     if let Some(wait) = direction_lock_gate(
         state,
         snapshot,
@@ -464,6 +552,38 @@ fn sug_entry_gate(
     ) {
         return Some(wait);
     }
+
+    if cascade.samples < 3 || cascade.dir != side_dir {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "sug-info-1m-confirm-wait".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForConfirmation {
+                source: "1m-cascade".to_string(),
+                direction: match side {
+                    PositionState::Long => MarketState::Long,
+                    PositionState::Short => MarketState::Short,
+                    PositionState::Flat => MarketState::Sideways,
+                },
+                armed_tick: state.ticks,
+                price: sug.close,
+            }],
+            notes: vec![
+                "sug-info default scalping path".to_string(),
+                format!("cascade_dir={}", cascade.dir),
+                format!("cascade_samples={}", cascade.samples),
+            ],
+        }));
+    }
+
+    let entry = match side {
+        PositionState::Long => sug.open.min(sug.close),
+        PositionState::Short => sug.open.max(sug.close),
+        PositionState::Flat => return None,
+    };
+    let target = match side {
+        PositionState::Long => sug.close.max(entry),
+        PositionState::Short => sug.close.min(entry),
+        PositionState::Flat => return None,
+    };
     let range = (sug.high - sug.low).abs().max(f64::EPSILON);
     let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
     let price = sug.close;
@@ -476,6 +596,7 @@ fn sug_entry_gate(
                 format!("entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("band={:.4}", band),
+                "1m-confirmed".to_string(),
             ],
         })
     } else {
@@ -492,6 +613,8 @@ fn sug_entry_gate(
                 format!("entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("price={:.4}", price),
+                format!("cascade_dir={}", cascade.dir),
+                format!("cascade_samples={}", cascade.samples),
             ],
         }))
     }
@@ -634,6 +757,10 @@ pub fn entry_gate(
         }
     }
 
+    if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, state, cascade, side) {
+        return gate;
+    }
+
     if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
         if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
             state.movement_entry_pending = None;
@@ -646,10 +773,6 @@ pub fn entry_gate(
     }
 
     state.movement_entry_pending = None;
-
-    if let Some(gate) = sug_entry_gate(snapshot, sug_snapshot, state, side) {
-        return gate;
-    }
 
     let current_price = signal_candle(snapshot, sug_snapshot).close;
     let plan = if let Some(plan) = candidate_exit_plan(
@@ -755,5 +878,95 @@ pub fn entry_gate(
             "tp={:.4} sl={:.4} tp_reliable={}",
             plan.take_profit, plan.stop_loss, plan.tp_reliable
         )],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Candle, MrcBands, SugInfoSnapshot, TimeframeSnapshot};
+    use crate::state::EngineState;
+
+    fn snapshot() -> IndicatorSnapshot {
+        IndicatorSnapshot {
+            tf1m: TimeframeSnapshot {
+                candle: Candle {
+                    open: 100.0,
+                    high: 100.2,
+                    low: 99.8,
+                    close: 100.03,
+                },
+                mrc: MrcBands {
+                    down_big: 90.0,
+                    down_outer: 92.0,
+                    down_small: 94.0,
+                    down_inner: 96.0,
+                    mean_line: 100.0,
+                    up_inner: 104.0,
+                    up_small: 106.0,
+                    up_outer: 108.0,
+                    up_big: 110.0,
+                    current_cross: 0.0,
+                    mean_line_slope: 0.0,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn sug_snapshot() -> SugInfoSnapshot {
+        SugInfoSnapshot {
+            sug_candle: Some(Candle {
+                open: 100.0,
+                high: 100.2,
+                low: 99.8,
+                close: 100.03,
+            }),
+            sug_direction: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sug_entry_plan_requires_1m_confirmation() {
+        let mut state = EngineState::default();
+        let mut cascade = CascadeSignal {
+            dir: 1,
+            samples: 3,
+            ..Default::default()
+        };
+        let plan = sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &state,
+            &cascade,
+            PositionState::Long,
+        );
+        assert!(plan.is_some());
+
+        cascade.dir = -1;
+        assert!(sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &state,
+            &cascade,
+            PositionState::Long
+        )
+        .is_none());
+
+        state.direction_lock.direction = MarketState::Short;
+        assert!(sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &state,
+            &CascadeSignal {
+                dir: 1,
+                samples: 3,
+                ..Default::default()
+            },
+            PositionState::Long
+        )
+        .is_none());
     }
 }

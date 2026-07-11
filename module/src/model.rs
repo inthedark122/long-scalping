@@ -183,6 +183,10 @@ pub struct SugInfoSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryReason {
+    SugInfoScalp {
+        price: f64,
+        started_at_ms: u64,
+    },
     SugInfoMovement {
         price: f64,
         started_at_ms: u64,
@@ -199,6 +203,7 @@ pub enum EntryReason {
 impl EntryReason {
     pub fn price(&self) -> f64 {
         match self {
+            Self::SugInfoScalp { price, .. } => *price,
             Self::SugInfoMovement { price, .. } => *price,
             Self::SidewayScalp { price, .. } => *price,
         }
@@ -206,6 +211,7 @@ impl EntryReason {
 
     pub fn started_at_ms(&self) -> u64 {
         match self {
+            Self::SugInfoScalp { started_at_ms, .. } => *started_at_ms,
             Self::SugInfoMovement { started_at_ms, .. } => *started_at_ms,
             Self::SidewayScalp { started_at_ms, .. } => *started_at_ms,
         }
@@ -213,6 +219,7 @@ impl EntryReason {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::SugInfoScalp { .. } => "sug-info-scalp",
             Self::SugInfoMovement { .. } => "sug-info-movement",
             Self::SidewayScalp { .. } => "sideway-scalp",
         }

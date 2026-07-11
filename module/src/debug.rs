@@ -16,6 +16,9 @@ pub fn render(
     let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let entry_reason = match &decision.entry_reason {
+        Some(crate::model::EntryReason::SugInfoScalp { price, .. }) => {
+            format!("sug-info-scalp price={:.4}", price)
+        }
         Some(crate::model::EntryReason::SugInfoMovement { price, .. }) => {
             format!("sug-info-movement price={:.4}", price)
         }

@@ -325,24 +325,52 @@ fn process_realtime(
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     let mut decision = decision::decide(regime);
 
-    if state.position.side == PositionState::Flat {
+    if state.position.side == PositionState::Flat
+        && state.exit_memory.kind == Some(ExitKind::StopLoss)
+    {
         if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway) {
+            if sideway.active {
+                decision.market_state = plan.market_state;
+                decision.entry = crate::model::EntryGate::Open {
+                    notes: plan.notes.clone(),
+                };
+                decision.entry_reason = Some(EntryReason::SidewayScalp {
+                    price: plan.price,
+                    block_low: sideway.block_low,
+                    block_high: sideway.block_high,
+                    started_at_ms: sug_info.system_time as u64,
+                    source: format!("{:?}", sideway.source),
+                });
+            }
+        }
+    }
+
+    if matches!(decision.entry, crate::model::EntryGate::Open { .. })
+        && decision.entry_reason.is_none()
+    {
+        let entry_side = match decision.market_state {
+            MarketState::Long => PositionState::Long,
+            MarketState::Short => PositionState::Short,
+            MarketState::Sideways => PositionState::Flat,
+        };
+        if let Some(plan) =
+            prediction::sug_entry_plan(&snapshot, &sug_snapshot, &state, &cas_sug, entry_side)
+        {
+            let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;
             decision.entry = crate::model::EntryGate::Open {
                 notes: plan.notes.clone(),
             };
-            decision.entry_reason = Some(EntryReason::SidewayScalp {
-                price: plan.price,
-                block_low: sideway.block_low,
-                block_high: sideway.block_high,
+            decision.entry_reason = Some(EntryReason::SugInfoScalp {
+                price: plan.entry,
                 started_at_ms: sug_info.system_time as u64,
-                source: format!("{:?}", sideway.source),
             });
         }
     }
 
     if matches!(decision.entry, crate::model::EntryGate::Open { .. })
         && decision.entry_reason.is_none()
+        && sug_snapshot.sug_candle.is_none()
     {
         if let Some(plan) = prediction::movement_entry_plan(&snapshot, &sug_snapshot, &cas_sug) {
             decision.market_state = plan.market_state;

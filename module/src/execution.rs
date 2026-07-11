@@ -46,7 +46,11 @@ fn open_note(
         .entry_reason
         .as_ref()
         .map(|reason| match reason {
-            EntryReason::SugInfoMovement {
+            EntryReason::SugInfoScalp {
+                price,
+                started_at_ms,
+            }
+            | EntryReason::SugInfoMovement {
                 price,
                 started_at_ms,
             }
@@ -565,6 +569,7 @@ pub fn evaluate_with_cascade(
         .map(|reason| reason.price())
         .unwrap_or(input.price);
     let entry_tag = match decision.entry_reason {
+        Some(EntryReason::SugInfoScalp { .. }) => "sug-info",
         Some(EntryReason::SugInfoMovement { .. }) => "movement",
         Some(EntryReason::SidewayScalp { .. }) => "sideway",
         None => "default",
@@ -1556,6 +1561,30 @@ mod tests {
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].enter_price, Some(99.5));
         assert_eq!(result.note, "open-long-movement");
+    }
+
+    #[test]
+    fn sug_info_scalp_uses_signal_price() {
+        let mut state = EngineState::default();
+        let mut inp = input();
+        inp.price = 99.5;
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &TradeDecision {
+                market_state: MarketState::Long,
+                entry: crate::model::EntryGate::Open { notes: vec![] },
+                entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
+                    price: 99.5,
+                    started_at_ms: 1_000,
+                }),
+            },
+        );
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].enter_price, Some(99.5));
+        assert_eq!(result.note, "open-long-sug-info");
     }
 
     #[test]
