@@ -893,6 +893,22 @@ fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<d
     Ok(rows)
 }
 
+fn fetch_full_history(symbol_key: &str, seed_limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+    let mut limit = seed_limit.max(200);
+    let mut best = Vec::new();
+    while limit <= 5_000 {
+        let rows = fetch_history(symbol_key, limit)?;
+        if rows.len() > best.len() {
+            best = rows;
+        }
+        if best.len() < limit {
+            break;
+        }
+        limit = (limit * 2).min(5_000);
+    }
+    Ok(best)
+}
+
 fn simulate(
     candles: &[CandleRow],
     tp_mult: f64,
@@ -1423,7 +1439,7 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
 
 fn usage() {
     eprintln!(
-        "movement_research --mode replay|live|both [--symbol-key KEY] [--symbols A,B] [--history N] [--ws-seconds N] [--tp-mult X] [--sl-mult X] [--csv FILE] [--raw]"
+        "movement_research --mode replay|live|both|chart [--symbol-key KEY] [--symbols A,B] [--history N] [--full-history] [--ws-seconds N] [--tp-mult X] [--sl-mult X] [--csv FILE] [--raw]"
     );
 }
 
@@ -1433,6 +1449,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut symbol_keys: Vec<String> = Vec::new();
     let mut mode = "replay".to_string();
     let mut history: usize = 60;
+    let mut full_history = false;
     let mut ws_seconds: u64 = 300;
     let mut tp_mult = 1.0;
     let mut sl_mult = 0.8;
@@ -1464,6 +1481,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     i += 2;
                     continue;
                 }
+            }
+            "--full-history" => {
+                full_history = true;
+                i += 1;
+                continue;
             }
             "--mode" => {
                 if let Some(val) = args.get(i + 1) {
@@ -1530,7 +1552,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if mode == "replay" || mode == "both" {
         for symbol_key in &symbol_keys {
-            let candles = fetch_history(symbol_key, history)?;
+            let candles = if full_history || mode == "chart" {
+                fetch_full_history(symbol_key, history)?
+            } else {
+                fetch_history(symbol_key, history)?
+            };
             if candles.len() < 50 {
                 eprintln!(
                     "{symbol_key}: need at least 50 candles, got {}",
@@ -1571,6 +1597,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         if mode == "replay" {
             return Ok(());
         }
+    }
+
+    if mode == "chart" {
+        for symbol_key in &symbol_keys {
+            let candles = fetch_full_history(symbol_key, history)?;
+            if candles.len() < 50 {
+                eprintln!(
+                    "{symbol_key}: need at least 50 candles, got {}",
+                    candles.len()
+                );
+                continue;
+            }
+            let (results, traces, events, sideway_probes) = simulate(&candles, tp_mult, sl_mult);
+            println!("Chart history: {symbol_key}");
+            println!("candles={}", candles.len());
+            for line in traces {
+                println!("{line}");
+            }
+            if !sideway_probes.is_empty() {
+                print_sideway_summary("sideways", &sideway_probes);
+            }
+            println!("{}", summarize_results(&results));
+            if !events.is_empty() {
+                println!("events={}", events.len());
+            }
+        }
+        return Ok(());
     }
 
     if mode == "live" || mode == "both" {
