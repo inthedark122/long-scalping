@@ -158,11 +158,13 @@ fn handle_new_position(
             .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
             .unwrap_or(0.0);
         if qty > 0.0 {
+            let note = Some(format!("tp:{}", plan.source.as_str()));
             tp_orders.push(tp_limit_order(
                 direction,
                 qty,
                 plan.take_profit,
                 &state.position.tp_mark,
+                note.as_deref(),
             ));
         }
     }

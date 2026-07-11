@@ -202,11 +202,13 @@ fn initialize_exit_plan(
     if qty <= 0.0 {
         return None;
     }
+    let order_note = Some(format!("tp:{}", plan.source.as_str()));
     Some(tp_limit_order(
         direction,
         qty,
         plan.take_profit,
         &state.position.tp_mark,
+        order_note.as_deref(),
     ))
 }
 
@@ -269,7 +271,14 @@ fn ensure_active_exit_order(
         if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
             state.position.take_profit = desired_tp;
             notes.push(format!("tp-trail={:.4}", desired_tp));
-            let order = tp_limit_order(direction, qty, desired_tp, &state.position.tp_mark);
+            let note = Some("tp:trail".to_string());
+            let order = tp_limit_order(
+                direction,
+                qty,
+                desired_tp,
+                &state.position.tp_mark,
+                note.as_deref(),
+            );
             return (
                 vec![order],
                 format!(

@@ -25,6 +25,7 @@ pub(crate) fn limit_order(
     amount: f64,
     price: f64,
     mark: &str,
+    note: Option<&str>,
 ) -> ModulePlaceOrder {
     ModulePlaceOrder {
         direction,
@@ -33,6 +34,7 @@ pub(crate) fn limit_order(
         enter_price: price,
         take_profit: None,
         stop_loss: None,
+        note: note.map(|value| value.to_string()),
         mark: mark.to_string(),
         order_side: match direction {
             Direction::Long => ModuleOrderSide::Buy,
@@ -70,6 +72,7 @@ pub(crate) fn tp_limit_order(
     qty: f64,
     price: f64,
     mark: &str,
+    note: Option<&str>,
 ) -> ModulePlaceOrder {
     ModulePlaceOrder {
         direction,
@@ -78,6 +81,7 @@ pub(crate) fn tp_limit_order(
         enter_price: price,
         take_profit: None,
         stop_loss: None,
+        note: note.map(|value| value.to_string()),
         mark: mark.to_string(),
         order_side: match direction {
             Direction::Long => ModuleOrderSide::Sell,
