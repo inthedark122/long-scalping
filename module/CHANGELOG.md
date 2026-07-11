@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.17
+
+Created-entry amend release.
+
+- Replaced created-position timeout closes with in-place entry-price updates.
+- Added `update_positions` plumbing so pending entries amend without cancel+replace.
+- Kept direction changes as a hard close trigger for active positions.
+
 ## 1.0.16
 
 Sideway scalp release.
