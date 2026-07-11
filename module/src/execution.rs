@@ -544,6 +544,16 @@ pub fn evaluate_with_cascade(
         };
     }
 
+    if decision.entry_reason.is_none() {
+        return ExecutionResult {
+            note: format!(
+                "entry-blocked reason=missing-entry-reason market_state={:?}",
+                decision.market_state
+            ),
+            ..Default::default()
+        };
+    }
+
     let amount = entry_budget(input, state);
     let leverage = (input.leverage as f64).max(1.0);
     if amount <= 0.0 {
@@ -633,6 +643,17 @@ mod tests {
         TradeDecision {
             market_state,
             entry: crate::model::EntryGate::Open { notes: vec![] },
+            entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
+                price: 100.0,
+                started_at_ms: 1_000,
+            }),
+        }
+    }
+
+    fn reasonless_decision(market_state: MarketState) -> TradeDecision {
+        TradeDecision {
+            market_state,
+            entry: crate::model::EntryGate::Open { notes: vec![] },
             entry_reason: None,
         }
     }
@@ -689,7 +710,7 @@ mod tests {
             &mut state,
             &IndicatorSnapshot::default(),
             &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Sideways),
+            &reasonless_decision(MarketState::Sideways),
         );
         assert!(result.open_positions.is_empty());
     }
@@ -1041,6 +1062,20 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].amount, Some(1.0));
+    }
+
+    #[test]
+    fn missing_entry_reason_blocks_entries() {
+        let mut state = EngineState::default();
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &reasonless_decision(MarketState::Long),
+        );
+        assert!(result.open_positions.is_empty());
+        assert!(result.note.contains("missing-entry-reason"));
     }
 
     #[test]
