@@ -277,7 +277,7 @@ fn refresh_indicators(
     );
 
     ModuleOutput {
-        debug: format!("indicators tfs={:?} init={}", timeframes, is_init),
+        debug: String::new(),
         ..Default::default()
     }
 }
