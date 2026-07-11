@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.18",
+      "module_version": "1.0.19",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.18"
+          "module_version": "1.0.19"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.18 clear entry solution release using compiled defaults or cap_init/trading_amount overrides. Sug-info is now the primary scalp path, 1m confirms direction, and sideways is reserved for post-stop reversals.",
+      "description": "Start the 1.0.19 explicit-entry release using compiled defaults or cap_init/trading_amount overrides. Reasonless regime opens are blocked, and only explicit scalp or reversal paths can open a trade.",
       "params": [
         {
           "code": "cap_init",
@@ -53,7 +53,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.17",
+    "version": "1.0.19",
     "defaults": {}
   }
 }

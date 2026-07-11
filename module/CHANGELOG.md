@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.19
+
+Explicit-entry release.
+
+- Blocked regime opens that do not carry an explicit entry reason.
+- Kept `sug_info` scalp, movement, and stop-loss reversal paths as the only valid opens.
+- Stopped the worst-case `reason=none` entry path from reaching live orders.
+
 ## 1.0.18
 
 Clear entry solution release.
