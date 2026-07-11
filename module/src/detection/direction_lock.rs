@@ -52,10 +52,8 @@ pub fn refresh(lock: &mut DirectionLockState, snapshot: &TimeframeSnapshot, pric
     }
 
     if is_broken(lock, snapshot, price) {
-        lock.direction = confirmed;
-        lock.break_price = break_price;
         lock.last_tick = tick;
-        lock.reason = "zigzag-break".to_string();
+        lock.reason = "opposite-blocked".to_string();
     }
 }
 
@@ -114,8 +112,8 @@ mod tests {
         };
         let snapshot = tf(-1, -1, 99.0, 99.5, 99.0, 100.5);
         refresh(&mut lock, &snapshot, 99.5, 2);
-        assert_eq!(lock.direction, MarketState::Short);
-        assert_eq!(lock.break_price, 99.0);
-        assert_eq!(lock.reason, "zigzag-break");
+        assert_eq!(lock.direction, MarketState::Long);
+        assert_eq!(lock.break_price, 100.0);
+        assert_eq!(lock.reason, "opposite-blocked");
     }
 }

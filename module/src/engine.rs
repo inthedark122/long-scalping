@@ -393,6 +393,27 @@ fn process_realtime(
         };
     }
 
+    let locked_direction = state.direction_lock.direction;
+    if locked_direction != MarketState::Sideways && decision.market_state != locked_direction {
+        decision = TradeDecision {
+            market_state: locked_direction,
+            entry: crate::model::EntryGate::Wait(crate::model::EntryWait {
+                reason: "one-way-lock".to_string(),
+                solutions: vec![crate::model::EntryWaitSolution::WaitForDirectionBreak {
+                    source: "direction-lock".to_string(),
+                    direction: locked_direction,
+                    break_price: state.direction_lock.break_price,
+                }],
+                notes: vec![
+                    format!("lock={}", state.direction_lock.label()),
+                    format!("price={:.4}", snapshot.tf1m.candle.close),
+                    "same-side-only".to_string(),
+                ],
+            }),
+            entry_reason: None,
+        };
+    }
+
     let execution = execution::evaluate_with_cascade(
         input,
         state,

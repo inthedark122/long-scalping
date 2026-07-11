@@ -267,6 +267,42 @@ fn direction_lock_gate(
     }))
 }
 
+fn one_way_lock_gate(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    side: PositionState,
+) -> Option<EntryGate> {
+    let lock = &state.direction_lock;
+    if lock.direction == MarketState::Sideways {
+        return None;
+    }
+
+    let desired = match side {
+        PositionState::Long => MarketState::Long,
+        PositionState::Short => MarketState::Short,
+        PositionState::Flat => MarketState::Sideways,
+    };
+
+    if desired != MarketState::Sideways && desired != lock.direction {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "one-way-lock".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForDirectionBreak {
+                source: "direction-lock".to_string(),
+                direction: lock.direction,
+                break_price: lock.break_price,
+            }],
+            notes: vec![
+                format!("lock={}", lock.label()),
+                format!("plan={:?}", desired),
+                format!("price={:.4}", snapshot.tf1m.candle.close),
+                "same-side-only".to_string(),
+            ],
+        }));
+    }
+
+    None
+}
+
 fn movement_entry_confirmation_gate(
     state: &mut EngineState,
     plan: &MovementEntryPlan,
@@ -363,12 +399,31 @@ fn sideway_entry_gate(
 ) -> Option<EntryGate> {
     let signal = sideways::analyze(state, &snapshot.tf1m);
     let plan = sideway_entry_plan(snapshot, &signal)?;
+    if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
+        return Some(wait);
+    }
+    if signal.active && !sideways::reentry_ready(&signal, side) {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "sideway-opposite-wait".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForCooling {
+                note: format!(
+                    "sideway={} side={:?} need-ready",
+                    signal.reason, side
+                ),
+            }],
+            notes: vec![
+                format!("sideway={}", signal.reason),
+                format!("price={:.4}", snapshot.tf1m.candle.close),
+                format!("lock={}", state.direction_lock.label()),
+            ],
+        }));
+    }
     let desired_side = match plan.market_state {
         MarketState::Long => PositionState::Long,
         MarketState::Short => PositionState::Short,
         MarketState::Sideways => PositionState::Flat,
     };
-    if desired_side != side {
+    if desired_side != side || desired_side == PositionState::Flat {
         return None;
     }
 
@@ -452,6 +507,10 @@ pub fn entry_gate(
     state: &mut EngineState,
     side: PositionState,
 ) -> EntryGate {
+    if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
+        return wait;
+    }
+
     if let Some(gate) = sideway_entry_gate(snapshot, state, side) {
         return gate;
     }
