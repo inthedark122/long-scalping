@@ -30,6 +30,9 @@ pub fn refresh(lock: &mut DirectionLockState, snapshot: &TimeframeSnapshot, pric
     if confirmed == MarketState::Sideways {
         lock.last_tick = tick;
         if lock.direction != MarketState::Sideways {
+            // Neutral higher timeframes should not keep a stale one-way bias alive.
+            lock.direction = MarketState::Sideways;
+            lock.break_price = fallback_break_price(snapshot);
             lock.reason = "dpzz-freeze".to_string();
         }
         return;
@@ -115,5 +118,20 @@ mod tests {
         assert_eq!(lock.direction, MarketState::Long);
         assert_eq!(lock.break_price, 100.0);
         assert_eq!(lock.reason, "opposite-blocked");
+    }
+
+    #[test]
+    fn clears_stale_direction_on_sideways_confirmation() {
+        let mut lock = DirectionLockState {
+            direction: MarketState::Short,
+            break_price: 100.0,
+            last_tick: 1,
+            reason: "dpzz-freeze".to_string(),
+        };
+        let snapshot = tf(0, 0, 101.0, 100.5, 100.0, 101.0);
+        refresh(&mut lock, &snapshot, 100.5, 2);
+        assert_eq!(lock.direction, MarketState::Sideways);
+        assert_eq!(lock.reason, "dpzz-freeze");
+        assert_eq!(lock.last_tick, 2);
     }
 }
