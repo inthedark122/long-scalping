@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.20
+
+Stale lock release.
+
+- Cleared the frozen direction lock when higher-timeframe confirmation falls back to sideways.
+- Restored 1m pullback entry flow after neutral conditions instead of keeping a stale one-way bias alive.
+- Kept explicit-entry protection so reasonless regime opens remain blocked.
+
 ## 1.0.19
 
 Explicit-entry release.
