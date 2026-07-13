@@ -357,7 +357,14 @@ fn process_realtime(
             MarketState::Sideways => PositionState::Flat,
         };
         if let Some(plan) =
-            prediction::sug_entry_plan(&snapshot, &sug_snapshot, &state, &cas_sug, entry_side)
+            prediction::sug_entry_plan(
+                &snapshot,
+                &sug_snapshot,
+                &state,
+                &cas_sug,
+                entry_side,
+                state.cfg.pullback_ratio() > 0.0,
+            )
         {
             let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;

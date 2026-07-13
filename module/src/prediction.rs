@@ -446,6 +446,7 @@ pub fn sug_entry_plan(
     state: &EngineState,
     cascade: &CascadeSignal,
     side: PositionState,
+    force_pullback: bool,
 ) -> Option<SugEntryPlan> {
     let sug = sug_snapshot.sug_candle?;
     let side_dir = match side {
@@ -457,16 +458,17 @@ pub fn sug_entry_plan(
         return None;
     }
 
-    if direction_lock_gate(
-        state,
-        snapshot,
-        match side {
-            PositionState::Long => MarketState::Long,
-            PositionState::Short => MarketState::Short,
-            PositionState::Flat => MarketState::Sideways,
-        },
-    )
-    .is_some()
+    if !force_pullback
+        && direction_lock_gate(
+            state,
+            snapshot,
+            match side {
+                PositionState::Long => MarketState::Long,
+                PositionState::Short => MarketState::Short,
+                PositionState::Flat => MarketState::Sideways,
+            },
+        )
+        .is_some()
     {
         return None;
     }
@@ -513,7 +515,7 @@ pub fn sug_entry_plan(
             band,
             notes,
         })
-    } else if state.cfg.pullback_ratio() > 0.0 {
+    } else if force_pullback {
         notes.insert(1, "forced-pullback".to_string());
         notes.insert(2, format!("force_pct={:.2}", state.cfg.pullback_amount));
         notes.push(format!("pullback_entry={:.4}", entry));
@@ -555,16 +557,18 @@ fn sug_entry_gate(
         }));
     }
 
-    if let Some(wait) = direction_lock_gate(
-        state,
-        snapshot,
-        match side {
-            PositionState::Long => MarketState::Long,
-            PositionState::Short => MarketState::Short,
-            PositionState::Flat => MarketState::Sideways,
-        },
-    ) {
-        return Some(wait);
+    if state.cfg.pullback_ratio() <= 0.0 {
+        if let Some(wait) = direction_lock_gate(
+            state,
+            snapshot,
+            match side {
+                PositionState::Long => MarketState::Long,
+                PositionState::Short => MarketState::Short,
+                PositionState::Flat => MarketState::Sideways,
+            },
+        ) {
+            return Some(wait);
+        }
     }
 
     if cascade.samples < 3 || cascade.dir != side_dir {
@@ -654,6 +658,14 @@ pub fn entry_gate(
     state: &mut EngineState,
     side: PositionState,
 ) -> EntryGate {
+    if state.cfg.pullback_ratio() > 0.0 && sug_snapshot.sug_candle.is_some() {
+        if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, state, cascade, side, true) {
+            return EntryGate::Open {
+                notes: plan.notes,
+            };
+        }
+    }
+
     if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
         return wait;
     }
@@ -969,6 +981,7 @@ mod tests {
             &state,
             &cascade,
             PositionState::Long,
+            false,
         );
         assert!(plan.is_some());
 
@@ -978,7 +991,8 @@ mod tests {
             &sug_snapshot(),
             &state,
             &cascade,
-            PositionState::Long
+            PositionState::Long,
+            false
         )
         .is_none());
 
@@ -992,7 +1006,8 @@ mod tests {
                 samples: 3,
                 ..Default::default()
             },
-            PositionState::Long
+            PositionState::Long,
+            false
         )
         .is_none());
     }
