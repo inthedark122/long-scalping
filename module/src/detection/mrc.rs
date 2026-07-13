@@ -37,7 +37,45 @@ pub fn analyze(mrc: &MrcBands, price: f64) -> MrcSignal {
         zone,
         pzone,
         slope_sign,
-        bullish_structure: ordered && slope_sign > 0 && price >= mrc.mean_line && pzone >= 0.52,
+        bullish_structure: ordered
+            && slope_sign > 0
+            && ((price >= mrc.mean_line && pzone >= 0.52)
+                || (price >= mrc.down_outer && pzone >= 0.35)),
         bearish_structure: ordered && slope_sign < 0 && price <= mrc.mean_line && pzone <= 0.48,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mrc(mean_line_slope: f64, _price: f64, down_outer: f64, mean_line: f64) -> MrcBands {
+        MrcBands {
+            down_big: 80.0,
+            down_outer,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope,
+        }
+    }
+
+    #[test]
+    fn bullish_structure_accepts_hold_above_down_outer() {
+        let signal = analyze(&mrc(1.0, 95.0, 85.0, 100.0), 95.0);
+        assert!(signal.bullish_structure);
+    }
+
+    #[test]
+    fn bullish_structure_still_requires_positive_slope_and_ordered_bands() {
+        let mut bands = mrc(1.0, 88.0, 85.0, 100.0);
+        bands.down_outer = 101.0;
+        let signal = analyze(&bands, 88.0);
+        assert!(!signal.bullish_structure);
     }
 }

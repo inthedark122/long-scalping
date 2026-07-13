@@ -87,7 +87,7 @@ pub fn sideway_entry_plan(
 
     let market_state = match signal.price_bias {
         -1 => MarketState::Long,
-        1 => MarketState::Short,
+        1 => return None,
         _ => return None,
     };
 
@@ -159,13 +159,13 @@ pub fn movement_entry_plan(
 
     let market_state = match kind {
         MovementEntryKind::ReverseReady => match cascade.prev_dir {
-            1 => MarketState::Short,
+            1 => return None,
             -1 => MarketState::Long,
             _ => return None,
         },
         MovementEntryKind::SafeContinuation => match cascade.dir {
             1 => MarketState::Long,
-            -1 => MarketState::Short,
+            -1 => return None,
             _ => return None,
         },
     };

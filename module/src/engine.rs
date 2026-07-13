@@ -401,24 +401,6 @@ fn process_realtime(
             },
             entry_reason: decision.entry_reason.clone(),
         };
-    } else if decision.market_state == MarketState::Sideways
-        && mrc1.bearish_structure
-        && cas_tf.dir < 0
-    {
-        decision = TradeDecision {
-            market_state: MarketState::Short,
-            entry: match decision.entry {
-                crate::model::EntryGate::Open { mut notes } => {
-                    notes.push("1m-breakdown".to_string());
-                    crate::model::EntryGate::Open { notes }
-                }
-                crate::model::EntryGate::Wait(mut wait) => {
-                    wait.notes.push("1m-breakdown".to_string());
-                    crate::model::EntryGate::Wait(wait)
-                }
-            },
-            entry_reason: decision.entry_reason.clone(),
-        };
     }
 
     let locked_direction = state.direction_lock.direction;

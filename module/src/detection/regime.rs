@@ -4,7 +4,6 @@ fn classify(tf: &TimeframeSnapshot) -> MarketState {
     let aligned = MarketState::from_dir_pair(tf.dp_dir, tf.zz_dir);
     match aligned {
         MarketState::Long if tf.mrc_signal.bullish_structure => MarketState::Long,
-        MarketState::Short if tf.mrc_signal.bearish_structure => MarketState::Short,
         _ => MarketState::Sideways,
     }
 }
@@ -101,7 +100,7 @@ mod tests {
             &tf(-1, -1, -1.0, 89.0, 100.0),
             &tf(-1, -1, -1.0, 89.0, 100.0),
         );
-        assert_eq!(short.confirmed, MarketState::Short);
+        assert_eq!(short.confirmed, MarketState::Sideways);
 
         let sideways = classify_regime(
             &tf(1, -1, 0.0, 100.0, 100.0),
