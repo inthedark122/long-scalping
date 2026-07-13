@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.25
+
+Forced pullback gate bypass release.
+
+- Bypassed the `fast-candle-wait` and `one-way-lock` entry waits when pullback mode is enabled.
+- Kept the sug-info cascade pullback logic and 25% pullback budget intact.
+- Preserved the normal release path for non-pullback entries.
+
 ## 1.0.24
 
 Forced pullback entry release.
