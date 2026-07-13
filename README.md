@@ -7,3 +7,9 @@ The module uses only `MRC`, `DPSignal`, `ZigZagTrend`, candle OHLC, and live pri
 Risk sizing now has two public knobs: `cap_init` and `trading_amount`. `cap_init` is a percentage from `0` to `100` and seeds the internal budget from `max_amount * cap_init / 100`. `trading_amount` is a percentage from `10` to `100` and caps the normal entry size as a fraction of the deployable budget (`budget × leverage`). Profits still grow the internal budget automatically.
 
 Start with [HANDOFF.md](/home/dev/strategies/long-scalping/HANDOFF.md) for the current operating model, then see [docs/strategy-overview.md](/home/dev/strategies/long-scalping/docs/strategy-overview.md) for the detector pipeline.
+
+For live direction checks and expected entry/exit levels, run the probe binary:
+
+```bash
+cargo run --locked --bin direction_probe -- --symbols ALLO,CAP,BILL
+```

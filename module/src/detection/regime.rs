@@ -1,10 +1,13 @@
 use crate::model::{MarketState, RegimeSnapshot, TimeframeSnapshot};
 
 fn classify(tf: &TimeframeSnapshot) -> MarketState {
-    let aligned = MarketState::from_dir_pair(tf.dp_dir, tf.zz_dir);
-    match aligned {
-        MarketState::Long if tf.mrc_signal.bullish_structure => MarketState::Long,
-        _ => MarketState::Sideways,
+    let price_above_frozen_anchor = tf.dp_zee1 > 0.0 && tf.candle.close >= tf.dp_zee1;
+    let zigzag_allows_long = tf.zz_dir >= 0;
+
+    if tf.mrc_signal.bullish_structure && price_above_frozen_anchor && zigzag_allows_long {
+        MarketState::Long
+    } else {
+        MarketState::Sideways
     }
 }
 
@@ -82,6 +85,8 @@ mod tests {
             ),
             dp_dir: dp,
             zz_dir: zz,
+            dp_zee: close - 1.0,
+            dp_zee1: close - 1.0,
             ..Default::default()
         }
     }
@@ -89,9 +94,9 @@ mod tests {
     #[test]
     fn regime_becomes_long_short_or_sideways() {
         let long = classify_regime(
-            &tf(1, 1, 1.0, 111.0, 100.0),
-            &tf(1, 1, 1.0, 111.0, 100.0),
-            &tf(1, 1, 1.0, 111.0, 100.0),
+            &tf(1, 0, 1.0, 111.0, 100.0),
+            &tf(1, 0, 1.0, 111.0, 100.0),
+            &tf(1, 0, 1.0, 111.0, 100.0),
         );
         assert_eq!(long.confirmed, MarketState::Long);
 
@@ -114,8 +119,8 @@ mod tests {
     fn fallback_resolves_ambiguous_primary() {
         let regime = classify_regime(
             &tf(1, -1, 0.0, 100.0, 100.0),
-            &tf(1, 1, 1.0, 111.0, 100.0),
-            &tf(1, 1, 1.0, 111.0, 100.0),
+            &tf(1, 0, 1.0, 111.0, 100.0),
+            &tf(1, 0, 1.0, 111.0, 100.0),
         );
         assert!(regime.fallback_used);
         assert_eq!(regime.confirmed, MarketState::Long);
