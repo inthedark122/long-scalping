@@ -11,5 +11,5 @@ Start with [HANDOFF.md](/home/dev/strategies/long-scalping/HANDOFF.md) for the c
 For live direction checks and expected entry/exit levels, run the probe binary:
 
 ```bash
-cargo run --locked --bin direction_probe -- --symbols ALLO,CAP,BILL
+cargo run --locked --features native-tools --bin direction_probe -- --symbols ALLO,CAP,BILL
 ```

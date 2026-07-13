@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.22
+
+WASM entrypoint safety release.
+
+- Kept the trading module entrypoint isolated from the native-only probe and replay binaries.
+- Gated `direction_probe` and `movement_research` behind a native tools feature so the WASM release path only contains `module_entry`.
+- Prevented host command usage from leaking into the deployed module artifact.
+
 ## 1.0.21
 
 Long direction probe release.
