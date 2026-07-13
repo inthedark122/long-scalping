@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.21
+
+Long direction probe release.
+
+- Added a standalone Rust probe binary to inspect direction, entry readiness, and expected exit levels.
+- Reworked the long regime to accept price above frozen `Zee1` with `ZigZag` `BOTH` as valid bullish confirmation.
+- Kept the strategy long-only while preserving the 1m cascade and sug-info entry stack.
+
 ## 1.0.20
 
 Stale lock release.
