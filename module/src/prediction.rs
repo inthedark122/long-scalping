@@ -473,7 +473,7 @@ pub fn sug_entry_plan(
         return None;
     }
 
-    if cascade.samples < 3 || cascade.dir != side_dir {
+    if !force_pullback && (cascade.samples < 3 || cascade.dir != side_dir) {
         return None;
     }
 
@@ -507,6 +507,10 @@ pub fn sug_entry_plan(
         format!("cascade_samples={}", cascade.samples),
     ];
     if near_entry {
+        if force_pullback {
+            notes.insert(1, "forced-pullback".to_string());
+            notes.insert(2, format!("force_pct={:.2}", state.cfg.pullback_amount));
+        }
         notes.push("1m-confirmed".to_string());
         Some(SugEntryPlan {
             market_state,
@@ -571,7 +575,7 @@ fn sug_entry_gate(
         }
     }
 
-    if cascade.samples < 3 || cascade.dir != side_dir {
+    if state.cfg.pullback_ratio() <= 0.0 && (cascade.samples < 3 || cascade.dir != side_dir) {
         return Some(EntryGate::Wait(EntryWait {
             reason: "sug-info-1m-confirm-wait".to_string(),
             solutions: vec![EntryWaitSolution::WaitForConfirmation {
@@ -1010,5 +1014,27 @@ mod tests {
             false
         )
         .is_none());
+    }
+
+    #[test]
+    fn forced_pullback_ignores_opposite_cascade() {
+        let mut state = EngineState::default();
+        state.direction_lock.direction = MarketState::Short;
+        let cascade = CascadeSignal {
+            dir: -1,
+            samples: 30,
+            ..Default::default()
+        };
+        let plan = sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &state,
+            &cascade,
+            PositionState::Long,
+            true,
+        );
+        assert!(plan.is_some());
+        let plan = plan.expect("forced pullback plan");
+        assert!(plan.notes.iter().any(|note| note == "forced-pullback"));
     }
 }

@@ -8,6 +8,14 @@ Forced pullback gate bypass release.
 - Kept the sug-info cascade pullback logic and 25% pullback budget intact.
 - Preserved the normal release path for non-pullback entries.
 
+## 1.0.26
+
+Forced pullback cascade bypass fix.
+
+- Allowed forced pullback entries to bypass the 1m cascade direction/confirmation wait.
+- Preserved the existing pullback budget and debug markers so the open path stays visible.
+- Kept normal entries unchanged outside pullback mode.
+
 ## 1.0.24
 
 Forced pullback entry release.
