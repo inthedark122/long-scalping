@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.24
+
+Forced pullback entry release.
+
+- Added a separate `pullback_amount` knob to force sug-info pullback entries at 25% of the normal deployable budget.
+- Kept the normal `trading_amount` default at 50% so regular entries remain unchanged.
+- Converted the sug-info pullback wait branch into a forced open when the new pullback amount is enabled.
+
+## 1.0.23
+
+Default entry-size reduction release.
+
+- Lowered the compiled default `trading_amount` from 50% to 25% so new bots start with smaller orders.
+- Kept the sug-info pullback entry logic unchanged.
+- Preserved the WASM-only release split from the native helper binaries.
+
 ## 1.0.22
 
 WASM entrypoint safety release.

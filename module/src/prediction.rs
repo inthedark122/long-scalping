@@ -490,6 +490,12 @@ pub fn sug_entry_plan(
     let price = sug.close;
     let near_entry = (price - entry).abs() <= band;
 
+    let market_state = match side {
+        PositionState::Long => MarketState::Long,
+        PositionState::Short => MarketState::Short,
+        PositionState::Flat => return None,
+    };
+
     let mut notes = vec![
         "sug-info-scalp".to_string(),
         format!("entry={:.4}", entry),
@@ -501,12 +507,20 @@ pub fn sug_entry_plan(
     if near_entry {
         notes.push("1m-confirmed".to_string());
         Some(SugEntryPlan {
-            market_state: match side {
-                PositionState::Long => MarketState::Long,
-                PositionState::Short => MarketState::Short,
-                PositionState::Flat => return None,
-            },
+            market_state,
             entry,
+            target,
+            band,
+            notes,
+        })
+    } else if state.cfg.pullback_ratio() > 0.0 {
+        notes.insert(1, "forced-pullback".to_string());
+        notes.insert(2, format!("force_pct={:.2}", state.cfg.pullback_amount));
+        notes.push(format!("pullback_entry={:.4}", entry));
+        notes.push("1m-confirmed".to_string());
+        Some(SugEntryPlan {
+            market_state,
+            entry: price,
             target,
             band,
             notes,
@@ -594,6 +608,19 @@ fn sug_entry_gate(
             notes: vec![
                 "sug-info-scalp".to_string(),
                 format!("entry={:.4}", entry),
+                format!("tp={:.4}", target),
+                format!("band={:.4}", band),
+                "1m-confirmed".to_string(),
+            ],
+        })
+    } else if state.cfg.pullback_ratio() > 0.0 {
+        Some(EntryGate::Open {
+            notes: vec![
+                "sug-info-scalp".to_string(),
+                "forced-pullback".to_string(),
+                format!("force_pct={:.2}", state.cfg.pullback_amount),
+                format!("entry={:.4}", price),
+                format!("pullback_entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("band={:.4}", band),
                 "1m-confirmed".to_string(),

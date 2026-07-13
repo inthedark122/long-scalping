@@ -86,6 +86,15 @@ fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
     )
 }
 
+fn is_forced_pullback_open(decision: &TradeDecision) -> bool {
+    matches!(
+        &decision.entry,
+        EntryGate::Open { notes }
+            if notes.iter().any(|note| note == "forced-pullback")
+                && matches!(decision.entry_reason, Some(EntryReason::SugInfoScalp { .. }))
+    )
+}
+
 fn position_snapshot(input: &ModuleInput, state: &EngineState, side: PositionState) -> String {
     let position = active_position(input, side);
     let raw_qty = position.map(|position| position.qty).unwrap_or(0.0);
@@ -554,7 +563,10 @@ pub fn evaluate_with_cascade(
         };
     }
 
-    let amount = entry_budget(input, state);
+    let mut amount = entry_budget(input, state);
+    if is_forced_pullback_open(decision) {
+        amount *= state.cfg.pullback_ratio();
+    }
     let leverage = (input.leverage as f64).max(1.0);
     if amount <= 0.0 {
         return ExecutionResult {
