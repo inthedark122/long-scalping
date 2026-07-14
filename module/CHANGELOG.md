@@ -16,6 +16,14 @@ Forced pullback cascade bypass fix.
 - Preserved the existing pullback budget and debug markers so the open path stays visible.
 - Kept normal entries unchanged outside pullback mode.
 
+## 1.0.27
+
+Sideway entry reason fix.
+
+- Promoted active sideway signals into a real `SidewayScalp` entry reason even when the run is not coming from stop-loss recovery.
+- Allowed bullish `LineCross` sideway signals to open long continuation entries instead of staying stuck in `market_state=Sideways`.
+- Kept the forced pullback behavior and the existing long-only runtime path intact.
+
 ## 1.0.24
 
 Forced pullback entry release.

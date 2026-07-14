@@ -87,7 +87,7 @@ pub fn sideway_entry_plan(
 
     let market_state = match signal.price_bias {
         -1 => MarketState::Long,
-        1 => return None,
+        1 if matches!(signal.source, sideways::SidewaySource::LineCross) => MarketState::Long,
         _ => return None,
     };
 
@@ -97,18 +97,21 @@ pub fn sideway_entry_plan(
         .max(snapshot.tf1m.candle.close * 0.0002)
         .max(f64::EPSILON);
 
-    let (price, take_profit, stop_loss) = match market_state {
-        MarketState::Long => (
+    let current_price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    let (price, take_profit, stop_loss, mode_note) = match (market_state, signal.price_bias) {
+        (MarketState::Long, -1) => (
             signal.block_low.max(f64::EPSILON),
             signal.block_high.max(signal.block_low + buffer),
             (signal.block_low - buffer).max(f64::EPSILON),
+            "reversal-entry".to_string(),
         ),
-        MarketState::Short => (
-            signal.block_high.max(f64::EPSILON),
-            signal.block_low.max(f64::EPSILON),
-            signal.block_high + buffer,
+        (MarketState::Long, 1) => (
+            current_price,
+            signal.block_high.max(current_price + buffer),
+            (signal.block_low - buffer).max(f64::EPSILON),
+            "continuation-entry".to_string(),
         ),
-        MarketState::Sideways => return None,
+        _ => return None,
     };
 
     Some(SidewayEntryPlan {
@@ -118,6 +121,7 @@ pub fn sideway_entry_plan(
             "sideway-scalp".to_string(),
             format!("source={:?}", signal.source),
             format!("bias={}", signal.price_bias),
+            mode_note,
             format!("block={:.4}-{:.4}", signal.block_low, signal.block_high),
             format!("entry={:.4}", price),
             format!("tp={:.4}", take_profit),
