@@ -80,6 +80,7 @@ fn movement_fill_price(
 pub fn sideway_entry_plan(
     snapshot: &IndicatorSnapshot,
     signal: &sideways::SidewaySignal,
+    cascade: &CascadeSignal,
 ) -> Option<SidewayEntryPlan> {
     if !signal.active || signal.block_high <= signal.block_low {
         return None;
@@ -98,6 +99,23 @@ pub fn sideway_entry_plan(
         .max(f64::EPSILON);
 
     let current_price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    let cascade_pullback = (cascade.average_size * 0.60)
+        .max(snapshot.tf1m.mrc.range() * 0.005)
+        .max(f64::EPSILON);
+    let pullback_cap = match market_state {
+        MarketState::Long => signal.block_low + cascade_pullback,
+        MarketState::Short => (signal.block_high - cascade_pullback).max(f64::EPSILON),
+        MarketState::Sideways => return None,
+    };
+
+    if matches!(signal.source, sideways::SidewaySource::LineCross) {
+        match market_state {
+            MarketState::Long if current_price > pullback_cap => return None,
+            MarketState::Short if current_price < pullback_cap => return None,
+            _ => {}
+        }
+    }
+
     let (price, take_profit, stop_loss, mode_note) = match (market_state, signal.price_bias) {
         (MarketState::Long, -1) => (
             signal.block_low.max(f64::EPSILON),
@@ -109,7 +127,11 @@ pub fn sideway_entry_plan(
             current_price,
             signal.block_high.max(current_price + buffer),
             (signal.block_low - buffer).max(f64::EPSILON),
-            "continuation-entry".to_string(),
+            if matches!(signal.source, sideways::SidewaySource::LineCross) {
+                "sug-info-pullback".to_string()
+            } else {
+                "continuation-entry".to_string()
+            },
         ),
         _ => return None,
     };
@@ -123,6 +145,7 @@ pub fn sideway_entry_plan(
             format!("bias={}", signal.price_bias),
             mode_note,
             format!("block={:.4}-{:.4}", signal.block_low, signal.block_high),
+            format!("pullback_cap={:.4}", pullback_cap),
             format!("entry={:.4}", price),
             format!("tp={:.4}", take_profit),
             format!("sl={:.4}", stop_loss),
@@ -408,6 +431,7 @@ fn sideway_reentry_gate(
 fn sideway_entry_gate(
     snapshot: &IndicatorSnapshot,
     state: &EngineState,
+    cascade: &CascadeSignal,
     side: PositionState,
 ) -> Option<EntryGate> {
     if state.exit_memory.kind != Some(ExitKind::StopLoss) {
@@ -415,7 +439,56 @@ fn sideway_entry_gate(
     }
 
     let signal = sideways::analyze(state, &snapshot.tf1m);
-    let plan = sideway_entry_plan(snapshot, &signal)?;
+    let current_price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    if signal.active && matches!(signal.source, sideways::SidewaySource::LineCross) {
+        let cascade_pullback = (cascade.average_size * 0.60)
+            .max(snapshot.tf1m.mrc.range() * 0.005)
+            .max(f64::EPSILON);
+        let pullback_cap = if matches!(signal.side, PositionState::Long) {
+            signal.block_low + cascade_pullback
+        } else {
+            (signal.block_high - cascade_pullback).max(f64::EPSILON)
+        };
+
+        let pullback_wait = match signal.side {
+            PositionState::Long if current_price > pullback_cap => Some(EntryGate::Wait(EntryWait {
+                reason: "sideway-linecross-pullback-wait".to_string(),
+                solutions: vec![EntryWaitSolution::ReclaimLevel {
+                    source: "linecross".to_string(),
+                    level: pullback_cap,
+                    band_low: signal.block_low,
+                    band_high: pullback_cap,
+                }],
+                notes: vec![
+                    "sug-info default scalping path".to_string(),
+                    format!("linecross-pullback-cap={:.4}", pullback_cap),
+                    format!("price={:.4}", current_price),
+                    format!("cascade_avg={:.4}", cascade.average_size),
+                ],
+            })),
+            PositionState::Short if current_price < pullback_cap => Some(EntryGate::Wait(EntryWait {
+                reason: "sideway-linecross-pullback-wait".to_string(),
+                solutions: vec![EntryWaitSolution::ReclaimLevel {
+                    source: "linecross".to_string(),
+                    level: pullback_cap,
+                    band_low: pullback_cap,
+                    band_high: signal.block_high,
+                }],
+                notes: vec![
+                    "sug-info default scalping path".to_string(),
+                    format!("linecross-pullback-cap={:.4}", pullback_cap),
+                    format!("price={:.4}", current_price),
+                    format!("cascade_avg={:.4}", cascade.average_size),
+                ],
+            })),
+            _ => None,
+        };
+        if let Some(wait) = pullback_wait {
+            return Some(wait);
+        }
+    }
+
+    let plan = sideway_entry_plan(snapshot, &signal, cascade)?;
     if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
         return Some(wait);
     }
@@ -678,7 +751,7 @@ pub fn entry_gate(
         return wait;
     }
 
-    if let Some(gate) = sideway_entry_gate(snapshot, state, side) {
+    if let Some(gate) = sideway_entry_gate(snapshot, state, cascade, side) {
         return gate;
     }
 
@@ -962,6 +1035,34 @@ mod tests {
         }
     }
 
+    fn snapshot_with_close(close: f64) -> IndicatorSnapshot {
+        IndicatorSnapshot {
+            tf1m: TimeframeSnapshot {
+                candle: Candle {
+                    open: close,
+                    high: close + 0.2,
+                    low: close - 0.2,
+                    close,
+                },
+                mrc: MrcBands {
+                    down_big: close - 10.0,
+                    down_outer: close - 8.0,
+                    down_small: close - 6.0,
+                    down_inner: close - 4.0,
+                    mean_line: close,
+                    up_inner: close + 4.0,
+                    up_small: close + 6.0,
+                    up_outer: close + 8.0,
+                    up_big: close + 10.0,
+                    current_cross: 0.0,
+                    mean_line_slope: 0.0,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     fn sug_snapshot() -> SugInfoSnapshot {
         SugInfoSnapshot {
             sug_candle: Some(Candle {
@@ -1040,5 +1141,30 @@ mod tests {
         assert!(plan.is_some());
         let plan = plan.expect("forced pullback plan");
         assert!(plan.notes.iter().any(|note| note == "forced-pullback"));
+    }
+
+    #[test]
+    fn linecross_waits_for_pullback_then_opens() {
+        let signal = sideways::SidewaySignal {
+            active: true,
+            source: sideways::SidewaySource::LineCross,
+            side: PositionState::Long,
+            block_low: 99.0,
+            block_high: 101.0,
+            price_bias: 1,
+            reason: "line-active".to_string(),
+            ..Default::default()
+        };
+        let cascade = CascadeSignal {
+            average_size: 1.0,
+            samples: 30,
+            dir: 1,
+            ..Default::default()
+        };
+        assert!(sideway_entry_plan(&snapshot_with_close(100.03), &signal, &cascade).is_none());
+
+        let plan = sideway_entry_plan(&snapshot_with_close(99.50), &signal, &cascade)
+            .expect("pullback-ready plan");
+        assert!(plan.notes.iter().any(|note| note == "sug-info-pullback"));
     }
 }

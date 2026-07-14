@@ -24,6 +24,14 @@ Sideway entry reason fix.
 - Allowed bullish `LineCross` sideway signals to open long continuation entries instead of staying stuck in `market_state=Sideways`.
 - Kept the forced pullback behavior and the existing long-only runtime path intact.
 
+## 1.0.28
+
+LineCross pullback discipline release.
+
+- Required active `LineCross` sideway longs to wait for a pullback cap derived from 60% of the 1m cascade average.
+- Kept sug-info trading as the execution path, but stopped buying far above the sideway block.
+- Added a regression test so `LineCross` only opens after the pullback threshold is satisfied.
+
 ## 1.0.24
 
 Forced pullback entry release.

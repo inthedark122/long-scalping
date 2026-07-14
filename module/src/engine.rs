@@ -331,7 +331,7 @@ fn process_realtime(
     if state.position.side == PositionState::Flat
         && state.exit_memory.kind == Some(ExitKind::StopLoss)
     {
-        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway) {
+        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway, &cas_sug) {
             if sideway.active {
                 decision.market_state = plan.market_state;
                 decision.entry = crate::model::EntryGate::Open {
@@ -352,7 +352,7 @@ fn process_realtime(
         && decision.entry_reason.is_none()
         && sideway.active
     {
-        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway) {
+        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway, &cas_sug) {
             decision.market_state = plan.market_state;
             decision.entry = crate::model::EntryGate::Open {
                 notes: plan.notes.clone(),
