@@ -6,6 +6,7 @@ use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState,
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
+use crate::stop_loss;
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
@@ -173,14 +174,6 @@ fn position_qty_is_zero(input: &ModuleInput, side: PositionState) -> bool {
         .unwrap_or(true)
 }
 
-fn trailing_tp_price(side: PositionState, price: f64, tick_size: f64) -> f64 {
-    match side {
-        PositionState::Long => (price - tick_size * 2.0).max(tick_size),
-        PositionState::Short => price + tick_size * 2.0,
-        PositionState::Flat => price,
-    }
-}
-
 fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
     matches!(
         (position_side, decision_state),
@@ -298,11 +291,8 @@ fn ensure_active_exit_order(
     }
 
     let tick = tick_size(input);
-    let virtual_sl_hit = match side {
-        PositionState::Long => input.price <= state.position.stop_loss,
-        PositionState::Short => input.price >= state.position.stop_loss,
-        PositionState::Flat => false,
-    };
+    let virtual_sl_hit =
+        stop_loss::virtual_stop_loss_hit(side, input.price, state.position.stop_loss);
 
     if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
         state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
@@ -310,11 +300,11 @@ fn ensure_active_exit_order(
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        let desired_tp = trailing_tp_price(side, input.price, tick);
+        let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
         if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
             state.position.take_profit = desired_tp;
-            notes.push(format!("tp-trail={:.4}", desired_tp));
-            let note = Some("tp:trail".to_string());
+            notes.push(format!("tp-reclaim={:.4}", desired_tp));
+            let note = Some("tp:reclaim".to_string());
             let order = tp_limit_order(
                 direction,
                 qty,
@@ -1415,6 +1405,65 @@ mod tests {
         assert!(result.tp_orders[0].amount.is_none());
         assert!(result.close_positions.is_empty());
         assert!(result.note.contains("trail-after-virtual-sl"));
+    }
+
+    #[test]
+    fn trail_after_virtual_sl_keeps_fee_floor() {
+        let mut state = EngineState::default();
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 101.0,
+            trough_price: 99.0,
+            take_profit: 100.2,
+            stop_loss: 99.5,
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::TrailAfterVirtualSl,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: None,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.8,
+            qty: 0.1,
+        });
+        inp.price = 99.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 99.3,
+            high: 99.5,
+            low: 98.9,
+            close: 99.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+
+        assert_eq!(result.tp_orders.len(), 1);
+        assert!(result.note.contains("tp-reclaim"));
     }
 
     #[test]

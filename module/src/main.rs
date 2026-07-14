@@ -9,6 +9,7 @@ mod model;
 mod orders;
 mod prediction;
 mod risk;
+mod stop_loss;
 mod state;
 
 use lte_strategy_bridge::run_loop;

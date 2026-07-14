@@ -1,6 +1,7 @@
 use crate::detection::levels;
 use crate::model::{EntryReason, IndicatorSnapshot, PositionState, SugInfoSnapshot};
 use crate::state::CascadeState;
+use crate::stop_loss;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ExitSource {
@@ -53,24 +54,26 @@ fn structural_plan(
 }
 
 fn movement_plan(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
     structural: Option<(f64, f64)>,
 ) -> Option<ExitPlan> {
-    if cascade.avg_size <= 0.0 || cascade.samples < 3 || !price.is_finite() || price <= 0.0 {
+    let tp_distance = stop_loss::projected_move_distance(snapshot, sug_snapshot, cascade)?;
+    if !price.is_finite() || price <= 0.0 {
         return None;
     }
 
-    let tp_distance = crate::detection::cascade::cascade_take_profit_distance(cascade)
-        .unwrap_or(cascade.avg_size);
-    let sl_distance = (tp_distance * 0.8).max(cascade.avg_size * 0.8);
     let (structural_take_profit, structural_stop_loss) = structural.unwrap_or((0.0, 0.0));
+    let support_stop = stop_loss::support_break_level(snapshot, side, None)
+        .unwrap_or(structural_stop_loss);
 
     let plan = match side {
         PositionState::Long => ExitPlan {
             take_profit: price + tp_distance,
-            stop_loss: (price - sl_distance).max(f64::EPSILON),
+            stop_loss: support_stop.max(f64::EPSILON),
             tp_reliable: true,
             source: ExitSource::Movement,
             structural_take_profit,
@@ -78,7 +81,7 @@ fn movement_plan(
         },
         PositionState::Short => ExitPlan {
             take_profit: (price - tp_distance).max(f64::EPSILON),
-            stop_loss: price + sl_distance,
+            stop_loss: support_stop.max(f64::EPSILON),
             tp_reliable: true,
             source: ExitSource::Movement,
             structural_take_profit,
@@ -156,7 +159,7 @@ fn compute(
     let levels = levels::structural_levels(snapshot);
     let structural = structural_plan(&levels, price, side);
 
-    if let Some(plan) = movement_plan(cascade, price, side, structural) {
+    if let Some(plan) = movement_plan(snapshot, sug_snapshot, cascade, price, side, structural) {
         return Some(plan);
     }
 
