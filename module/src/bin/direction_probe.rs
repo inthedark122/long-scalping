@@ -21,6 +21,8 @@ mod exit_impl;
 mod model;
 #[path = "../prediction.rs"]
 mod prediction_impl;
+#[path = "../stop_loss.rs"]
+mod stop_loss_impl;
 #[path = "../state.rs"]
 mod state;
 
@@ -48,6 +50,10 @@ mod exit {
 
 mod prediction {
     pub use crate::prediction_impl::*;
+}
+
+mod stop_loss {
+    pub use crate::stop_loss_impl::*;
 }
 
 use detection::cascade::{self, CascadeSignal};
