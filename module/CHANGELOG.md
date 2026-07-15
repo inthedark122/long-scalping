@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.33
+
+Martingale ladder fix release.
+
+- Replaced the single extra martingale order with a full 2x ladder across the calculated levels.
+- Kept the immediate market open leg and the sideway block-edge exit logic intact.
+- Updated the release metadata to point at the new module version.
+
 ## 1.0.32
 
 Martingale stop and debug fix release.

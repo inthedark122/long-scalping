@@ -105,15 +105,12 @@ pub fn entry_plan(
     }
 
     let step = base_price * (profile.step_pct / 100.0);
-    let first_price = match side {
-        MarketState::Long => clamp_price(side, base_price - step),
-        MarketState::Short => clamp_price(side, base_price + step),
-        MarketState::Sideways => return None,
-    };
-    let second_price = first_price;
-
-    let first_amount = total_amount / 3.0;
-    let second_amount = total_amount - first_amount;
+    let levels = profile.levels.max(1);
+    let weight_sum = (0..levels).fold(0.0, |acc, level| acc + 2f64.powi(level as i32));
+    if weight_sum <= 0.0 {
+        return None;
+    }
+    let first_amount = total_amount / weight_sum;
     let mark_prefix = format!("mg-{}-{}", direction_label(side_direction), profile.levels);
 
     let open_position = market_open(
@@ -123,13 +120,22 @@ pub fn entry_plan(
         &format!("{}-open", mark_prefix),
     );
 
-    let orders = vec![limit_order(
-        side_direction,
-        second_amount,
-        second_price,
-        &format!("{}-1", mark_prefix),
-        Some("martingale-entry:nearest-1"),
-    )];
+    let mut orders = Vec::with_capacity(levels.saturating_sub(1));
+    for level in 1..levels {
+        let price = match side {
+            MarketState::Long => clamp_price(side, base_price - step * level as f64),
+            MarketState::Short => clamp_price(side, base_price + step * level as f64),
+            MarketState::Sideways => return None,
+        };
+        let amount = first_amount * 2f64.powi(level as i32);
+        orders.push(limit_order(
+            side_direction,
+            amount,
+            price,
+            &format!("{}-{}", mark_prefix, level),
+            Some(&format!("martingale-entry:nearest-{}", level)),
+        ));
+    }
 
     let support_break = stop_loss::support_break_level(snapshot, to_position(side), entry_reason)
         .unwrap_or(match side {
@@ -154,7 +160,7 @@ pub fn entry_plan(
         format!("tp={:.2}%", profile.take_profit_pct),
         format!("base={:.4}", base_price),
         format!("sl={:.4}", stop_loss),
-        "two-nearest-orders".to_string(),
+        format!("ladder-orders={}", orders.len()),
     ];
 
     Some(MartingaleEntryPlan {
@@ -298,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_plan_uses_two_orders_with_double_weight() {
+    fn entry_plan_creates_ladder_with_double_weight() {
         let mut state = EngineState::default();
         state.cfg.trade_mode = TradeMode::Martingale;
         let plan = entry_plan(
@@ -312,12 +318,13 @@ mod tests {
             30.0,
         )
         .unwrap();
-        assert_eq!(plan.orders.len(), 1);
+        assert_eq!(plan.orders.len(), plan.profile.levels - 1);
         assert_eq!(plan.open_position.order_type, "Market");
         assert_eq!(plan.open_position.enter_price, Some(100.0));
         let first = plan.open_position.amount.unwrap();
         let second = plan.orders[0].amount.unwrap();
         assert!((second - first * 2.0).abs() < f64::EPSILON);
+        assert!(plan.orders[0].enter_price < plan.open_position.enter_price.unwrap());
         assert!(plan.stop_loss < 100.0);
     }
 

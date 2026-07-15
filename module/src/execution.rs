@@ -597,6 +597,7 @@ pub fn evaluate_with_cascade(
             decision.entry_reason.as_ref(),
             amount,
         ) {
+            let ladder_orders = plan.orders.len();
             state.position.take_profit = 0.0;
             state.position.stop_loss = plan.stop_loss;
             state.position.exit_mode = ExitMode::Structural;
@@ -604,13 +605,14 @@ pub fn evaluate_with_cascade(
                 open_positions: vec![plan.open_position],
                 tp_orders: plan.orders,
                 note: format!(
-                    "open-{}-martingale immediate levels={} step={:.2}% base={:.4} {}",
+                    "open-{}-martingale immediate levels={} orders={} step={:.2}% base={:.4} {}",
                     match plan.market_state {
                         MarketState::Long => "long",
                         MarketState::Short => "short",
                         MarketState::Sideways => "flat",
                     },
                     plan.profile.levels,
+                    ladder_orders,
                     plan.profile.step_pct,
                     plan.base_price,
                     plan.notes.join("|")
@@ -1732,7 +1734,7 @@ mod tests {
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].order_type, "Market");
         assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
-        assert_eq!(result.tp_orders.len(), 1);
+        assert_eq!(result.tp_orders.len(), 15);
         assert!(result.note.contains("immediate"));
     }
 
