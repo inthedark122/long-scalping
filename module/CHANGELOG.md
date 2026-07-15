@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.29
+
+Martingale trade mode release.
+
+- Added a `trade_mode` switch with `single` and `martingale` options.
+- Kept the current single-order cascade path intact.
+- Added a martingale ladder planner with step, TP, and SL controls derived from live range.
+- Exposed the martingale mode in the strategy start action and module debug output.
+
 ## 1.0.25
 
 Forced pullback gate bypass release.
