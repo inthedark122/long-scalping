@@ -140,6 +140,7 @@ fn handle_new_position(
         exit_mode: ExitMode::Structural,
         tp_mark: tp_mark(direction),
         entry_reason: state.position.entry_reason.clone(),
+        martingale_profile: state.position.martingale_profile,
     };
 
     let side = dir_to_position(direction);
@@ -157,6 +158,7 @@ fn handle_new_position(
             side,
             entry_price,
             state.position.entry_reason.as_ref(),
+            state.position.martingale_profile,
         )
     } else {
         input.sug_info.as_ref().and_then(|sug_info| {

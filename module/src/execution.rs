@@ -228,6 +228,7 @@ fn initialize_exit_plan(
             side,
             reference_price,
             state.position.entry_reason.as_ref(),
+            state.position.martingale_profile,
         )?
     } else {
         exit::plan(
@@ -598,6 +599,7 @@ pub fn evaluate_with_cascade(
             amount,
         ) {
             let ladder_orders = plan.orders.len();
+            state.position.martingale_profile = Some(plan.profile);
             state.position.take_profit = 0.0;
             state.position.stop_loss = plan.stop_loss;
             state.position.exit_mode = ExitMode::Structural;
@@ -1352,6 +1354,7 @@ mod tests {
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
+            martingale_profile: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1412,6 +1415,7 @@ mod tests {
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
             entry_reason: None,
+            martingale_profile: None,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1472,6 +1476,7 @@ mod tests {
             exit_mode: ExitMode::TrailAfterVirtualSl,
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
+            martingale_profile: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1534,6 +1539,7 @@ mod tests {
                 price: 101.5,
                 started_at_ms: 1_000,
             }),
+            martingale_profile: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1575,6 +1581,7 @@ mod tests {
                 price: 99.2,
                 started_at_ms: 1_000,
             }),
+            martingale_profile: None,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {

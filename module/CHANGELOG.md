@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.35
+
+Martingale range fix release.
+
+- Switched martingale stop math from MRC range to the martingale ladder width.
+- Persisted the martingale profile on the open position so exit recalculation uses the same range.
+- Updated the release metadata to point at the new module version.
+
 ## 1.0.34
 
 Martingale sizing fix release.

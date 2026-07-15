@@ -143,7 +143,8 @@ pub fn entry_plan(
             MarketState::Short => snapshot.tf1m.mrc.up_big,
             MarketState::Sideways => return None,
         });
-    let range_stop = snapshot.tf1m.mrc.range() * STOP_BREAK_MULTIPLIER;
+    let ladder_range = step * ladder_orders as f64;
+    let range_stop = ladder_range * STOP_BREAK_MULTIPLIER;
     let stop_loss = match side {
         MarketState::Long => (support_break - range_stop).max(f64::EPSILON),
         MarketState::Short => (support_break + range_stop).max(f64::EPSILON),
@@ -187,6 +188,7 @@ pub fn exit_plan(
     side: PositionState,
     entry_price: f64,
     entry_reason: Option<&EntryReason>,
+    martingale_profile: Option<LadderProfile>,
 ) -> Option<ExitPlan> {
     if !entry_price.is_finite() || entry_price <= 0.0 {
         return None;
@@ -227,7 +229,12 @@ pub fn exit_plan(
         });
     }
 
-    let profile = compute_profile(entry_price, snapshot.tf1m.mrc.range())?;
+    let profile = martingale_profile.or_else(|| {
+        compute_profile(
+            entry_price,
+            snapshot.tf1m.candle.high - snapshot.tf1m.candle.low,
+        )
+    })?;
     let tp_distance = entry_price * (profile.take_profit_pct / 100.0);
     let break_price =
         stop_loss::support_break_level(snapshot, side, entry_reason).unwrap_or(match side {
@@ -235,7 +242,8 @@ pub fn exit_plan(
             PositionState::Short => snapshot.tf1m.mrc.up_big,
             PositionState::Flat => return None,
         });
-    let stop_distance = snapshot.tf1m.mrc.range() * STOP_BREAK_MULTIPLIER;
+    let ladder_range = entry_price * (profile.range_pct / 100.0);
+    let stop_distance = ladder_range * STOP_BREAK_MULTIPLIER;
     let (take_profit, stop_loss) = match side {
         PositionState::Long => (
             (entry_price + tp_distance).max(f64::EPSILON),
@@ -340,6 +348,7 @@ mod tests {
                 price: 100.0,
                 started_at_ms: 1,
             }),
+            None,
         )
         .unwrap();
         assert!(plan.take_profit > 100.0);
@@ -360,6 +369,7 @@ mod tests {
                 started_at_ms: 1,
                 source: "LineCross".to_string(),
             }),
+            None,
         )
         .unwrap();
         assert_eq!(plan.source, ExitSource::Sideway);

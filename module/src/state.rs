@@ -1,3 +1,4 @@
+use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, PositionState};
 use lte_strategy_bridge::abi::Direction;
@@ -15,6 +16,7 @@ pub struct PositionRuntime {
     pub exit_mode: ExitMode,
     pub tp_mark: String,
     pub entry_reason: Option<EntryReason>,
+    pub martingale_profile: Option<LadderProfile>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -187,6 +189,7 @@ pub fn sync_position_state(
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
+                    martingale_profile: state.position.martingale_profile,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -208,6 +211,7 @@ pub fn sync_position_state(
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
+                    martingale_profile: state.position.martingale_profile,
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
