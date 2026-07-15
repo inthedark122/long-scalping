@@ -86,18 +86,11 @@ fn handle_signal(
         if let Some(pullback_amount) = values.get("pullback_amount").and_then(|v| v.as_f64()) {
             state.cfg.pullback_amount = pullback_amount.clamp(0.0, 100.0);
         }
-        if let Some(trade_mode) = values.get("trade_mode") {
-            state.cfg.trade_mode = match trade_mode {
-                value if value.as_f64().unwrap_or(0.0) >= 1.0 => TradeMode::Martingale,
-                value
-                    if value
-                        .as_str()
-                        .map(|s| s.eq_ignore_ascii_case("martingale"))
-                        .unwrap_or(false) =>
-                {
-                    TradeMode::Martingale
-                }
-                _ => TradeMode::Single,
+        if let Some(trade_mode) = values.get("trade_mode").and_then(|v| v.as_f64()) {
+            state.cfg.trade_mode = if trade_mode >= 1.0 {
+                TradeMode::Martingale
+            } else {
+                TradeMode::Single
             };
         }
         state.cfg_loaded = true;
@@ -459,8 +452,12 @@ fn process_realtime(
         };
     }
 
+    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
     let locked_direction = state.direction_lock.direction;
-    if locked_direction != MarketState::Sideways && decision.market_state != locked_direction {
+    if !martingale_mode
+        && locked_direction != MarketState::Sideways
+        && decision.market_state != locked_direction
+    {
         decision = TradeDecision {
             market_state: locked_direction,
             entry: crate::model::EntryGate::Wait(crate::model::EntryWait {

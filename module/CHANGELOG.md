@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.30
+
+Martingale debug cleanup release.
+
+- Removed the temporary raw trade-mode debug field.
+- Kept numeric `trade_mode` parsing for the martingale switch.
+- Bumped the release metadata to a fresh module version.
+
 ## 1.0.29
 
 Martingale trade mode release.
