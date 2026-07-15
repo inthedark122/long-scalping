@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.31",
+      "module_version": "1.0.32",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.31"
+          "module_version": "1.0.32"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.31 immediate-martingale release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. Reasonless regime opens are blocked, and martingale now creates an immediate first position instead of only resting ladder orders.",
+      "description": "Start the 1.0.32 martingale debug and stop fix using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. Martingale still opens immediately, but the debug now shows one effective TP/SL pair and sideway exits stay close to the block edge.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.31",
+    "version": "1.0.32",
     "defaults": {}
   }
 }

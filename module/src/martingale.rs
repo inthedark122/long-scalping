@@ -186,6 +186,41 @@ pub fn exit_plan(
         return None;
     }
 
+    if let Some(EntryReason::SidewayScalp {
+        price,
+        block_low,
+        block_high,
+        ..
+    }) = entry_reason
+    {
+        if !price.is_finite() || !block_low.is_finite() || !block_high.is_finite() {
+            return None;
+        }
+        if block_high <= block_low {
+            return None;
+        }
+
+        let width = (block_high - block_low).abs();
+        let buffer = (width * 0.10).max((*price * 0.0005).max(f64::EPSILON));
+        let (take_profit, stop_loss) = match side {
+            PositionState::Long => (
+                (*block_high).max(entry_price + buffer),
+                (*block_low - buffer).max(f64::EPSILON),
+            ),
+            PositionState::Short => ((*block_low).max(f64::EPSILON), *block_high + buffer),
+            PositionState::Flat => return None,
+        };
+
+        return Some(ExitPlan {
+            take_profit,
+            stop_loss,
+            tp_reliable: true,
+            source: ExitSource::Sideway,
+            structural_take_profit: take_profit,
+            structural_stop_loss: stop_loss,
+        });
+    }
+
     let profile = compute_profile(entry_price, snapshot.tf1m.mrc.range())?;
     let tp_distance = entry_price * (profile.take_profit_pct / 100.0);
     let break_price =
@@ -301,5 +336,26 @@ mod tests {
         assert!(plan.take_profit > 100.0);
         assert!(plan.stop_loss < 100.0);
         assert_eq!(plan.source, ExitSource::Martingale);
+    }
+
+    #[test]
+    fn sideway_entry_uses_block_edge_stop() {
+        let plan = exit_plan(
+            &snapshot(100.0, 8.0),
+            PositionState::Long,
+            100.0,
+            Some(&EntryReason::SidewayScalp {
+                price: 100.0,
+                block_low: 99.2,
+                block_high: 100.8,
+                started_at_ms: 1,
+                source: "LineCross".to_string(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(plan.source, ExitSource::Sideway);
+        assert!(plan.take_profit >= 100.8);
+        assert!(plan.stop_loss < 99.2);
+        assert!(plan.stop_loss > 98.0);
     }
 }

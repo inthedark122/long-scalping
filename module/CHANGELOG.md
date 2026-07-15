@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.32
+
+Martingale stop and debug fix release.
+
+- Collapsed the martingale debug output to a single effective TP/SL pair.
+- Tightened sideway martingale exits so the stop stays near the sideway block instead of using the full MRC range buffer.
+- Kept the immediate martingale open behavior from the previous release.
+
 ## 1.0.31
 
 Immediate martingale open release.
