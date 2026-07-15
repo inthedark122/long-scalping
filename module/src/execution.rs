@@ -1,13 +1,16 @@
 use crate::detection::cascade::CascadeSignal;
 use crate::exit;
+use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::model::{
+    EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision, TradeMode,
+};
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
-use crate::stop_loss;
 use crate::state::{sync_position_state, EngineState};
+use crate::stop_loss;
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
     ModulePositionSummary, ModuleUpdatePosition,
@@ -219,14 +222,23 @@ fn initialize_exit_plan(
     } else {
         input.price
     };
-    let plan = exit::plan(
-        snapshot,
-        sug_snapshot,
-        &state.cascade_sug,
-        reference_price,
-        side,
-        state.position.entry_reason.as_ref(),
-    )?;
+    let plan = if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+        martingale::exit_plan(
+            snapshot,
+            side,
+            reference_price,
+            state.position.entry_reason.as_ref(),
+        )?
+    } else {
+        exit::plan(
+            snapshot,
+            sug_snapshot,
+            &state.cascade_sug,
+            reference_price,
+            side,
+            state.position.entry_reason.as_ref(),
+        )?
+    };
     state.position.take_profit = plan.take_profit;
     state.position.stop_loss = plan.stop_loss;
     state.position.exit_tp_reliable = plan.tp_reliable;
@@ -574,6 +586,39 @@ pub fn evaluate_with_cascade(
     }
 
     state.position.entry_reason = decision.entry_reason.clone();
+    if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+        if let Some(plan) = martingale::entry_plan(
+            state,
+            snapshot,
+            decision.market_state,
+            decision.entry_reason.as_ref(),
+            amount,
+        ) {
+            state.position.take_profit = 0.0;
+            state.position.stop_loss = plan.stop_loss;
+            state.position.exit_mode = ExitMode::Structural;
+            return ExecutionResult {
+                tp_orders: plan.orders,
+                note: format!(
+                    "open-{}-martingale levels={} step={:.2}% base={:.4} {}",
+                    match plan.market_state {
+                        MarketState::Long => "long",
+                        MarketState::Short => "short",
+                        MarketState::Sideways => "flat",
+                    },
+                    plan.profile.levels,
+                    plan.profile.step_pct,
+                    plan.base_price,
+                    plan.notes.join("|")
+                ),
+                ..Default::default()
+            };
+        }
+        return ExecutionResult {
+            note: "martingale-plan-unavailable".to_string(),
+            ..Default::default()
+        };
+    }
 
     let entry_price = decision
         .entry_reason

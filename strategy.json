@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.28",
+      "module_version": "1.0.29",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.28"
+          "module_version": "1.0.29"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.28 forced-pullback release using compiled defaults or cap_init/trading_amount/pullback_amount overrides. Reasonless regime opens are blocked, and the sug-info pullback path can force entries at a smaller size.",
+      "description": "Start the 1.0.29 forced-pullback release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. Reasonless regime opens are blocked, and the sug-info pullback path can force entries at a smaller size.",
       "params": [
         {
           "code": "cap_init",
@@ -54,13 +54,30 @@
           "description": "Forced pullback entry size as a percent of the normal deployable budget.",
           "default": 25.0,
           "variant": "Number"
+        },
+        {
+          "code": "trade_mode",
+          "name": "Trade mode",
+          "description": "Choose single-order execution or martingale ladder execution.",
+          "default": 0,
+          "variant": "Select",
+          "options": [
+            {
+              "label": "Single",
+              "value": 0.0
+            },
+            {
+              "label": "Martingale",
+              "value": 1.0
+            }
+          ]
         }
       ]
     }
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.28",
+    "version": "1.0.29",
     "defaults": {}
   }
 }

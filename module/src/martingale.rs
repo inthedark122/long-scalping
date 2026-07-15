@@ -1,0 +1,307 @@
+use crate::exit::{ExitPlan, ExitSource};
+use crate::model::{EntryReason, IndicatorSnapshot, MarketState, PositionState};
+use crate::orders::limit_order;
+use crate::state::EngineState;
+use crate::stop_loss;
+use lte_strategy_bridge::abi::{Direction, ModulePlaceOrder};
+
+pub const MIN_STEP_PCT: f64 = 0.7;
+pub const MAX_STEP_PCT: f64 = 1.1;
+pub const MIN_LEVELS: usize = 6;
+pub const EXTRA_LEVELS: usize = 11;
+pub const MAX_LEVELS: usize = MIN_LEVELS + EXTRA_LEVELS;
+pub const TP_RATIO: f64 = 0.8;
+pub const MIN_TP_PCT: f64 = 0.35;
+pub const MAX_TP_PCT: f64 = 1.1;
+pub const STOP_BREAK_MULTIPLIER: f64 = 1.25;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LadderProfile {
+    pub levels: usize,
+    pub range_pct: f64,
+    pub step_pct: f64,
+    pub take_profit_pct: f64,
+}
+
+impl LadderProfile {
+    pub fn from_range(range_pct: f64) -> Option<Self> {
+        if !range_pct.is_finite() || range_pct <= 0.0 {
+            return None;
+        }
+
+        let levels = ((range_pct / MAX_STEP_PCT).ceil() as usize + 1).clamp(MIN_LEVELS, MAX_LEVELS);
+        let step_pct = (range_pct / (levels.saturating_sub(1).max(1) as f64))
+            .clamp(MIN_STEP_PCT, MAX_STEP_PCT);
+        let take_profit_pct = (step_pct * TP_RATIO).clamp(MIN_TP_PCT, MAX_TP_PCT);
+
+        Some(Self {
+            levels,
+            range_pct,
+            step_pct,
+            take_profit_pct,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MartingaleEntryPlan {
+    pub market_state: MarketState,
+    pub profile: LadderProfile,
+    pub base_price: f64,
+    pub stop_loss: f64,
+    pub orders: Vec<ModulePlaceOrder>,
+    pub notes: Vec<String>,
+}
+
+fn direction(side: MarketState) -> Option<Direction> {
+    match side {
+        MarketState::Long => Some(Direction::Long),
+        MarketState::Short => Some(Direction::Short),
+        MarketState::Sideways => None,
+    }
+}
+
+fn direction_label(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Long => "long",
+        Direction::Short => "short",
+        Direction::Both => "both",
+    }
+}
+
+fn clamp_price(side: MarketState, price: f64) -> f64 {
+    match side {
+        MarketState::Long => price.max(f64::EPSILON),
+        MarketState::Short => price.max(f64::EPSILON),
+        MarketState::Sideways => price.max(f64::EPSILON),
+    }
+}
+
+pub fn compute_profile(base_price: f64, range: f64) -> Option<LadderProfile> {
+    if !base_price.is_finite() || base_price <= 0.0 {
+        return None;
+    }
+    let range_pct = (range.abs() / base_price) * 100.0;
+    LadderProfile::from_range(range_pct)
+}
+
+pub fn entry_plan(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    side: MarketState,
+    entry_reason: Option<&EntryReason>,
+    total_amount: f64,
+) -> Option<MartingaleEntryPlan> {
+    let side_direction = direction(side)?;
+    let base_price = entry_reason
+        .map(|reason| reason.price())
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .unwrap_or(snapshot.tf1m.candle.close);
+    let profile = compute_profile(base_price, snapshot.tf1m.mrc.range())?;
+    let total_amount = total_amount.max(0.0);
+    if total_amount <= 0.0 {
+        return None;
+    }
+
+    let step = base_price * (profile.step_pct / 100.0);
+    let first_price = match side {
+        MarketState::Long => clamp_price(side, base_price - step),
+        MarketState::Short => clamp_price(side, base_price + step),
+        MarketState::Sideways => return None,
+    };
+    let second_price = match side {
+        MarketState::Long => clamp_price(side, base_price - step * 2.0),
+        MarketState::Short => clamp_price(side, base_price + step * 2.0),
+        MarketState::Sideways => return None,
+    };
+
+    let first_amount = total_amount / 3.0;
+    let second_amount = total_amount - first_amount;
+    let mark_prefix = format!("mg-{}-{}", direction_label(side_direction), profile.levels);
+
+    let orders = vec![
+        limit_order(
+            side_direction,
+            first_amount,
+            first_price,
+            &format!("{}-1", mark_prefix),
+            Some("martingale-entry:nearest-1"),
+        ),
+        limit_order(
+            side_direction,
+            second_amount,
+            second_price,
+            &format!("{}-2", mark_prefix),
+            Some("martingale-entry:nearest-2"),
+        ),
+    ];
+
+    let support_break = stop_loss::support_break_level(snapshot, to_position(side), entry_reason)
+        .unwrap_or(match side {
+            MarketState::Long => snapshot.tf1m.mrc.down_big,
+            MarketState::Short => snapshot.tf1m.mrc.up_big,
+            MarketState::Sideways => return None,
+        });
+    let range_stop = snapshot.tf1m.mrc.range() * STOP_BREAK_MULTIPLIER;
+    let stop_loss = match side {
+        MarketState::Long => (support_break - range_stop).max(f64::EPSILON),
+        MarketState::Short => (support_break + range_stop).max(f64::EPSILON),
+        MarketState::Sideways => return None,
+    };
+
+    let notes = vec![
+        "martingale-entry".to_string(),
+        format!("mode={}", state.cfg.trade_mode.as_str()),
+        format!("levels={}", profile.levels),
+        format!("range={:.4}", profile.range_pct),
+        format!("step={:.2}%", profile.step_pct),
+        format!("tp={:.2}%", profile.take_profit_pct),
+        format!("base={:.4}", base_price),
+        format!("sl={:.4}", stop_loss),
+        "two-nearest-orders".to_string(),
+    ];
+
+    Some(MartingaleEntryPlan {
+        market_state: side,
+        profile,
+        base_price,
+        stop_loss,
+        orders,
+        notes,
+    })
+}
+
+fn to_position(side: MarketState) -> PositionState {
+    match side {
+        MarketState::Long => PositionState::Long,
+        MarketState::Short => PositionState::Short,
+        MarketState::Sideways => PositionState::Flat,
+    }
+}
+
+pub fn exit_plan(
+    snapshot: &IndicatorSnapshot,
+    side: PositionState,
+    entry_price: f64,
+    entry_reason: Option<&EntryReason>,
+) -> Option<ExitPlan> {
+    if !entry_price.is_finite() || entry_price <= 0.0 {
+        return None;
+    }
+
+    let profile = compute_profile(entry_price, snapshot.tf1m.mrc.range())?;
+    let tp_distance = entry_price * (profile.take_profit_pct / 100.0);
+    let break_price =
+        stop_loss::support_break_level(snapshot, side, entry_reason).unwrap_or(match side {
+            PositionState::Long => snapshot.tf1m.mrc.down_big,
+            PositionState::Short => snapshot.tf1m.mrc.up_big,
+            PositionState::Flat => return None,
+        });
+    let stop_distance = snapshot.tf1m.mrc.range() * STOP_BREAK_MULTIPLIER;
+    let (take_profit, stop_loss) = match side {
+        PositionState::Long => (
+            (entry_price + tp_distance).max(f64::EPSILON),
+            (break_price - stop_distance).max(f64::EPSILON),
+        ),
+        PositionState::Short => (
+            (entry_price - tp_distance).max(f64::EPSILON),
+            (break_price + stop_distance).max(f64::EPSILON),
+        ),
+        PositionState::Flat => return None,
+    };
+
+    Some(ExitPlan {
+        take_profit,
+        stop_loss,
+        tp_reliable: true,
+        source: ExitSource::Martingale,
+        structural_take_profit: entry_reason
+            .map(|reason| reason.price())
+            .unwrap_or(entry_price),
+        structural_stop_loss: break_price,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Candle, MrcBands, TimeframeSnapshot, TradeMode};
+
+    fn snapshot(close: f64, range: f64) -> IndicatorSnapshot {
+        IndicatorSnapshot {
+            tf1m: TimeframeSnapshot {
+                candle: Candle {
+                    open: close,
+                    high: close + range * 0.5,
+                    low: close - range * 0.5,
+                    close,
+                },
+                mrc: MrcBands {
+                    down_big: close - range,
+                    down_outer: close - range * 0.75,
+                    down_small: close - range * 0.5,
+                    down_inner: close - range * 0.25,
+                    mean_line: close,
+                    up_inner: close + range * 0.25,
+                    up_small: close + range * 0.5,
+                    up_outer: close + range * 0.75,
+                    up_big: close + range,
+                    current_cross: 0.0,
+                    mean_line_slope: 1.0,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn profile_clamps_step_and_tp() {
+        let profile = LadderProfile::from_range(12.0).unwrap();
+        assert!(profile.levels >= MIN_LEVELS);
+        assert!(profile.step_pct >= MIN_STEP_PCT);
+        assert!(profile.step_pct <= MAX_STEP_PCT);
+        assert!(profile.take_profit_pct >= MIN_TP_PCT);
+        assert!(profile.take_profit_pct <= MAX_TP_PCT);
+    }
+
+    #[test]
+    fn entry_plan_uses_two_orders_with_double_weight() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        let plan = entry_plan(
+            &state,
+            &snapshot(100.0, 8.0),
+            MarketState::Long,
+            Some(&EntryReason::SugInfoScalp {
+                price: 100.0,
+                started_at_ms: 1,
+            }),
+            30.0,
+        )
+        .unwrap();
+        assert_eq!(plan.orders.len(), 2);
+        assert!(plan.orders[0].enter_price > plan.orders[1].enter_price);
+        let first = plan.orders[0].amount.unwrap();
+        let second = plan.orders[1].amount.unwrap();
+        assert!((second - first * 2.0).abs() < f64::EPSILON);
+        assert!(plan.stop_loss < 100.0);
+    }
+
+    #[test]
+    fn exit_plan_sets_tp_above_price_and_sl_below_break() {
+        let plan = exit_plan(
+            &snapshot(100.0, 8.0),
+            PositionState::Long,
+            100.0,
+            Some(&EntryReason::SugInfoScalp {
+                price: 100.0,
+                started_at_ms: 1,
+            }),
+        )
+        .unwrap();
+        assert!(plan.take_profit > 100.0);
+        assert!(plan.stop_loss < 100.0);
+        assert_eq!(plan.source, ExitSource::Martingale);
+    }
+}

@@ -67,7 +67,7 @@ pub fn render(
         .unwrap_or_else(|| "na".to_string());
     let (tp_src, sl_src, tp_struct, sl_struct) = debug_exit_sources(state);
     format!(
-        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} casTf={} casSug={} cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% budget={:.4} pos={:?} entry={} entry_reason={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} tp_src={} tp_struct={:.4} sl_src={} sl_struct={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} casTf={} casSug={} cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% trade_mode={} budget={:.4} pos={:?} entry={} entry_reason={} mem={} tp_mode={} tp_mark={} tp={:.4} sl={:.4} tp_src={} tp_struct={:.4} sl_src={} sl_struct={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         regime.primary,
@@ -93,6 +93,7 @@ pub fn render(
         state.cfg.cap_init,
         state.cfg.trading_amount,
         state.cfg.pullback_amount,
+        state.cfg.trade_mode.as_str(),
         state.trade_budget,
         state.position.side,
         entry,

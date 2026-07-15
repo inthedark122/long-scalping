@@ -4,8 +4,11 @@ use crate::detection::{cascade, direction_lock, mrc, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
+use crate::martingale;
 use crate::model::EntryReason;
-use crate::model::{ExitKind, ExitMemory, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::model::{
+    ExitKind, ExitMemory, ExitMode, MarketState, PositionState, TradeDecision, TradeMode,
+};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
 use crate::risk;
@@ -83,11 +86,28 @@ fn handle_signal(
         if let Some(pullback_amount) = values.get("pullback_amount").and_then(|v| v.as_f64()) {
             state.cfg.pullback_amount = pullback_amount.clamp(0.0, 100.0);
         }
+        if let Some(trade_mode) = values.get("trade_mode") {
+            state.cfg.trade_mode = match trade_mode {
+                value if value.as_f64().unwrap_or(0.0) >= 1.0 => TradeMode::Martingale,
+                value
+                    if value
+                        .as_str()
+                        .map(|s| s.eq_ignore_ascii_case("martingale"))
+                        .unwrap_or(false) =>
+                {
+                    TradeMode::Martingale
+                }
+                _ => TradeMode::Single,
+            };
+        }
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}%",
-                state.cfg.cap_init, state.cfg.trading_amount, state.cfg.pullback_amount
+                "start cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% trade_mode={}",
+                state.cfg.cap_init,
+                state.cfg.trading_amount,
+                state.cfg.pullback_amount,
+                state.cfg.trade_mode.as_str()
             ),
             ..Default::default()
         }
@@ -138,17 +158,26 @@ fn handle_new_position(
         input.price,
         state.ticks,
     );
-    let plan = input.sug_info.as_ref().and_then(|sug_info| {
-        let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-        exit::plan(
+    let plan = if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+        martingale::exit_plan(
             &snapshot,
-            &sug_snapshot,
-            &state.cascade_sug,
-            entry_price,
             side,
+            entry_price,
             state.position.entry_reason.as_ref(),
         )
-    });
+    } else {
+        input.sug_info.as_ref().and_then(|sug_info| {
+            let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
+            exit::plan(
+                &snapshot,
+                &sug_snapshot,
+                &state.cascade_sug,
+                entry_price,
+                side,
+                state.position.entry_reason.as_ref(),
+            )
+        })
+    };
     let mut tp_orders = Vec::new();
     if let Some(plan) = plan {
         state.position.take_profit = plan.take_profit;
@@ -375,16 +404,14 @@ fn process_realtime(
             MarketState::Short => PositionState::Short,
             MarketState::Sideways => PositionState::Flat,
         };
-        if let Some(plan) =
-            prediction::sug_entry_plan(
-                &snapshot,
-                &sug_snapshot,
-                &state,
-                &cas_sug,
-                entry_side,
-                state.cfg.pullback_ratio() > 0.0,
-            )
-        {
+        if let Some(plan) = prediction::sug_entry_plan(
+            &snapshot,
+            &sug_snapshot,
+            &state,
+            &cas_sug,
+            entry_side,
+            state.cfg.pullback_ratio() > 0.0,
+        ) {
             let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;
             decision.entry = crate::model::EntryGate::Open {

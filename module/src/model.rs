@@ -28,6 +28,22 @@ pub enum PositionState {
     Short,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TradeMode {
+    #[default]
+    Single,
+    Martingale,
+}
+
+impl TradeMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Martingale => "martingale",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_cap_init")]
@@ -36,6 +52,8 @@ pub struct Config {
     pub trading_amount: f64,
     #[serde(default = "default_pullback_amount")]
     pub pullback_amount: f64,
+    #[serde(default)]
+    pub trade_mode: TradeMode,
 }
 
 fn default_cap_init() -> f64 {
@@ -56,6 +74,7 @@ impl Default for Config {
             cap_init: default_cap_init(),
             trading_amount: default_trading_amount(),
             pullback_amount: default_pullback_amount(),
+            trade_mode: TradeMode::default(),
         }
     }
 }

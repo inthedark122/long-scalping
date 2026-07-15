@@ -10,6 +10,7 @@ pub enum ExitSource {
     SugInfo,
     Movement,
     Sideway,
+    Martingale,
 }
 
 impl ExitSource {
@@ -19,6 +20,7 @@ impl ExitSource {
             Self::SugInfo => "sug-info",
             Self::Movement => "movement",
             Self::Sideway => "sideway",
+            Self::Martingale => "martingale",
         }
     }
 }
@@ -67,8 +69,8 @@ fn movement_plan(
     }
 
     let (structural_take_profit, structural_stop_loss) = structural.unwrap_or((0.0, 0.0));
-    let support_stop = stop_loss::support_break_level(snapshot, side, None)
-        .unwrap_or(structural_stop_loss);
+    let support_stop =
+        stop_loss::support_break_level(snapshot, side, None).unwrap_or(structural_stop_loss);
 
     let plan = match side {
         PositionState::Long => ExitPlan {
