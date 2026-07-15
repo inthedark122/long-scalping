@@ -526,8 +526,26 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
-    match &decision.entry {
-        EntryGate::Wait(wait) => {
+    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
+    if !martingale_mode {
+        match &decision.entry {
+            EntryGate::Wait(wait) => {
+                return ExecutionResult {
+                    note: format!(
+                        "entry-wait reason={} solutions={} notes={}",
+                        wait.reason,
+                        wait.solutions.len(),
+                        wait.notes.join("|")
+                    ),
+                    ..Default::default()
+                };
+            }
+            EntryGate::Open { .. } => {}
+        }
+
+        if let EntryGate::Wait(wait) =
+            prediction::entry_gate(snapshot, sug_snapshot, cascade, state, entry_side)
+        {
             return ExecutionResult {
                 note: format!(
                     "entry-wait reason={} solutions={} notes={}",
@@ -538,31 +556,16 @@ pub fn evaluate_with_cascade(
                 ..Default::default()
             };
         }
-        EntryGate::Open { .. } => {}
-    }
 
-    if let EntryGate::Wait(wait) =
-        prediction::entry_gate(snapshot, sug_snapshot, cascade, state, entry_side)
-    {
-        return ExecutionResult {
-            note: format!(
-                "entry-wait reason={} solutions={} notes={}",
-                wait.reason,
-                wait.solutions.len(),
-                wait.notes.join("|")
-            ),
-            ..Default::default()
-        };
-    }
-
-    if decision.entry_reason.is_none() {
-        return ExecutionResult {
-            note: format!(
-                "entry-blocked reason=missing-entry-reason market_state={:?}",
-                decision.market_state
-            ),
-            ..Default::default()
-        };
+        if decision.entry_reason.is_none() {
+            return ExecutionResult {
+                note: format!(
+                    "entry-blocked reason=missing-entry-reason market_state={:?}",
+                    decision.market_state
+                ),
+                ..Default::default()
+            };
+        }
     }
 
     let mut amount = entry_budget(input, state);
@@ -586,7 +589,7 @@ pub fn evaluate_with_cascade(
     }
 
     state.position.entry_reason = decision.entry_reason.clone();
-    if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+    if martingale_mode {
         if let Some(plan) = martingale::entry_plan(
             state,
             snapshot,
@@ -598,9 +601,10 @@ pub fn evaluate_with_cascade(
             state.position.stop_loss = plan.stop_loss;
             state.position.exit_mode = ExitMode::Structural;
             return ExecutionResult {
+                open_positions: vec![plan.open_position],
                 tp_orders: plan.orders,
                 note: format!(
-                    "open-{}-martingale levels={} step={:.2}% base={:.4} {}",
+                    "open-{}-martingale immediate levels={} step={:.2}% base={:.4} {}",
                     match plan.market_state {
                         MarketState::Long => "long",
                         MarketState::Short => "short",
@@ -1685,6 +1689,51 @@ mod tests {
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn martingale_open_forces_immediate_position() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        let inp = input();
+        let snapshot = IndicatorSnapshot {
+            tf1m: crate::model::TimeframeSnapshot {
+                candle: crate::model::Candle {
+                    open: 100.0,
+                    high: 104.0,
+                    low: 96.0,
+                    close: 100.0,
+                },
+                mrc: crate::model::MrcBands {
+                    down_big: 92.0,
+                    down_outer: 94.0,
+                    down_small: 96.0,
+                    down_inner: 98.0,
+                    mean_line: 100.0,
+                    up_inner: 102.0,
+                    up_small: 104.0,
+                    up_outer: 106.0,
+                    up_big: 108.0,
+                    current_cross: 0.0,
+                    mean_line_slope: 1.0,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].order_type, "Market");
+        assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
+        assert_eq!(result.tp_orders.len(), 1);
+        assert!(result.note.contains("immediate"));
     }
 
     #[test]

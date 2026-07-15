@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.31
+
+Immediate martingale open release.
+
+- Made martingale entries create a live `Market` open for the first leg instead of only placing resting ladder orders.
+- Kept the follow-up ladder order and structural stop-loss logic intact.
+- Updated the strategy metadata to point at the new module version.
+
 ## 1.0.30
 
 Martingale debug cleanup release.

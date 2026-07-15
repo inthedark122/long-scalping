@@ -893,7 +893,10 @@ fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<d
     Ok(rows)
 }
 
-fn fetch_full_history(symbol_key: &str, seed_limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+fn fetch_full_history(
+    symbol_key: &str,
+    seed_limit: usize,
+) -> Result<Vec<CandleRow>, Box<dyn Error>> {
     let mut limit = seed_limit.max(200);
     let mut best = Vec::new();
     while limit <= 5_000 {

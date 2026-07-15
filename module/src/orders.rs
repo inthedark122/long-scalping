@@ -67,6 +67,26 @@ pub(crate) fn limit_open(
     }
 }
 
+/// Immediate open at market. The engine uses this for forced-entry modes so we
+/// do not wait for a resting maker fill before the position exists.
+pub(crate) fn market_open(
+    direction: Direction,
+    amount: f64,
+    enter: f64,
+    note: &str,
+) -> ModuleOpenPosition {
+    ModuleOpenPosition {
+        direction,
+        amount: Some(amount),
+        qty: None,
+        enter_price: Some(enter),
+        order_type: "Market".to_string(),
+        take_profit: None,
+        stop_loss: None,
+        note: note.to_string(),
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn tp_limit_order(
     direction: Direction,

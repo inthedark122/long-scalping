@@ -451,36 +451,40 @@ fn sideway_entry_gate(
         };
 
         let pullback_wait = match signal.side {
-            PositionState::Long if current_price > pullback_cap => Some(EntryGate::Wait(EntryWait {
-                reason: "sideway-linecross-pullback-wait".to_string(),
-                solutions: vec![EntryWaitSolution::ReclaimLevel {
-                    source: "linecross".to_string(),
-                    level: pullback_cap,
-                    band_low: signal.block_low,
-                    band_high: pullback_cap,
-                }],
-                notes: vec![
-                    "sug-info default scalping path".to_string(),
-                    format!("linecross-pullback-cap={:.4}", pullback_cap),
-                    format!("price={:.4}", current_price),
-                    format!("cascade_avg={:.4}", cascade.average_size),
-                ],
-            })),
-            PositionState::Short if current_price < pullback_cap => Some(EntryGate::Wait(EntryWait {
-                reason: "sideway-linecross-pullback-wait".to_string(),
-                solutions: vec![EntryWaitSolution::ReclaimLevel {
-                    source: "linecross".to_string(),
-                    level: pullback_cap,
-                    band_low: pullback_cap,
-                    band_high: signal.block_high,
-                }],
-                notes: vec![
-                    "sug-info default scalping path".to_string(),
-                    format!("linecross-pullback-cap={:.4}", pullback_cap),
-                    format!("price={:.4}", current_price),
-                    format!("cascade_avg={:.4}", cascade.average_size),
-                ],
-            })),
+            PositionState::Long if current_price > pullback_cap => {
+                Some(EntryGate::Wait(EntryWait {
+                    reason: "sideway-linecross-pullback-wait".to_string(),
+                    solutions: vec![EntryWaitSolution::ReclaimLevel {
+                        source: "linecross".to_string(),
+                        level: pullback_cap,
+                        band_low: signal.block_low,
+                        band_high: pullback_cap,
+                    }],
+                    notes: vec![
+                        "sug-info default scalping path".to_string(),
+                        format!("linecross-pullback-cap={:.4}", pullback_cap),
+                        format!("price={:.4}", current_price),
+                        format!("cascade_avg={:.4}", cascade.average_size),
+                    ],
+                }))
+            }
+            PositionState::Short if current_price < pullback_cap => {
+                Some(EntryGate::Wait(EntryWait {
+                    reason: "sideway-linecross-pullback-wait".to_string(),
+                    solutions: vec![EntryWaitSolution::ReclaimLevel {
+                        source: "linecross".to_string(),
+                        level: pullback_cap,
+                        band_low: pullback_cap,
+                        band_high: signal.block_high,
+                    }],
+                    notes: vec![
+                        "sug-info default scalping path".to_string(),
+                        format!("linecross-pullback-cap={:.4}", pullback_cap),
+                        format!("price={:.4}", current_price),
+                        format!("cascade_avg={:.4}", cascade.average_size),
+                    ],
+                }))
+            }
             _ => None,
         };
         if let Some(wait) = pullback_wait {
@@ -741,9 +745,7 @@ pub fn entry_gate(
 ) -> EntryGate {
     if state.cfg.pullback_ratio() > 0.0 && sug_snapshot.sug_candle.is_some() {
         if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, state, cascade, side, true) {
-            return EntryGate::Open {
-                notes: plan.notes,
-            };
+            return EntryGate::Open { notes: plan.notes };
         }
     }
 

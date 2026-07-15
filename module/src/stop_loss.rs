@@ -47,7 +47,8 @@ pub fn projected_move_distance(
 
     let phase = fast_candle_phase(snapshot, sug_snapshot);
     let gain_building = snapshot.tf1m.gain_is_building() || snapshot.tf1m.gain_is_late();
-    let active = matches!(phase, FastCandlePhase::Building | FastCandlePhase::Tiring) || gain_building;
+    let active =
+        matches!(phase, FastCandlePhase::Building | FastCandlePhase::Tiring) || gain_building;
     if !active {
         return None;
     }

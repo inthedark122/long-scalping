@@ -7,24 +7,24 @@ use serde_json::Value;
 
 #[path = "../detection/cascade.rs"]
 mod cascade_impl;
+#[path = "../exit.rs"]
+mod exit_impl;
 #[path = "../detection/levels.rs"]
 mod levels_impl;
+#[path = "../model.rs"]
+mod model;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
+#[path = "../prediction.rs"]
+mod prediction_impl;
 #[path = "../detection/regime.rs"]
 mod regime_impl;
 #[path = "../detection/sideways.rs"]
 mod sideways_impl;
-#[path = "../exit.rs"]
-mod exit_impl;
-#[path = "../model.rs"]
-mod model;
-#[path = "../prediction.rs"]
-mod prediction_impl;
-#[path = "../stop_loss.rs"]
-mod stop_loss_impl;
 #[path = "../state.rs"]
 mod state;
+#[path = "../stop_loss.rs"]
+mod stop_loss_impl;
 
 mod detection {
     pub mod cascade {
@@ -58,7 +58,9 @@ mod stop_loss {
 
 use detection::cascade::{self, CascadeSignal};
 use detection::{mrc, regime};
-use model::{Candle, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot, TimeframeSnapshot};
+use model::{
+    Candle, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot, TimeframeSnapshot,
+};
 use state::CascadeState;
 
 const BASE_URL: &str = "https://okx.tg.trading.sinvoid.me/api/indicators";
@@ -139,7 +141,11 @@ fn dir_to_int(value: Option<&Value>) -> i8 {
     }
 }
 
-fn fetch_rows(symbol_key: &str, timeframe: &str, limit: usize) -> Result<Vec<Value>, Box<dyn Error>> {
+fn fetch_rows(
+    symbol_key: &str,
+    timeframe: &str,
+    limit: usize,
+) -> Result<Vec<Value>, Box<dyn Error>> {
     let url = format!(
         "{}?symbol_key={}&timeframe={}&limit={}",
         BASE_URL,
@@ -149,7 +155,10 @@ fn fetch_rows(symbol_key: &str, timeframe: &str, limit: usize) -> Result<Vec<Val
     );
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL"]);
-    cmd.args(["--resolve", &format!("{}:443:{}", BASE_HOST, resolve_host_ip())]);
+    cmd.args([
+        "--resolve",
+        &format!("{}:443:{}", BASE_HOST, resolve_host_ip()),
+    ]);
     let output = cmd.arg(&url).output()?;
     if !output.status.success() {
         return Err(format!("curl fetch failed for {symbol_key} timeframe={timeframe}").into());
@@ -236,9 +245,14 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
     })
 }
 
-fn fetch_timeframe(symbol_key: &str, timeframe: &str, limit: usize) -> Result<LiveFrame, Box<dyn Error>> {
+fn fetch_timeframe(
+    symbol_key: &str,
+    timeframe: &str,
+    limit: usize,
+) -> Result<LiveFrame, Box<dyn Error>> {
     let rows = fetch_rows(symbol_key, timeframe, limit)?;
-    parse_timeframe(&rows, None).ok_or_else(|| format!("no timeframe data for {symbol_key} tf={timeframe}").into())
+    parse_timeframe(&rows, None)
+        .ok_or_else(|| format!("no timeframe data for {symbol_key} tf={timeframe}").into())
 }
 
 fn fetch_1m_history(symbol_key: &str, limit: usize) -> Result<Vec<LiveFrame>, Box<dyn Error>> {
@@ -320,16 +334,14 @@ fn print_symbol(symbol_key: &str, history_limit: usize) -> Result<(), Box<dyn Er
     let tf5m = fetch_timeframe(&symbol_key, "300", 3)?.snapshot;
     let tf15m = fetch_timeframe(&symbol_key, "900", 3)?.snapshot;
     let tf1h = fetch_timeframe(&symbol_key, "3600", 3)?.snapshot;
-    let snapshot = build_indicator_snapshot(tf1m.clone(), tf5m.clone(), tf15m.clone(), tf1h.clone());
+    let snapshot =
+        build_indicator_snapshot(tf1m.clone(), tf5m.clone(), tf15m.clone(), tf1h.clone());
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
 
     let history = fetch_1m_history(&symbol_key, history_limit)?;
     let (cascade_state, cascade_signal) = cascade_signal_from_history(&history);
-    let entry_plan = prediction::movement_entry_plan(
-        &snapshot,
-        &SugInfoSnapshot::default(),
-        &cascade_signal,
-    );
+    let entry_plan =
+        prediction::movement_entry_plan(&snapshot, &SugInfoSnapshot::default(), &cascade_signal);
     let entry_plan_ready = entry_plan.is_some();
     let entry_price = entry_plan
         .as_ref()
@@ -351,7 +363,11 @@ fn print_symbol(symbol_key: &str, history_limit: usize) -> Result<(), Box<dyn Er
     println!("{}", tf_line("1h", &snapshot.tf1h));
     println!(
         "regime primary={:?} fallback={:?} context_1h={:?} confirmed={:?} blocked_by_context={}",
-        regime.primary, regime.fallback, regime.context_1h, regime.confirmed, regime.blocked_by_context
+        regime.primary,
+        regime.fallback,
+        regime.context_1h,
+        regime.confirmed,
+        regime.blocked_by_context
     );
     println!("direction={}", direction_summary(&regime, &snapshot.tf5m));
     println!(
@@ -424,7 +440,12 @@ fn parse_args() -> (Vec<String>, usize) {
             }
             "--symbols" => {
                 if let Some(value) = args.next() {
-                    symbols.extend(value.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()));
+                    symbols.extend(
+                        value
+                            .split(',')
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| s.trim().to_string()),
+                    );
                 }
             }
             "--history" => {

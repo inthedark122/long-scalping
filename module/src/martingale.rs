@@ -1,9 +1,9 @@
 use crate::exit::{ExitPlan, ExitSource};
 use crate::model::{EntryReason, IndicatorSnapshot, MarketState, PositionState};
-use crate::orders::limit_order;
+use crate::orders::{limit_order, market_open};
 use crate::state::EngineState;
 use crate::stop_loss;
-use lte_strategy_bridge::abi::{Direction, ModulePlaceOrder};
+use lte_strategy_bridge::abi::{Direction, ModuleOpenPosition, ModulePlaceOrder};
 
 pub const MIN_STEP_PCT: f64 = 0.7;
 pub const MAX_STEP_PCT: f64 = 1.1;
@@ -48,6 +48,7 @@ pub struct MartingaleEntryPlan {
     pub market_state: MarketState,
     pub profile: LadderProfile,
     pub base_price: f64,
+    pub open_position: ModuleOpenPosition,
     pub stop_loss: f64,
     pub orders: Vec<ModulePlaceOrder>,
     pub notes: Vec<String>,
@@ -109,32 +110,26 @@ pub fn entry_plan(
         MarketState::Short => clamp_price(side, base_price + step),
         MarketState::Sideways => return None,
     };
-    let second_price = match side {
-        MarketState::Long => clamp_price(side, base_price - step * 2.0),
-        MarketState::Short => clamp_price(side, base_price + step * 2.0),
-        MarketState::Sideways => return None,
-    };
+    let second_price = first_price;
 
     let first_amount = total_amount / 3.0;
     let second_amount = total_amount - first_amount;
     let mark_prefix = format!("mg-{}-{}", direction_label(side_direction), profile.levels);
 
-    let orders = vec![
-        limit_order(
-            side_direction,
-            first_amount,
-            first_price,
-            &format!("{}-1", mark_prefix),
-            Some("martingale-entry:nearest-1"),
-        ),
-        limit_order(
-            side_direction,
-            second_amount,
-            second_price,
-            &format!("{}-2", mark_prefix),
-            Some("martingale-entry:nearest-2"),
-        ),
-    ];
+    let open_position = market_open(
+        side_direction,
+        first_amount,
+        base_price,
+        &format!("{}-open", mark_prefix),
+    );
+
+    let orders = vec![limit_order(
+        side_direction,
+        second_amount,
+        second_price,
+        &format!("{}-1", mark_prefix),
+        Some("martingale-entry:nearest-1"),
+    )];
 
     let support_break = stop_loss::support_break_level(snapshot, to_position(side), entry_reason)
         .unwrap_or(match side {
@@ -151,6 +146,7 @@ pub fn entry_plan(
 
     let notes = vec![
         "martingale-entry".to_string(),
+        "immediate-open".to_string(),
         format!("mode={}", state.cfg.trade_mode.as_str()),
         format!("levels={}", profile.levels),
         format!("range={:.4}", profile.range_pct),
@@ -165,6 +161,7 @@ pub fn entry_plan(
         market_state: side,
         profile,
         base_price,
+        open_position,
         stop_loss,
         orders,
         notes,
@@ -280,10 +277,11 @@ mod tests {
             30.0,
         )
         .unwrap();
-        assert_eq!(plan.orders.len(), 2);
-        assert!(plan.orders[0].enter_price > plan.orders[1].enter_price);
-        let first = plan.orders[0].amount.unwrap();
-        let second = plan.orders[1].amount.unwrap();
+        assert_eq!(plan.orders.len(), 1);
+        assert_eq!(plan.open_position.order_type, "Market");
+        assert_eq!(plan.open_position.enter_price, Some(100.0));
+        let first = plan.open_position.amount.unwrap();
+        let second = plan.orders[0].amount.unwrap();
         assert!((second - first * 2.0).abs() < f64::EPSILON);
         assert!(plan.stop_loss < 100.0);
     }
