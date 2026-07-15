@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.34
+
+Martingale sizing fix release.
+
+- Kept only the 2 nearest resting martingale orders instead of emitting the full ladder.
+- Resized the legs to a 25% / 25% / 50% split so the immediate open is not tiny.
+- Updated the release metadata to point at the new module version.
+
 ## 1.0.33
 
 Martingale ladder fix release.

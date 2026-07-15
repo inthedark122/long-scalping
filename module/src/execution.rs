@@ -1734,7 +1734,7 @@ mod tests {
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].order_type, "Market");
         assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
-        assert_eq!(result.tp_orders.len(), 15);
+        assert_eq!(result.tp_orders.len(), 2);
         assert!(result.note.contains("immediate"));
     }
 

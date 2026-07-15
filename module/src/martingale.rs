@@ -106,28 +106,28 @@ pub fn entry_plan(
 
     let step = base_price * (profile.step_pct / 100.0);
     let levels = profile.levels.max(1);
-    let weight_sum = (0..levels).fold(0.0, |acc, level| acc + 2f64.powi(level as i32));
-    if weight_sum <= 0.0 {
+    let ladder_orders = 2usize.min(levels.saturating_sub(1));
+    if ladder_orders == 0 {
         return None;
     }
-    let first_amount = total_amount / weight_sum;
+    let base_amount = total_amount / 4.0;
     let mark_prefix = format!("mg-{}-{}", direction_label(side_direction), profile.levels);
 
     let open_position = market_open(
         side_direction,
-        first_amount,
+        base_amount,
         base_price,
         &format!("{}-open", mark_prefix),
     );
 
-    let mut orders = Vec::with_capacity(levels.saturating_sub(1));
-    for level in 1..levels {
+    let mut orders = Vec::with_capacity(ladder_orders);
+    for level in 1..=ladder_orders {
         let price = match side {
             MarketState::Long => clamp_price(side, base_price - step * level as f64),
             MarketState::Short => clamp_price(side, base_price + step * level as f64),
             MarketState::Sideways => return None,
         };
-        let amount = first_amount * 2f64.powi(level as i32);
+        let amount = base_amount * level as f64;
         orders.push(limit_order(
             side_direction,
             amount,
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_plan_creates_ladder_with_double_weight() {
+    fn entry_plan_creates_two_nearest_orders_with_double_weight() {
         let mut state = EngineState::default();
         state.cfg.trade_mode = TradeMode::Martingale;
         let plan = entry_plan(
@@ -318,11 +318,13 @@ mod tests {
             30.0,
         )
         .unwrap();
-        assert_eq!(plan.orders.len(), plan.profile.levels - 1);
+        assert_eq!(plan.orders.len(), 2);
         assert_eq!(plan.open_position.order_type, "Market");
         assert_eq!(plan.open_position.enter_price, Some(100.0));
-        let first = plan.open_position.amount.unwrap();
-        let second = plan.orders[0].amount.unwrap();
+        let open = plan.open_position.amount.unwrap();
+        let first = plan.orders[0].amount.unwrap();
+        let second = plan.orders[1].amount.unwrap();
+        assert!((first - open).abs() < f64::EPSILON);
         assert!((second - first * 2.0).abs() < f64::EPSILON);
         assert!(plan.orders[0].enter_price < plan.open_position.enter_price.unwrap());
         assert!(plan.stop_loss < 100.0);
