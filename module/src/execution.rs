@@ -267,9 +267,9 @@ fn ensure_active_exit_order(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
-) -> (Vec<ModulePlaceOrder>, String) {
+) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>, String) {
     if side == PositionState::Flat {
-        return (Vec::new(), "exit=flat".to_string());
+        return (Vec::new(), Vec::new(), "exit=flat".to_string());
     }
 
     let direction = match side {
@@ -282,9 +282,11 @@ fn ensure_active_exit_order(
     }
 
     let mut notes = Vec::new();
+    let mut update_positions = Vec::new();
     let qty = position_qty(input, side);
     if qty <= 0.0 {
         return (
+            Vec::new(),
             Vec::new(),
             format!("exit={} qty=0", state.position.exit_mode.as_str()),
         );
@@ -295,15 +297,17 @@ fn ensure_active_exit_order(
             notes.push("tp-init".to_string());
             notes.push(format!("tp={:.4}", state.position.take_profit));
             notes.push(format!("sl={:.4}", state.position.stop_loss));
-            return (vec![order], notes.join("|"));
+            return (vec![order], Vec::new(), notes.join("|"));
         }
         return (
+            Vec::new(),
             Vec::new(),
             format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
         );
     }
 
     let tick = tick_size(input);
+    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
     let virtual_sl_hit =
         stop_loss::virtual_stop_loss_hit(side, input.price, state.position.stop_loss);
 
@@ -313,6 +317,39 @@ fn ensure_active_exit_order(
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
+        if martingale_mode {
+            if virtual_sl_hit {
+                let desired_tp =
+                    stop_loss::martingale_recovery_take_profit(input.price, side, tick);
+                if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
+                    state.position.take_profit = desired_tp;
+                    notes.push(format!("tp-advance={:.4}", desired_tp));
+                    update_positions.push(update_position(direction, None, Some(desired_tp), None));
+                    return (
+                        Vec::new(),
+                        update_positions,
+                        format!(
+                            "exit={} price={:.4} {}",
+                            state.position.exit_mode.as_str(),
+                            input.price,
+                            notes.join("|")
+                        ),
+                    );
+                }
+            }
+            return (
+                Vec::new(),
+                Vec::new(),
+                format!(
+                    "exit={} price={:.4} tp={:.4} sl={:.4}",
+                    state.position.exit_mode.as_str(),
+                    input.price,
+                    state.position.take_profit,
+                    state.position.stop_loss
+                ),
+            );
+        }
+
         let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
         if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
             state.position.take_profit = desired_tp;
@@ -327,6 +364,7 @@ fn ensure_active_exit_order(
             );
             return (
                 vec![order],
+                Vec::new(),
                 format!(
                     "exit={} price={:.4} {}",
                     state.position.exit_mode.as_str(),
@@ -336,6 +374,7 @@ fn ensure_active_exit_order(
             );
         }
         return (
+            Vec::new(),
             Vec::new(),
             format!(
                 "exit={} price={:.4} tp={:.4} sl={:.4}",
@@ -350,6 +389,7 @@ fn ensure_active_exit_order(
     if state.position.take_profit > 0.0 {
         return (
             Vec::new(),
+            Vec::new(),
             format!(
                 "exit={} tp={:.4} sl={:.4}",
                 state.position.exit_mode.as_str(),
@@ -360,6 +400,7 @@ fn ensure_active_exit_order(
     }
 
     (
+        Vec::new(),
         Vec::new(),
         format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
     )
@@ -462,10 +503,11 @@ pub fn evaluate_with_cascade(
                 };
             }
         }
-        let (tp_orders, note) =
+        let (tp_orders, update_positions, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Long);
         return ExecutionResult {
             tp_orders,
+            update_positions,
             note: format!("hold-long {}", note),
             ..Default::default()
         };
@@ -512,10 +554,11 @@ pub fn evaluate_with_cascade(
                 };
             }
         }
-        let (tp_orders, note) =
+        let (tp_orders, update_positions, note) =
             ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Short);
         return ExecutionResult {
             tp_orders,
+            update_positions,
             note: format!("hold-short {}", note),
             ..Default::default()
         };
@@ -1465,6 +1508,7 @@ mod tests {
     #[test]
     fn trail_after_virtual_sl_keeps_fee_floor() {
         let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Single;
         state.position = crate::state::PositionRuntime {
             side: crate::model::PositionState::Long,
             entry_price: 100.0,
@@ -1519,7 +1563,83 @@ mod tests {
         );
 
         assert_eq!(result.tp_orders.len(), 1);
+        assert!(result.update_positions.is_empty());
         assert!(result.note.contains("tp-reclaim"));
+    }
+
+    #[test]
+    fn martingale_trail_after_virtual_sl_advances_take_profit() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 101.0,
+            trough_price: 99.0,
+            take_profit: 100.2,
+            stop_loss: 99.5,
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::TrailAfterVirtualSl,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: None,
+            martingale_profile: Some(crate::martingale::LadderProfile {
+                levels: 11,
+                range_pct: 1.0,
+                step_pct: 0.5,
+                take_profit_pct: 0.4,
+            }),
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.8,
+            qty: 0.1,
+        });
+        inp.price = 99.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 99.3,
+            high: 99.5,
+            low: 98.9,
+            close: 99.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+
+        assert!(result.tp_orders.is_empty());
+        assert_eq!(result.update_positions.len(), 1);
+        assert_eq!(result.update_positions[0].direction, Direction::Long);
+        let expected_tp = stop_loss::martingale_recovery_take_profit(
+            inp.price,
+            PositionState::Long,
+            tick_size(&inp),
+        );
+        assert_eq!(result.update_positions[0].take_profit, Some(expected_tp));
+        assert!(result.update_positions[0].stop_loss.is_none());
+        assert!(result.note.contains("tp-advance"));
     }
 
     #[test]

@@ -25,6 +25,23 @@ pub fn breakeven_price(entry_price: f64, side: PositionState, tick_size: f64) ->
     }
 }
 
+pub fn martingale_recovery_take_profit(
+    current_price: f64,
+    side: PositionState,
+    tick_size: f64,
+) -> f64 {
+    if current_price <= 0.0 {
+        return 0.0;
+    }
+
+    let move_ticks = 2.0 * tick_size.max(0.0);
+    match side {
+        PositionState::Long => current_price + move_ticks,
+        PositionState::Short => (current_price - move_ticks).max(tick_size.max(f64::EPSILON)),
+        PositionState::Flat => current_price,
+    }
+}
+
 pub fn fast_candle_phase(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,

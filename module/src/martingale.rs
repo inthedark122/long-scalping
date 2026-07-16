@@ -98,7 +98,8 @@ pub fn entry_plan(
         .map(|reason| reason.price())
         .filter(|price| price.is_finite() && *price > 0.0)
         .unwrap_or(snapshot.tf1m.candle.close);
-    let profile = compute_profile(base_price, snapshot.tf1m.mrc.range())?;
+    let martingale_range = snapshot.tf1m.candle.high - snapshot.tf1m.candle.low;
+    let profile = compute_profile(base_price, martingale_range)?;
     let total_amount = total_amount.max(0.0);
     if total_amount <= 0.0 {
         return None;

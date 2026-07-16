@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.36
+
+Martingale range and debug fix release.
+
+- Derived the martingale ladder range from candle range instead of MRC range.
+- Made the debug line label martingale exits explicitly when martingale profile data is present.
+- Updated the release metadata to point at the new module version.
+
 ## 1.0.35
 
 Martingale range fix release.
