@@ -1,3 +1,4 @@
+use crate::builder::{ensure_runtime_builder, BuiltStrategy};
 use crate::detection::cascade::CascadeSignal;
 use crate::exit;
 use crate::martingale;
@@ -19,7 +20,7 @@ use lte_strategy_bridge::abi::{
 #[cfg(test)]
 use crate::model::ExitKind;
 
-const CREATED_MAX_AGE_MS: u64 = 10_000;
+pub(crate) const CREATED_MAX_AGE_MS: u64 = 10_000;
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
@@ -184,29 +185,6 @@ fn direction_changed(position_side: PositionState, decision_state: MarketState) 
     )
 }
 
-fn recent_entry_age_ms(input: &ModuleInput, state: &EngineState) -> Option<u64> {
-    let started_at_ms = state.position.entry_reason.as_ref()?.started_at_ms();
-    let current_ms = input.sug_info.as_ref()?.system_time as u64;
-    Some(current_ms.saturating_sub(started_at_ms))
-}
-
-fn should_close_on_direction_change(input: &ModuleInput, state: &EngineState) -> bool {
-    match state.cfg.trade_mode {
-        TradeMode::Single => true,
-        TradeMode::Martingale => recent_entry_age_ms(input, state)
-            .map(|age_ms| age_ms >= CREATED_MAX_AGE_MS)
-            .unwrap_or(true),
-    }
-}
-
-fn should_reclaim_breakeven_tp(state: &EngineState) -> bool {
-    matches!(state.cfg.trade_mode, TradeMode::Single)
-}
-
-fn should_advance_tp_after_virtual_sl(state: &EngineState) -> bool {
-    matches!(state.cfg.trade_mode, TradeMode::Martingale)
-}
-
 fn created_position_update(
     input: &ModuleInput,
     state: &mut EngineState,
@@ -234,6 +212,7 @@ fn initialize_exit_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
+    builder: &BuiltStrategy,
 ) -> Option<ModulePlaceOrder> {
     let direction = match side {
         PositionState::Long => Direction::Long,
@@ -245,7 +224,7 @@ fn initialize_exit_plan(
     } else {
         input.price
     };
-    let plan = if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+    let plan = if builder.is_martingale() {
         martingale::exit_plan(
             snapshot,
             side,
@@ -290,6 +269,7 @@ fn ensure_active_exit_order(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
+    builder: &BuiltStrategy,
 ) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>, String) {
     if side == PositionState::Flat {
         return (Vec::new(), Vec::new(), "exit=flat".to_string());
@@ -316,7 +296,9 @@ fn ensure_active_exit_order(
     }
 
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
-        if let Some(order) = initialize_exit_plan(input, state, snapshot, sug_snapshot, side) {
+        if let Some(order) =
+            initialize_exit_plan(input, state, snapshot, sug_snapshot, side, builder)
+        {
             notes.push("tp-init".to_string());
             notes.push(format!("tp={:.4}", state.position.take_profit));
             notes.push(format!("sl={:.4}", state.position.stop_loss));
@@ -339,7 +321,7 @@ fn ensure_active_exit_order(
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        if should_advance_tp_after_virtual_sl(state) {
+        if builder.virtual_sl_tp_advance() {
             if virtual_sl_hit {
                 let desired_tp =
                     stop_loss::martingale_recovery_take_profit(input.price, side, tick);
@@ -372,7 +354,7 @@ fn ensure_active_exit_order(
             );
         }
 
-        if should_reclaim_breakeven_tp(state) {
+        if builder.breakeven_reclaim() {
             let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
             if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
                 state.position.take_profit = desired_tp;
@@ -456,6 +438,7 @@ pub fn evaluate_with_cascade(
     decision: &TradeDecision,
     cascade: &CascadeSignal,
 ) -> ExecutionResult {
+    let builder = ensure_runtime_builder(state);
     let long = input
         .positions
         .long
@@ -488,7 +471,7 @@ pub fn evaluate_with_cascade(
 
     if input.positions.long.is_some() {
         if direction_changed(PositionState::Long, decision.market_state)
-            && should_close_on_direction_change(input, state)
+            && builder.should_close_on_direction_change(input, state)
         {
             return ExecutionResult {
                 close_positions: vec![close(
@@ -529,8 +512,14 @@ pub fn evaluate_with_cascade(
                 };
             }
         }
-        let (tp_orders, update_positions, note) =
-            ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Long);
+        let (tp_orders, update_positions, note) = ensure_active_exit_order(
+            input,
+            state,
+            snapshot,
+            sug_snapshot,
+            PositionState::Long,
+            &builder,
+        );
         return ExecutionResult {
             tp_orders,
             update_positions,
@@ -541,7 +530,7 @@ pub fn evaluate_with_cascade(
 
     if input.positions.short.is_some() {
         if direction_changed(PositionState::Short, decision.market_state)
-            && should_close_on_direction_change(input, state)
+            && builder.should_close_on_direction_change(input, state)
         {
             return ExecutionResult {
                 close_positions: vec![close(
@@ -582,8 +571,14 @@ pub fn evaluate_with_cascade(
                 };
             }
         }
-        let (tp_orders, update_positions, note) =
-            ensure_active_exit_order(input, state, snapshot, sug_snapshot, PositionState::Short);
+        let (tp_orders, update_positions, note) = ensure_active_exit_order(
+            input,
+            state,
+            snapshot,
+            sug_snapshot,
+            PositionState::Short,
+            &builder,
+        );
         return ExecutionResult {
             tp_orders,
             update_positions,
@@ -598,8 +593,7 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
-    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
-    if !martingale_mode {
+    if builder.entry_wait_gate() {
         match &decision.entry {
             EntryGate::Wait(wait) => {
                 return ExecutionResult {
@@ -661,7 +655,7 @@ pub fn evaluate_with_cascade(
     }
 
     state.position.entry_reason = decision.entry_reason.clone();
-    if martingale_mode {
+    if builder.is_martingale() {
         if let Some(plan) = martingale::entry_plan(
             state,
             snapshot,

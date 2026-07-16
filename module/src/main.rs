@@ -1,3 +1,4 @@
+mod builder;
 mod debug;
 mod decision;
 mod detection;

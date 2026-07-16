@@ -1,3 +1,4 @@
+use crate::builder::BuiltStrategy;
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, PositionState};
@@ -121,6 +122,7 @@ pub struct EngineState {
     pub cascade_tf: CascadeState,
     pub cascade_sug: CascadeState,
     pub exit_memory: ExitMemory,
+    pub strategy_builder: Option<BuiltStrategy>,
 }
 
 impl Default for EngineState {
@@ -139,6 +141,7 @@ impl Default for EngineState {
             cascade_tf: CascadeState::default(),
             cascade_sug: CascadeState::default(),
             exit_memory: ExitMemory::default(),
+            strategy_builder: None,
         }
     }
 }

@@ -1,16 +1,13 @@
+use crate::builder;
 use crate::debug;
 use crate::decision;
-use crate::detection::{cascade, direction_lock, mrc, regime, sideways, vlines};
+use crate::detection::{cascade, direction_lock, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
 use crate::martingale;
-use crate::model::EntryReason;
-use crate::model::{
-    ExitKind, ExitMemory, ExitMode, MarketState, PositionState, TradeDecision, TradeMode,
-};
+use crate::model::{ExitKind, ExitMemory, ExitMode, TradeMode};
 use crate::orders::{tp_limit_order, tp_mark};
-use crate::prediction;
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
@@ -93,6 +90,7 @@ fn handle_signal(
                 TradeMode::Single
             };
         }
+        state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
@@ -144,6 +142,8 @@ fn handle_new_position(
     };
 
     let side = dir_to_position(direction);
+    state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
+    let strategy = builder::ensure_runtime_builder(state);
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
     direction_lock::refresh(
@@ -152,7 +152,7 @@ fn handle_new_position(
         input.price,
         state.ticks,
     );
-    let plan = if matches!(state.cfg.trade_mode, TradeMode::Martingale) {
+    let plan = if strategy.is_martingale() {
         martingale::exit_plan(
             &snapshot,
             side,
@@ -332,6 +332,7 @@ fn process_realtime(
 
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    let strategy = builder::ensure_runtime_builder(state);
     direction_lock::refresh(
         &mut state.direction_lock,
         &snapshot.tf1m,
@@ -350,134 +351,17 @@ fn process_realtime(
     let sideway = sideways::analyze(state, &snapshot.tf1m);
 
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
-    let mut decision = decision::decide(regime);
-
-    if state.position.side == PositionState::Flat
-        && state.exit_memory.kind == Some(ExitKind::StopLoss)
-    {
-        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway, &cas_sug) {
-            if sideway.active {
-                decision.market_state = plan.market_state;
-                decision.entry = crate::model::EntryGate::Open {
-                    notes: plan.notes.clone(),
-                };
-                decision.entry_reason = Some(EntryReason::SidewayScalp {
-                    price: plan.price,
-                    block_low: sideway.block_low,
-                    block_high: sideway.block_high,
-                    started_at_ms: sug_info.system_time as u64,
-                    source: format!("{:?}", sideway.source),
-                });
-            }
-        }
-    }
-
-    if matches!(decision.entry, crate::model::EntryGate::Open { .. })
-        && decision.entry_reason.is_none()
-        && sideway.active
-    {
-        if let Some(plan) = prediction::sideway_entry_plan(&snapshot, &sideway, &cas_sug) {
-            decision.market_state = plan.market_state;
-            decision.entry = crate::model::EntryGate::Open {
-                notes: plan.notes.clone(),
-            };
-            decision.entry_reason = Some(EntryReason::SidewayScalp {
-                price: plan.price,
-                block_low: sideway.block_low,
-                block_high: sideway.block_high,
-                started_at_ms: sug_info.system_time as u64,
-                source: format!("{:?}", sideway.source),
-            });
-        }
-    }
-
-    if matches!(decision.entry, crate::model::EntryGate::Open { .. })
-        && decision.entry_reason.is_none()
-    {
-        let entry_side = match decision.market_state {
-            MarketState::Long => PositionState::Long,
-            MarketState::Short => PositionState::Short,
-            MarketState::Sideways => PositionState::Flat,
-        };
-        if let Some(plan) = prediction::sug_entry_plan(
-            &snapshot,
-            &sug_snapshot,
-            &state,
-            &cas_sug,
-            entry_side,
-            state.cfg.pullback_ratio() > 0.0,
-        ) {
-            let _ = (plan.target, plan.band);
-            decision.market_state = plan.market_state;
-            decision.entry = crate::model::EntryGate::Open {
-                notes: plan.notes.clone(),
-            };
-            decision.entry_reason = Some(EntryReason::SugInfoScalp {
-                price: plan.entry,
-                started_at_ms: sug_info.system_time as u64,
-            });
-        }
-    }
-
-    if matches!(decision.entry, crate::model::EntryGate::Open { .. })
-        && decision.entry_reason.is_none()
-        && sug_snapshot.sug_candle.is_none()
-    {
-        if let Some(plan) = prediction::movement_entry_plan(&snapshot, &sug_snapshot, &cas_sug) {
-            decision.market_state = plan.market_state;
-            decision.entry = crate::model::EntryGate::Open {
-                notes: plan.notes.clone(),
-            };
-            decision.entry_reason = Some(EntryReason::SugInfoMovement {
-                price: plan.price,
-                started_at_ms: sug_info.system_time as u64,
-            });
-        }
-    }
-
-    let mrc1 = mrc::analyze(&snapshot.tf1m.mrc, input.price);
-
-    if decision.market_state == MarketState::Sideways && mrc1.bullish_structure && cas_tf.dir > 0 {
-        decision = TradeDecision {
-            market_state: MarketState::Long,
-            entry: match decision.entry {
-                crate::model::EntryGate::Open { mut notes } => {
-                    notes.push("1m-recovery".to_string());
-                    crate::model::EntryGate::Open { notes }
-                }
-                crate::model::EntryGate::Wait(mut wait) => {
-                    wait.notes.push("1m-recovery".to_string());
-                    crate::model::EntryGate::Wait(wait)
-                }
-            },
-            entry_reason: decision.entry_reason.clone(),
-        };
-    }
-
-    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
-    let locked_direction = state.direction_lock.direction;
-    if !martingale_mode
-        && locked_direction != MarketState::Sideways
-        && decision.market_state != locked_direction
-    {
-        decision = TradeDecision {
-            market_state: locked_direction,
-            entry: crate::model::EntryGate::Wait(crate::model::EntryWait {
-                reason: "one-way-lock".to_string(),
-                solutions: vec![crate::model::EntryWaitSolution::WaitForDirectionBreak {
-                    source: "direction-lock".to_string(),
-                    direction: locked_direction,
-                    break_price: state.direction_lock.break_price,
-                }],
-                notes: vec![
-                    format!("lock={}", state.direction_lock.label()),
-                    format!("price={:.4}", snapshot.tf1m.candle.close),
-                    "same-side-only".to_string(),
-                ],
-            }),
-            entry_reason: None,
-        };
-    }
+    let decision = strategy.refine_realtime_decision(
+        state,
+        &snapshot,
+        &sug_snapshot,
+        &sideway,
+        regime,
+        &cas_tf,
+        &cas_sug,
+        sug_info,
+        decision::decide(regime),
+    );
 
     let execution = execution::evaluate_with_cascade(
         input,

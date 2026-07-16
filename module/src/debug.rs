@@ -127,19 +127,29 @@ fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
 }
 
 fn render_mode_context(state: &EngineState) -> String {
+    let strategy = state
+        .strategy_builder
+        .as_ref()
+        .map(|builder| builder.describe())
+        .unwrap_or_else(|| "strategy=na".to_string());
     match state.cfg.trade_mode {
-        TradeMode::Single => format!("single exit_src={}", state.position.exit_mode.as_str()),
+        TradeMode::Single => format!(
+            "single exit_src={} {}",
+            state.position.exit_mode.as_str(),
+            strategy
+        ),
         TradeMode::Martingale => {
             if let Some(profile) = state.position.martingale_profile {
                 format!(
-                    "martingale exit_src=martingale mg_levels={} mg_range={:.4}% mg_step={:.2}% mg_tp={:.2}% mg_orders=2",
+                    "martingale exit_src=martingale {} mg_levels={} mg_range={:.4}% mg_step={:.2}% mg_tp={:.2}% mg_orders=2",
+                    strategy,
                     profile.levels,
                     profile.range_pct,
                     profile.step_pct,
                     profile.take_profit_pct,
                 )
             } else {
-                "martingale exit_src=martingale mg_profile=na".to_string()
+                format!("martingale exit_src=martingale {} mg_profile=na", strategy)
             }
         }
     }
