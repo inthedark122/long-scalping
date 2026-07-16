@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.37
+
+Martingale recovery TP release.
+
+- Advanced the martingale recovery take-profit to current price plus 2 ticks after virtual SL hit.
+- Kept single-mode virtual SL recovery on the breakeven TP reclaim path.
+- Updated the module and strategy release metadata to point at the new version.
+
 ## 1.0.36
 
 Martingale range and debug fix release.
