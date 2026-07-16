@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.38
+
+Builder split release.
+
+- Split the strategy builder into dedicated initial, shared, single-mode, and martingale files.
+- Kept the runtime builder API stable while moving mode-specific logic out of the monolith.
+- Updated the release metadata and bot strategy version to the new module version.
+
 ## 1.0.37
 
 Martingale recovery TP release.

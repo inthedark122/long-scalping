@@ -4,9 +4,7 @@ use crate::exit;
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{
-    EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision, TradeMode,
-};
+use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
