@@ -237,6 +237,9 @@ mod tests {
                 started_at_ms: 1,
             }),
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let debug = render(
             &state,
@@ -279,6 +282,9 @@ mod tests {
                 step_pct: 0.8,
                 take_profit_pct: 0.64,
             }),
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let debug = render(
             &state,

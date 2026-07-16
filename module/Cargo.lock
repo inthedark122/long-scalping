@@ -20,7 +20,7 @@ dependencies = [
 [[package]]
 name = "lte_strategy_bridge"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=127cfd9b5bceb82614995d7a419c6db0b0b6fad8#127cfd9b5bceb82614995d7a419c6db0b0b6fad8"
+source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=93f41563201cfc41a4d05269c139cd1db2efc53f#93f41563201cfc41a4d05269c139cd1db2efc53f"
 dependencies = [
  "serde",
  "serde_json",

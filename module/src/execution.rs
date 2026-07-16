@@ -733,10 +733,12 @@ pub fn evaluate_with_cascade(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TradeDecision;
+    use crate::model::{TradeDecision, TradeMode};
     use crate::risk::apply_close_pnl;
     use crate::state::EngineState;
-    use lte_strategy_bridge::abi::{ModulePositionSummary, ModulePositions, ModuleSymbolInfo};
+    use lte_strategy_bridge::abi::{
+        ModuleOrderType, ModulePositionSummary, ModulePositions, ModuleSymbolInfo,
+    };
 
     fn input() -> ModuleInput {
         ModuleInput {
@@ -1418,6 +1420,9 @@ mod tests {
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1479,6 +1484,9 @@ mod tests {
             tp_mark: "tp-short".to_string(),
             entry_reason: None,
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1541,6 +1549,9 @@ mod tests {
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1608,6 +1619,9 @@ mod tests {
                 step_pct: 0.5,
                 take_profit_pct: 0.4,
             }),
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1680,6 +1694,9 @@ mod tests {
                 started_at_ms: 1_000,
             }),
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1722,6 +1739,9 @@ mod tests {
                 started_at_ms: 1_000,
             }),
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1762,6 +1782,9 @@ mod tests {
                 started_at_ms: 1_000,
             }),
             martingale_profile: None,
+            martingale_base_price: 0.0,
+            martingale_base_amount: 0.0,
+            martingale_next_level: 0,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1881,7 +1904,7 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         let open = &result.open_positions[0];
-        assert_eq!(open.order_type, "Limit");
+        assert_eq!(open.order_type, ModuleOrderType::Limit);
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
@@ -1901,7 +1924,7 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         let open = &result.open_positions[0];
-        assert_eq!(open.order_type, "Limit");
+        assert_eq!(open.order_type, ModuleOrderType::Limit);
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
@@ -1946,7 +1969,7 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].order_type, "Market");
+        assert_eq!(result.open_positions[0].order_type, ModuleOrderType::Market);
         assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
         assert_eq!(result.tp_orders.len(), 2);
         assert!(result.note.contains("immediate"));

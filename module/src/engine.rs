@@ -10,7 +10,9 @@ use crate::model::{ExitKind, ExitMemory, ExitMode, TradeMode};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
-use lte_strategy_bridge::abi::{Direction, ModuleEvent, ModuleInput, ModuleOutput, OrderRole};
+use lte_strategy_bridge::abi::{
+    Direction, ModuleEvent, ModuleInput, ModuleOrderStatus, ModuleOutput, OrderRole,
+};
 use lte_strategy_bridge::indicator_access::TimeframeSec;
 use lte_strategy_bridge::sug_info::SuggestionInfo;
 
@@ -51,15 +53,17 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             status,
             role,
             fill_price,
+            filled_qty,
             mark,
             ..
         } => handle_order_update(
             input,
             state,
             *direction,
-            status,
+            *status,
             role.clone(),
             *fill_price,
+            *filled_qty,
             mark,
         ),
     }
@@ -139,6 +143,9 @@ fn handle_new_position(
         tp_mark: tp_mark(direction),
         entry_reason: state.position.entry_reason.clone(),
         martingale_profile: state.position.martingale_profile,
+        martingale_base_price: state.position.martingale_base_price,
+        martingale_base_amount: state.position.martingale_base_amount,
+        martingale_next_level: state.position.martingale_next_level,
     };
 
     let side = dir_to_position(direction);
@@ -228,9 +235,10 @@ fn handle_order_update(
     input: &ModuleInput,
     state: &mut EngineState,
     direction: Direction,
-    status: &str,
+    status: ModuleOrderStatus,
     role: OrderRole,
     fill_price: f64,
+    filled_qty: f64,
     mark: &Option<String>,
 ) -> ModuleOutput {
     if matches!(role, OrderRole::TakeProfit | OrderRole::StopLoss) {
@@ -253,9 +261,173 @@ fn handle_order_update(
         };
     }
 
+    let is_filled = filled_qty > 0.0 && matches!(status, ModuleOrderStatus::Filled);
+
+    if builder::ensure_runtime_builder(state).is_martingale()
+        && matches!(role, OrderRole::Entry)
+        && is_filled
+        && martingale::is_ladder_fill_mark(mark.as_deref())
+    {
+        if let Some(profile) = state.position.martingale_profile {
+            let next_level = state.position.martingale_next_level.max(1);
+            if state.position.side != crate::model::PositionState::Flat
+                && state.position.martingale_base_price > 0.0
+                && state.position.martingale_base_amount > 0.0
+            {
+                let side = match state.position.side {
+                    crate::model::PositionState::Long => crate::model::MarketState::Long,
+                    crate::model::PositionState::Short => crate::model::MarketState::Short,
+                    crate::model::PositionState::Flat => crate::model::MarketState::Sideways,
+                };
+                if let Some(order) = martingale::ladder_order(
+                    side,
+                    profile,
+                    state.position.martingale_base_price,
+                    state.position.martingale_base_amount,
+                    next_level,
+                ) {
+                    state.position.martingale_next_level = next_level.saturating_add(1);
+                    return ModuleOutput {
+                        place_orders: vec![order],
+                        debug: format!(
+                            "order {:?} {:?} {:?} {:?} martingale-replenish next_level={}",
+                            direction, status, role, mark, next_level
+                        ),
+                        ..Default::default()
+                    };
+                }
+            }
+        }
+    }
+
     ModuleOutput {
-        debug: format!("order {:?} {} {:?} {:?}", direction, status, role, mark),
+        debug: format!("order {:?} {:?} {:?} {:?}", direction, status, role, mark),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::InitialBuilder;
+    use crate::model::{PositionState, TradeMode};
+    use crate::state::PositionRuntime;
+    use lte_strategy_bridge::abi::{
+        ModuleEvent, ModuleExchangeOrderSide, ModuleInput, ModuleOrderStatus, ModulePositions,
+        ModuleSymbolInfo, OrderRole,
+    };
+    use std::collections::BTreeMap;
+
+    fn input(event: ModuleEvent) -> ModuleInput {
+        ModuleInput {
+            event,
+            price: 100.0,
+            symbol: "TEST".to_string(),
+            max_amount: 100.0,
+            symbol_info: ModuleSymbolInfo::default(),
+            auto_max_amount: 100.0,
+            leverage: 10,
+            indicators: BTreeMap::new(),
+            positions: ModulePositions {
+                long: None,
+                short: None,
+            },
+            sug_info: None,
+            state: None,
+        }
+    }
+
+    #[test]
+    fn martingale_entry_fill_replenishes_next_ladder_order() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        state.strategy_builder = Some(InitialBuilder::new(TradeMode::Martingale).build());
+        state.position = PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 0.0,
+            exit_tp_reliable: false,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: None,
+            martingale_profile: Some(crate::martingale::LadderProfile {
+                levels: 6,
+                range_pct: 1.4,
+                step_pct: 0.7,
+                take_profit_pct: 0.56,
+            }),
+            martingale_base_price: 100.0,
+            martingale_base_amount: 1.0,
+            martingale_next_level: 3,
+        };
+
+        let output = run(
+            &input(ModuleEvent::OrderUpdate {
+                direction: Direction::Long,
+                order_side: ModuleExchangeOrderSide::Buy,
+                role: OrderRole::Entry,
+                status: ModuleOrderStatus::Filled,
+                fill_price: 99.3,
+                filled_qty: 1.0,
+                mark: Some("mg-long-6-1".to_string()),
+            }),
+            &mut state,
+        );
+
+        assert_eq!(output.place_orders.len(), 1);
+        let order = &output.place_orders[0];
+        assert_eq!(order.amount, Some(3.0));
+        assert_eq!(order.enter_price, 97.9);
+        assert!(output.debug.contains("martingale-replenish"));
+        assert_eq!(state.position.martingale_next_level, 4);
+    }
+
+    #[test]
+    fn martingale_open_fill_does_not_replenish() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        state.strategy_builder = Some(InitialBuilder::new(TradeMode::Martingale).build());
+        state.position = PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 0.0,
+            exit_tp_reliable: false,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: None,
+            martingale_profile: Some(crate::martingale::LadderProfile {
+                levels: 6,
+                range_pct: 1.4,
+                step_pct: 0.7,
+                take_profit_pct: 0.56,
+            }),
+            martingale_base_price: 100.0,
+            martingale_base_amount: 1.0,
+            martingale_next_level: 3,
+        };
+
+        let output = run(
+            &input(ModuleEvent::OrderUpdate {
+                direction: Direction::Long,
+                order_side: ModuleExchangeOrderSide::Buy,
+                role: OrderRole::Entry,
+                status: ModuleOrderStatus::Filled,
+                fill_price: 100.0,
+                filled_qty: 1.0,
+                mark: Some("mg-long-6-open".to_string()),
+            }),
+            &mut state,
+        );
+
+        assert!(output.place_orders.is_empty());
+        assert!(!output.debug.contains("martingale-replenish"));
+        assert_eq!(state.position.martingale_next_level, 3);
     }
 }
 

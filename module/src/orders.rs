@@ -1,8 +1,8 @@
 //! Order-construction helpers: build the ABI open/close/limit/TP payloads.
 
 use lte_strategy_bridge::abi::{
-    Direction, ModuleClosePosition, ModuleOpenPosition, ModuleOrderSide, ModulePlaceOrder,
-    ModuleUpdatePosition,
+    Direction, ModuleClosePosition, ModuleOpenPosition, ModuleOrderSide, ModuleOrderType,
+    ModulePlaceOrder, ModuleUpdatePosition,
 };
 
 pub(crate) fn close(direction: Direction, reason: &str) -> ModuleClosePosition {
@@ -60,7 +60,7 @@ pub(crate) fn limit_open(
         amount: Some(amount),
         qty: None,
         enter_price: Some(enter),
-        order_type: "Limit".to_string(),
+        order_type: ModuleOrderType::Limit,
         take_profit: None,
         stop_loss: None,
         note: note.to_string(),
@@ -80,7 +80,7 @@ pub(crate) fn market_open(
         amount: Some(amount),
         qty: None,
         enter_price: Some(enter),
-        order_type: "Market".to_string(),
+        order_type: ModuleOrderType::Market,
         take_profit: None,
         stop_loss: None,
         note: note.to_string(),

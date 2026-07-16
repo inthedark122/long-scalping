@@ -78,6 +78,10 @@ fn clamp_price(side: MarketState, price: f64) -> f64 {
     }
 }
 
+fn ladder_mark_prefix(side_direction: Direction, profile: LadderProfile) -> String {
+    format!("mg-{}-{}", direction_label(side_direction), profile.levels)
+}
+
 pub fn compute_profile(base_price: f64, range: f64) -> Option<LadderProfile> {
     if !base_price.is_finite() || base_price <= 0.0 {
         return None;
@@ -112,7 +116,7 @@ pub fn entry_plan(
         return None;
     }
     let base_amount = total_amount / 4.0;
-    let mark_prefix = format!("mg-{}-{}", direction_label(side_direction), profile.levels);
+    let mark_prefix = ladder_mark_prefix(side_direction, profile);
 
     let open_position = market_open(
         side_direction,
@@ -123,19 +127,9 @@ pub fn entry_plan(
 
     let mut orders = Vec::with_capacity(ladder_orders);
     for level in 1..=ladder_orders {
-        let price = match side {
-            MarketState::Long => clamp_price(side, base_price - step * level as f64),
-            MarketState::Short => clamp_price(side, base_price + step * level as f64),
-            MarketState::Sideways => return None,
-        };
-        let amount = base_amount * level as f64;
-        orders.push(limit_order(
-            side_direction,
-            amount,
-            price,
-            &format!("{}-{}", mark_prefix, level),
-            Some(&format!("martingale-entry:nearest-{}", level)),
-        ));
+        if let Some(order) = ladder_order(side, profile, base_price, base_amount, level) {
+            orders.push(order);
+        }
     }
 
     let support_break = stop_loss::support_break_level(snapshot, to_position(side), entry_reason)
@@ -174,6 +168,40 @@ pub fn entry_plan(
         orders,
         notes,
     })
+}
+
+pub fn ladder_order(
+    side: MarketState,
+    profile: LadderProfile,
+    base_price: f64,
+    base_amount: f64,
+    level: usize,
+) -> Option<ModulePlaceOrder> {
+    let side_direction = direction(side)?;
+    if level == 0 || level > profile.levels {
+        return None;
+    }
+
+    let step = base_price * (profile.step_pct / 100.0);
+    let price = match side {
+        MarketState::Long => clamp_price(side, base_price - step * level as f64),
+        MarketState::Short => clamp_price(side, base_price + step * level as f64),
+        MarketState::Sideways => return None,
+    };
+    let amount = base_amount * level as f64;
+    let mark_prefix = ladder_mark_prefix(side_direction, profile);
+    Some(limit_order(
+        side_direction,
+        amount,
+        price,
+        &format!("{}-{}", mark_prefix, level),
+        Some(&format!("martingale-entry:nearest-{}", level)),
+    ))
+}
+
+pub fn is_ladder_fill_mark(mark: Option<&str>) -> bool {
+    mark.map(|value| value.starts_with("mg-") && !value.ends_with("-open"))
+        .unwrap_or(false)
 }
 
 fn to_position(side: MarketState) -> PositionState {
@@ -328,7 +356,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.orders.len(), 2);
-        assert_eq!(plan.open_position.order_type, "Market");
+        assert_eq!(
+            plan.open_position.order_type,
+            lte_strategy_bridge::abi::ModuleOrderType::Market
+        );
         assert_eq!(plan.open_position.enter_price, Some(100.0));
         let open = plan.open_position.amount.unwrap();
         let first = plan.orders[0].amount.unwrap();
