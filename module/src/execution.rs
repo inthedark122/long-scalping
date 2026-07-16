@@ -184,6 +184,29 @@ fn direction_changed(position_side: PositionState, decision_state: MarketState) 
     )
 }
 
+fn recent_entry_age_ms(input: &ModuleInput, state: &EngineState) -> Option<u64> {
+    let started_at_ms = state.position.entry_reason.as_ref()?.started_at_ms();
+    let current_ms = input.sug_info.as_ref()?.system_time as u64;
+    Some(current_ms.saturating_sub(started_at_ms))
+}
+
+fn should_close_on_direction_change(input: &ModuleInput, state: &EngineState) -> bool {
+    match state.cfg.trade_mode {
+        TradeMode::Single => true,
+        TradeMode::Martingale => recent_entry_age_ms(input, state)
+            .map(|age_ms| age_ms >= CREATED_MAX_AGE_MS)
+            .unwrap_or(true),
+    }
+}
+
+fn should_reclaim_breakeven_tp(state: &EngineState) -> bool {
+    matches!(state.cfg.trade_mode, TradeMode::Single)
+}
+
+fn should_advance_tp_after_virtual_sl(state: &EngineState) -> bool {
+    matches!(state.cfg.trade_mode, TradeMode::Martingale)
+}
+
 fn created_position_update(
     input: &ModuleInput,
     state: &mut EngineState,
@@ -307,7 +330,6 @@ fn ensure_active_exit_order(
     }
 
     let tick = tick_size(input);
-    let martingale_mode = matches!(state.cfg.trade_mode, TradeMode::Martingale);
     let virtual_sl_hit =
         stop_loss::virtual_stop_loss_hit(side, input.price, state.position.stop_loss);
 
@@ -317,7 +339,7 @@ fn ensure_active_exit_order(
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        if martingale_mode {
+        if should_advance_tp_after_virtual_sl(state) {
             if virtual_sl_hit {
                 let desired_tp =
                     stop_loss::martingale_recovery_take_profit(input.price, side, tick);
@@ -350,28 +372,30 @@ fn ensure_active_exit_order(
             );
         }
 
-        let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
-        if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
-            state.position.take_profit = desired_tp;
-            notes.push(format!("tp-reclaim={:.4}", desired_tp));
-            let note = Some("tp:reclaim".to_string());
-            let order = tp_limit_order(
-                direction,
-                qty,
-                desired_tp,
-                &state.position.tp_mark,
-                note.as_deref(),
-            );
-            return (
-                vec![order],
-                Vec::new(),
-                format!(
-                    "exit={} price={:.4} {}",
-                    state.position.exit_mode.as_str(),
-                    input.price,
-                    notes.join("|")
-                ),
-            );
+        if should_reclaim_breakeven_tp(state) {
+            let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
+            if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
+                state.position.take_profit = desired_tp;
+                notes.push(format!("tp-reclaim={:.4}", desired_tp));
+                let note = Some("tp:reclaim".to_string());
+                let order = tp_limit_order(
+                    direction,
+                    qty,
+                    desired_tp,
+                    &state.position.tp_mark,
+                    note.as_deref(),
+                );
+                return (
+                    vec![order],
+                    Vec::new(),
+                    format!(
+                        "exit={} price={:.4} {}",
+                        state.position.exit_mode.as_str(),
+                        input.price,
+                        notes.join("|")
+                    ),
+                );
+            }
         }
         return (
             Vec::new(),
@@ -463,7 +487,9 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.long.is_some() {
-        if direction_changed(PositionState::Long, decision.market_state) {
+        if direction_changed(PositionState::Long, decision.market_state)
+            && should_close_on_direction_change(input, state)
+        {
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Long,
@@ -514,7 +540,9 @@ pub fn evaluate_with_cascade(
     }
 
     if input.positions.short.is_some() {
-        if direction_changed(PositionState::Short, decision.market_state) {
+        if direction_changed(PositionState::Short, decision.market_state)
+            && should_close_on_direction_change(input, state)
+        {
             return ExecutionResult {
                 close_positions: vec![close(
                     Direction::Short,
@@ -1721,6 +1749,73 @@ mod tests {
         assert_eq!(result.close_positions.len(), 1);
         assert!(result.update_positions.is_empty());
         assert!(result.note.contains("direction-changed"));
+    }
+
+    #[test]
+    fn martingale_direction_change_grace_keeps_fresh_position_open() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        state.position = crate::state::PositionRuntime {
+            side: crate::model::PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.5,
+            trough_price: 99.5,
+            take_profit: 101.0,
+            stop_loss: 99.0,
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
+                price: 100.0,
+                started_at_ms: 1_000,
+            }),
+            martingale_profile: None,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.1,
+            qty: 0.1,
+        });
+        inp.price = 100.2;
+        inp.sug_info = Some(sug_info(6_000));
+
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.0,
+            high: 100.4,
+            low: 99.8,
+            close: 100.2,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Short),
+        );
+
+        assert!(result.close_positions.is_empty());
+        assert!(result.note.contains("hold-long"));
+        assert!(!result.note.contains("direction-changed"));
     }
 
     #[test]
