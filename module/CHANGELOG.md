@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.39
+
+Typed order status release.
+
+- Switched martingale rollover handling to the bridge's typed order status enum.
+- Replaced the string-based fill heuristic with exact `Filled` matching.
+- Kept the martingale replenishment flow limited to the next rung only.
+
 ## 1.0.38
 
 Builder split release.
