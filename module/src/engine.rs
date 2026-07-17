@@ -515,24 +515,28 @@ fn refresh_indicators(
         input.price,
     );
 
-    let snapshot =
-        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let error = snapshot_error(
-                    "Indicators",
-                    &timeframes_context(timeframes),
-                    &input.indicators,
-                    error,
-                );
-                state.last_error = Some(error.clone());
-                return ModuleOutput {
-                    debug: error,
-                    ..Default::default()
-                };
-            }
-        };
+    let snapshot = match market_data::merge_indicator_snapshot(
+        state.last_snapshot.as_ref(),
+        &state.history,
+        &input.indicators,
+        input.price,
+        timeframes,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let error = snapshot_error(
+                "Indicators",
+                &timeframes_context(timeframes),
+                &input.indicators,
+                error,
+            );
+            state.last_error = Some(error.clone());
+            return ModuleOutput {
+                debug: error,
+                ..Default::default()
+            };
+        }
+    };
     if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
         state.last_error = Some(error.clone());
         return ModuleOutput {

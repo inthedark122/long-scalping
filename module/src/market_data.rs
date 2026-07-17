@@ -15,6 +15,16 @@ const TF_5M: TimeframeSec = TimeframeSec::Tf5m;
 const TF_15M: TimeframeSec = TimeframeSec::Tf15m;
 const TF_1H: TimeframeSec = TimeframeSec::Tf1h;
 
+fn timeframe_from_secs(timeframe: i64) -> Option<TimeframeSec> {
+    match timeframe {
+        60 => Some(TF_1M),
+        300 => Some(TF_5M),
+        900 => Some(TF_15M),
+        3600 => Some(TF_1H),
+        _ => None,
+    }
+}
+
 fn read_float(
     history: &IndicatorHistory,
     timeframe: TimeframeSec,
@@ -282,6 +292,39 @@ pub fn build_indicator_snapshot(
         tf1h: build_timeframe(history, raw, TF_1H, None)?,
         ..Default::default()
     })
+}
+
+pub fn merge_indicator_snapshot(
+    base: Option<&IndicatorSnapshot>,
+    history: &IndicatorHistory,
+    raw: &RawIndicators,
+    live_price: f64,
+    timeframes: &[i64],
+) -> Result<IndicatorSnapshot, String> {
+    let mut snapshot = base.copied().unwrap_or_default();
+    if timeframes.is_empty() {
+        return Ok(snapshot);
+    }
+
+    for timeframe in timeframes {
+        let tf = timeframe_from_secs(*timeframe)
+            .ok_or_else(|| format!("unsupported-timeframe tf={}", timeframe))?;
+        let tf_snapshot = build_timeframe(
+            history,
+            raw,
+            tf,
+            if tf == TF_1M { Some(live_price) } else { None },
+        )?;
+        match tf {
+            TF_1M => snapshot.tf1m = tf_snapshot,
+            TF_5M => snapshot.tf5m = tf_snapshot,
+            TF_15M => snapshot.tf15m = tf_snapshot,
+            TF_1H => snapshot.tf1h = tf_snapshot,
+            _ => {}
+        }
+    }
+
+    Ok(snapshot)
 }
 
 pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), String> {
