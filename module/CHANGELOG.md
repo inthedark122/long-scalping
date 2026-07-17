@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.44
+
+Partial indicator merge release.
+
+- Merged partial indicator updates onto the cached snapshot so `Indicators { timeframes }` no longer requires a full rebuild from raw payloads.
+- Kept the bridge history update path intact and reused the last full snapshot for `SugInfo` processing.
+- Preserved the indicator validation and raw inventory tracing added in the previous release.
+
 ## 1.0.43
 
 Trace context release.

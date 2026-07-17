@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.43",
+      "module_version": "1.0.44",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.43"
+          "module_version": "1.0.44"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-          "description": "Start the 1.0.43 indicator inventory error release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now stops on invalid indicator snapshots and surfaces the raw indicator inventory in debug before strategy evaluation.",
+          "description": "Start the 1.0.44 partial indicator merge release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now merges partial indicator updates onto the cached snapshot and surfaces raw indicator inventory in debug before strategy evaluation.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.43",
+    "version": "1.0.44",
     "defaults": {}
   }
 }
