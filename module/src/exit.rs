@@ -55,6 +55,36 @@ fn structural_plan(
     }
 }
 
+fn clamp_take_profit(
+    price: f64,
+    side: PositionState,
+    raw_tp: f64,
+    structural_take_profit: f64,
+) -> f64 {
+    if !raw_tp.is_finite() || raw_tp <= 0.0 {
+        return 0.0;
+    }
+
+    let structural_valid = structural_take_profit.is_finite() && structural_take_profit > 0.0;
+    match side {
+        PositionState::Long => {
+            if structural_valid && structural_take_profit > price {
+                raw_tp.min(structural_take_profit)
+            } else {
+                raw_tp
+            }
+        }
+        PositionState::Short => {
+            if structural_valid && structural_take_profit < price {
+                raw_tp.max(structural_take_profit)
+            } else {
+                raw_tp
+            }
+        }
+        PositionState::Flat => raw_tp,
+    }
+}
+
 fn movement_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
@@ -74,7 +104,12 @@ fn movement_plan(
 
     let plan = match side {
         PositionState::Long => ExitPlan {
-            take_profit: price + tp_distance,
+            take_profit: clamp_take_profit(
+                price,
+                side,
+                price + tp_distance,
+                structural_take_profit,
+            ),
             stop_loss: support_stop.max(f64::EPSILON),
             tp_reliable: true,
             source: ExitSource::Movement,
@@ -82,7 +117,12 @@ fn movement_plan(
             structural_stop_loss,
         },
         PositionState::Short => ExitPlan {
-            take_profit: (price - tp_distance).max(f64::EPSILON),
+            take_profit: clamp_take_profit(
+                price,
+                side,
+                (price - tp_distance).max(f64::EPSILON),
+                structural_take_profit,
+            ),
             stop_loss: support_stop.max(f64::EPSILON),
             tp_reliable: true,
             source: ExitSource::Movement,
@@ -352,6 +392,38 @@ mod tests {
         let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Short, None).unwrap();
         assert!(plan.take_profit < 100.0);
         assert!(plan.stop_loss > 100.0);
+    }
+
+    #[test]
+    fn movement_tp_is_capped_by_structural_target() {
+        let snapshot = IndicatorSnapshot {
+            tf1m: tf(100.0),
+            tf5m: tf(100.0),
+            tf15m: tf(100.0),
+            tf1h: tf(100.0),
+            ..Default::default()
+        };
+        let sug = SugInfoSnapshot {
+            fast_candle: Some(crate::model::FastCandleSnapshot {
+                candle: Candle {
+                    open: 100.0,
+                    high: 120.0,
+                    low: 80.0,
+                    close: 110.0,
+                },
+                active: true,
+            }),
+            ..Default::default()
+        };
+        let cascade = CascadeState {
+            avg_size: 50.0,
+            samples: 5,
+            ..Default::default()
+        };
+
+        let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Long, None).unwrap();
+        assert!(plan.source == ExitSource::Movement || plan.source == ExitSource::Structural);
+        assert!(plan.take_profit <= 105.0);
     }
 
     #[test]

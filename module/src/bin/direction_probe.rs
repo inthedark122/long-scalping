@@ -65,8 +65,8 @@ mod stop_loss {
 use detection::cascade::{self, CascadeSignal};
 use detection::{mrc, regime, sideways};
 use model::{
-    Candle, EntryGate, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot,
-    TimeframeSnapshot,
+    Candle, EntryGate, EntryWaitSolution, IndicatorSnapshot, MarketState, PositionState,
+    SugInfoSnapshot, TimeframeSnapshot,
 };
 use state::{CascadeState, EngineState};
 
@@ -381,6 +381,245 @@ fn confirmation_label(value: regime::OneMConfirmation) -> &'static str {
     }
 }
 
+fn note_value(notes: &[String], key: &str) -> Option<f64> {
+    let prefix = format!("{key}=");
+    notes.iter().find_map(|note| {
+        note.strip_prefix(&prefix)
+            .and_then(|value| value.parse::<f64>().ok())
+    })
+}
+
+fn format_level_point(point: &detection::levels::LevelPoint, price: f64) -> String {
+    let distance_pct = if price > 0.0 {
+        ((point.value - price).abs() / price) * 100.0
+    } else {
+        0.0
+    };
+    format!(
+        "{:.6}@{}:{}({:+.2}%)",
+        point.value,
+        point.source.as_str(),
+        point.kind.as_str(),
+        distance_pct
+    )
+}
+
+fn format_level_points(
+    points: &[detection::levels::LevelPoint],
+    price: f64,
+    limit: usize,
+) -> String {
+    let mut out = Vec::new();
+    for point in points.iter().take(limit) {
+        out.push(format_level_point(point, price));
+    }
+    if points.len() > limit {
+        out.push(format!("+{} more", points.len() - limit));
+    }
+    if out.is_empty() {
+        "none".to_string()
+    } else {
+        out.join(", ")
+    }
+}
+
+fn format_gap_summary(summary: &detection::levels::LevelGapSummary, price: f64) -> String {
+    let above = summary
+        .nearest_above
+        .map(|point| format_level_point(&point, price))
+        .unwrap_or_else(|| "none".to_string());
+    let below = summary
+        .nearest_below
+        .map(|point| format_level_point(&point, price))
+        .unwrap_or_else(|| "none".to_string());
+    let above_gap = summary
+        .nearest_above_gap
+        .map(|gap| format!("{:.6}", gap))
+        .unwrap_or_else(|| "n/a".to_string());
+    let below_gap = summary
+        .nearest_below_gap
+        .map(|gap| format!("{:.6}", gap))
+        .unwrap_or_else(|| "n/a".to_string());
+    let above_wall = summary
+        .next_above_gap
+        .map(|gap| format!("{:.6}", gap))
+        .unwrap_or_else(|| "n/a".to_string());
+    let below_wall = summary
+        .next_below_gap
+        .map(|gap| format!("{:.6}", gap))
+        .unwrap_or_else(|| "n/a".to_string());
+    let span = summary
+        .span
+        .map(|gap| format!("{:.6}", gap))
+        .unwrap_or_else(|| "n/a".to_string());
+
+    format!(
+        "nearest_above={} gap={} wall={} nearest_below={} gap={} wall={} span={}",
+        above, above_gap, above_wall, below, below_gap, below_wall, span
+    )
+}
+
+fn near_price(a: f64, b: f64) -> bool {
+    if a <= 0.0 || b <= 0.0 {
+        return (a - b).abs() <= f64::EPSILON;
+    }
+    (a - b).abs() <= (a.max(b) * 0.0005).max(0.000_001)
+}
+
+fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
+    match gate {
+        EntryGate::Open { notes } => note_value(notes, "entry")
+            .or_else(|| note_value(notes, "pullback_entry"))
+            .or_else(|| note_value(notes, "price"))
+            .unwrap_or(fallback),
+        EntryGate::Wait(wait) => {
+            for solution in &wait.solutions {
+                match solution {
+                    EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
+                        return *break_price;
+                    }
+                    EntryWaitSolution::WaitForConfirmation { price, .. } => return *price,
+                    EntryWaitSolution::ReclaimLevel { level, .. } => return *level,
+                    EntryWaitSolution::ReclaimDpsignal { anchor, .. } => return *anchor,
+                    EntryWaitSolution::WaitForSamples { .. }
+                    | EntryWaitSolution::WaitForCooling { .. } => {}
+                }
+            }
+            fallback
+        }
+    }
+}
+
+fn break_candidate(
+    price: f64,
+    side: PositionState,
+    value: f64,
+    source: &'static str,
+) -> Option<(f64, &'static str)> {
+    if value <= 0.0 || near_price(price, value) {
+        return None;
+    }
+    match side {
+        PositionState::Long if value < price => Some((value, source)),
+        PositionState::Short if value > price => Some((value, source)),
+        PositionState::Flat => None,
+        _ => None,
+    }
+}
+
+fn directional_break_level(
+    snapshot: &IndicatorSnapshot,
+    gate: &EntryGate,
+    side: PositionState,
+    entry_price: f64,
+) -> Option<(f64, &'static str)> {
+    let current_price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    let mut candidates: Vec<(f64, &'static str)> = Vec::new();
+
+    if let EntryGate::Wait(wait) = gate {
+        for solution in &wait.solutions {
+            match solution {
+                EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
+                    if let Some(candidate) =
+                        break_candidate(current_price, side, *break_price, "wait-break")
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+                EntryWaitSolution::WaitForConfirmation { price, .. } => {
+                    if let Some(candidate) =
+                        break_candidate(current_price, side, *price, "wait-confirmation")
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+                EntryWaitSolution::ReclaimLevel { level, .. } => {
+                    if let Some(candidate) =
+                        break_candidate(current_price, side, *level, "reclaim-level")
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+                EntryWaitSolution::ReclaimDpsignal { anchor, .. } => {
+                    if let Some(candidate) =
+                        break_candidate(current_price, side, *anchor, "dpsignal")
+                    {
+                        candidates.push(candidate);
+                    }
+                }
+                EntryWaitSolution::WaitForSamples { .. }
+                | EntryWaitSolution::WaitForCooling { .. } => {}
+            }
+        }
+    }
+
+    let tf5 = &snapshot.tf5m;
+    let level_book = detection::levels::structural_levels(snapshot);
+    let tf5_candidates = match side {
+        PositionState::Long => [
+            (tf5.zz_break_price, "5m-zz-break"),
+            (tf5.dp_zee1, "5m-dp-zee1"),
+            (tf5.dp_zee, "5m-dp-zee"),
+            (tf5.mrc.down_outer, "5m-down-outer"),
+            (tf5.mrc.down_big, "5m-down-big"),
+            (
+                level_book.nearest_below(current_price).unwrap_or(0.0),
+                "structural-below",
+            ),
+        ],
+        PositionState::Short => [
+            (tf5.zz_break_price, "5m-zz-break"),
+            (tf5.dp_zee1, "5m-dp-zee1"),
+            (tf5.dp_zee, "5m-dp-zee"),
+            (tf5.mrc.up_outer, "5m-up-outer"),
+            (tf5.mrc.up_big, "5m-up-big"),
+            (
+                level_book.nearest_above(current_price).unwrap_or(0.0),
+                "structural-above",
+            ),
+        ],
+        PositionState::Flat => return None,
+    };
+
+    candidates.extend(
+        tf5_candidates
+            .into_iter()
+            .filter_map(|(value, source)| break_candidate(current_price, side, value, source)),
+    );
+
+    let mut candidates: Vec<(f64, &'static str)> = candidates
+        .into_iter()
+        .filter(|(value, _)| !near_price(entry_price, *value))
+        .collect();
+
+    candidates.sort_by(|(a, _), (b, _)| match side {
+        PositionState::Long => b.total_cmp(a),
+        PositionState::Short => a.total_cmp(b),
+        PositionState::Flat => a.total_cmp(b),
+    });
+
+    candidates.into_iter().next()
+}
+
+fn gate_break_instruction(
+    gate: &EntryGate,
+    side: PositionState,
+    snapshot: &IndicatorSnapshot,
+    entry_price: f64,
+) -> String {
+    if let Some((break_level, source)) = directional_break_level(snapshot, gate, side, entry_price)
+    {
+        let trigger = match side {
+            PositionState::Long => "reclaim above",
+            PositionState::Short => "break below",
+            PositionState::Flat => "watch",
+        };
+        return format!("{} {:.6} via {}", trigger, break_level, source);
+    }
+
+    "wait-for-better-anchor".to_string()
+}
+
 fn trade_recommendation(
     regime: &model::RegimeSnapshot,
     snapshot: &IndicatorSnapshot,
@@ -517,7 +756,9 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
     let (cascade_state, cascade_signal) = cascade_signal_from_history(&history);
     let recommendation = trade_recommendation(&regime, &snapshot, &cascade_signal);
     let recommendation_side = recommendation.side;
-    let entry_price = snapshot.tf1m.candle.close;
+    let entry_price = gate_entry_price(&recommendation.gate, snapshot.tf1m.candle.close);
+    let level_book = detection::levels::structural_levels(&snapshot);
+    let level_gaps = level_book.gap_summary(snapshot.tf1m.candle.close);
     let exit_plan = exit::plan(
         &snapshot,
         &SugInfoSnapshot::default(),
@@ -529,11 +770,21 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
 
     println!("=== {} ===", symbol_key);
     println!(
-        "recommendation side={:?} enter_now={} reason={} 1m_confirmation={}",
+        "recommendation side={:?} enter_now={} reason={} 1m_confirmation={} enter_price={:.6} exit_tp={:.6} exit_sl={:.6} tp_source={:?} break={}",
         recommendation.side,
         recommendation.enter_now,
         recommendation.reason,
-        confirmation_label(confirmation)
+        confirmation_label(confirmation),
+        entry_price,
+        exit_plan.as_ref().map(|plan| plan.take_profit).unwrap_or(0.0),
+        exit_plan.as_ref().map(|plan| plan.stop_loss).unwrap_or(0.0),
+        exit_plan.as_ref().map(|plan| plan.source),
+        gate_break_instruction(
+            &recommendation.gate,
+            recommendation.side,
+            &snapshot,
+            entry_price
+        )
     );
 
     if opts.mode == ProbeMode::Full {
@@ -541,6 +792,15 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         println!("{}", tf_line("5m", &snapshot.tf5m));
         println!("{}", tf_line("15m", &snapshot.tf15m));
         println!("{}", tf_line("1h", &snapshot.tf1h));
+        println!(
+            "levels above=[{}] below=[{}]",
+            format_level_points(&level_book.above, snapshot.tf1m.candle.close, 6),
+            format_level_points(&level_book.below, snapshot.tf1m.candle.close, 6)
+        );
+        println!(
+            "levels_gap {}",
+            format_gap_summary(&level_gaps, snapshot.tf1m.candle.close)
+        );
         println!(
             "regime primary={:?} fallback={:?} context_1h={:?} confirmed={:?} blocked_by_context={}",
             regime.primary,
@@ -596,12 +856,13 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
             let recommendation = trade_recommendation(&regime, &snapshot, &window_cascade_signal);
             let confirmation = regime::classify_confirmation(regime.confirmed, &snapshot.tf1m);
             println!(
-                "history[{}] recommendation={:?} enter_now={} reason={} 1m_confirmation={} long={} short={} cascade dir={} samples={} avg={:.6}",
+                "history[{}] recommendation={:?} enter_now={} reason={} 1m_confirmation={} enter_price={:.6} long={} short={} cascade dir={} samples={} avg={:.6}",
                 window,
                 recommendation.side,
                 recommendation.enter_now,
                 recommendation.reason,
                 confirmation_label(confirmation),
+                gate_entry_price(&recommendation.gate, snapshot.tf1m.candle.close),
                 long_pred,
                 short_pred,
                 window_cascade_signal.dir,
