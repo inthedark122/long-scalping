@@ -63,11 +63,12 @@ mod stop_loss {
 }
 
 use detection::cascade::{self, CascadeSignal};
-use detection::{mrc, regime};
+use detection::{mrc, regime, sideways};
 use model::{
-    Candle, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot, TimeframeSnapshot,
+    Candle, EntryGate, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot,
+    TimeframeSnapshot,
 };
-use state::CascadeState;
+use state::{CascadeState, EngineState};
 
 const BASE_URL: &str = "https://okx.tg.trading.sinvoid.me/api/indicators";
 const BASE_HOST: &str = "okx.tg.trading.sinvoid.me";
@@ -297,6 +298,172 @@ fn cascade_signal_from_history(history: &[LiveFrame]) -> (CascadeState, CascadeS
     (cascade_state, last_signal)
 }
 
+fn gate_summary(gate: &EntryGate) -> String {
+    match gate {
+        EntryGate::Open { notes } => {
+            if notes.is_empty() {
+                "open".to_string()
+            } else {
+                format!("open:{}", notes.join("|"))
+            }
+        }
+        EntryGate::Wait(wait) => {
+            let mut text = format!("wait:{}", wait.reason);
+            if !wait.solutions.is_empty() {
+                text.push_str(&format!(" sol={}", wait.solutions.len()));
+            }
+            if !wait.notes.is_empty() {
+                text.push_str(&format!(" notes={}", wait.notes.join("|")));
+            }
+            text
+        }
+    }
+}
+
+fn predict_side(
+    snapshot: &IndicatorSnapshot,
+    cascade_signal: &CascadeSignal,
+    side: PositionState,
+) -> String {
+    let mut state = EngineState::default();
+    let gate = prediction::entry_gate(
+        snapshot,
+        &SugInfoSnapshot::default(),
+        cascade_signal,
+        &mut state,
+        side,
+    );
+    gate_summary(&gate)
+}
+
+fn side_gate(
+    snapshot: &IndicatorSnapshot,
+    cascade_signal: &CascadeSignal,
+    side: PositionState,
+) -> EntryGate {
+    let mut state = EngineState::default();
+    prediction::entry_gate(
+        snapshot,
+        &SugInfoSnapshot::default(),
+        cascade_signal,
+        &mut state,
+        side,
+    )
+}
+
+#[derive(Debug, Clone)]
+struct TradeRecommendation {
+    side: PositionState,
+    enter_now: bool,
+    reason: String,
+    gate: EntryGate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeMode {
+    Recommendation,
+    Full,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeOptions {
+    mode: ProbeMode,
+    show_history: bool,
+    history_windows: Vec<usize>,
+}
+
+fn confirmation_label(value: regime::OneMConfirmation) -> &'static str {
+    match value {
+        regime::OneMConfirmation::Aligned => "aligned",
+        regime::OneMConfirmation::Neutral => "neutral",
+        regime::OneMConfirmation::Tracked => "tracked",
+        regime::OneMConfirmation::Countertrend => "countertrend",
+    }
+}
+
+fn trade_recommendation(
+    regime: &model::RegimeSnapshot,
+    snapshot: &IndicatorSnapshot,
+    cascade_signal: &CascadeSignal,
+) -> TradeRecommendation {
+    let long_gate = side_gate(snapshot, cascade_signal, PositionState::Long);
+    let short_gate = side_gate(snapshot, cascade_signal, PositionState::Short);
+    let long_open = matches!(long_gate, EntryGate::Open { .. });
+    let short_open = matches!(short_gate, EntryGate::Open { .. });
+    let sideway_signal = sideways::analyze(&EngineState::default(), &snapshot.tf1m);
+
+    let (side, reason) = match (long_open, short_open) {
+        (true, false) => (PositionState::Long, "long-open".to_string()),
+        (false, true) => (PositionState::Short, "short-open".to_string()),
+        (true, true) => match regime.confirmed {
+            MarketState::Long => (PositionState::Long, "regime-confirmed-long".to_string()),
+            MarketState::Short => (PositionState::Short, "regime-confirmed-short".to_string()),
+            MarketState::Sideways => {
+                if sideway_signal.active {
+                    if sideway_signal.side == PositionState::Long {
+                        (PositionState::Long, "sideway-long".to_string())
+                    } else if sideway_signal.side == PositionState::Short {
+                        (PositionState::Short, "sideway-short".to_string())
+                    } else {
+                        (PositionState::Flat, "sideway-no-side".to_string())
+                    }
+                } else if cascade_signal.dir < 0 {
+                    (PositionState::Short, "cascade-down".to_string())
+                } else if cascade_signal.dir > 0 {
+                    (PositionState::Long, "cascade-up".to_string())
+                } else {
+                    (PositionState::Flat, "both-open-undecided".to_string())
+                }
+            }
+        },
+        (false, false) => match regime.confirmed {
+            MarketState::Long => (
+                PositionState::Long,
+                "regime-long-but-no-long-gate".to_string(),
+            ),
+            MarketState::Short => (
+                PositionState::Short,
+                "regime-short-but-no-short-gate".to_string(),
+            ),
+            MarketState::Sideways => {
+                if sideway_signal.active {
+                    (
+                        sideway_signal.side,
+                        format!("sideway-{}-wait", sideway_signal.reason),
+                    )
+                } else if cascade_signal.dir < 0 {
+                    (PositionState::Short, "cascade-down-wait".to_string())
+                } else if cascade_signal.dir > 0 {
+                    (PositionState::Long, "cascade-up-wait".to_string())
+                } else {
+                    (PositionState::Flat, "no-side-confirmation".to_string())
+                }
+            }
+        },
+    };
+
+    let gate = match side {
+        PositionState::Long => long_gate.clone(),
+        PositionState::Short => short_gate.clone(),
+        PositionState::Flat => EntryGate::Wait(model::EntryWait {
+            reason: "no-side".to_string(),
+            solutions: vec![],
+            notes: vec!["no directional recommendation".to_string()],
+        }),
+    };
+
+    let enter_now = matches!(gate, EntryGate::Open { .. });
+    TradeRecommendation {
+        side,
+        enter_now,
+        reason: format!(
+            "{} regime={:?} sideway={}",
+            reason, regime.confirmed, sideway_signal.reason
+        ),
+        gate,
+    }
+}
+
 fn tf_line(name: &str, tf: &TimeframeSnapshot) -> String {
     format!(
         "{} close={:.6} dp={} zz={} zee1={:.6} above_zee1={} mrc_zone={} slope={} bull={} bear={} pzone={:.2} mean={:.6} down_outer={:.6} up_inner={:.6} up_outer={:.6}",
@@ -334,7 +501,7 @@ fn direction_summary(regime: &model::RegimeSnapshot, tf5: &TimeframeSnapshot) ->
     "no-long-confirmation".to_string()
 }
 
-fn print_symbol(symbol_key: &str, history_limit: usize) -> Result<(), Box<dyn Error>> {
+fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Error>> {
     let symbol_key = normalize_symbol_key(symbol_key);
     let tf1m = fetch_timeframe(&symbol_key, "60", 3)?.snapshot;
     let tf5m = fetch_timeframe(&symbol_key, "300", 3)?.snapshot;
@@ -343,99 +510,122 @@ fn print_symbol(symbol_key: &str, history_limit: usize) -> Result<(), Box<dyn Er
     let snapshot =
         build_indicator_snapshot(tf1m.clone(), tf5m.clone(), tf15m.clone(), tf1h.clone());
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
+    let confirmation = regime::classify_confirmation(regime.confirmed, &snapshot.tf1m);
 
+    let history_limit = opts.history_windows.iter().copied().max().unwrap_or(200);
     let history = fetch_1m_history(&symbol_key, history_limit)?;
     let (cascade_state, cascade_signal) = cascade_signal_from_history(&history);
-    let entry_plan =
-        prediction::movement_entry_plan(&snapshot, &SugInfoSnapshot::default(), &cascade_signal);
-    let entry_plan_ready = entry_plan.is_some();
-    let entry_price = entry_plan
-        .as_ref()
-        .map(|plan| plan.price)
-        .unwrap_or(snapshot.tf1m.candle.close);
+    let recommendation = trade_recommendation(&regime, &snapshot, &cascade_signal);
+    let recommendation_side = recommendation.side;
+    let entry_price = snapshot.tf1m.candle.close;
     let exit_plan = exit::plan(
         &snapshot,
         &SugInfoSnapshot::default(),
         &cascade_state,
         entry_price,
-        PositionState::Long,
+        recommendation_side,
         None,
     );
 
     println!("=== {} ===", symbol_key);
-    println!("{}", tf_line("1m", &snapshot.tf1m));
-    println!("{}", tf_line("5m", &snapshot.tf5m));
-    println!("{}", tf_line("15m", &snapshot.tf15m));
-    println!("{}", tf_line("1h", &snapshot.tf1h));
     println!(
-        "regime primary={:?} fallback={:?} context_1h={:?} confirmed={:?} blocked_by_context={}",
-        regime.primary,
-        regime.fallback,
-        regime.context_1h,
-        regime.confirmed,
-        regime.blocked_by_context
+        "recommendation side={:?} enter_now={} reason={} 1m_confirmation={}",
+        recommendation.side,
+        recommendation.enter_now,
+        recommendation.reason,
+        confirmation_label(confirmation)
     );
-    println!("direction={}", direction_summary(&regime, &snapshot.tf5m));
-    println!(
-        "cascade dir={} prev_dir={} strength={:.2} samples={} avg_size={:.6} entry_plan={}",
-        cascade_signal.dir,
-        cascade_signal.prev_dir,
-        cascade_signal.strength,
-        cascade_signal.samples,
-        cascade_signal.average_size,
-        match &entry_plan {
-            Some(plan) => plan.notes.join("|"),
-            None => "none".to_string(),
+
+    if opts.mode == ProbeMode::Full {
+        println!("{}", tf_line("1m", &snapshot.tf1m));
+        println!("{}", tf_line("5m", &snapshot.tf5m));
+        println!("{}", tf_line("15m", &snapshot.tf15m));
+        println!("{}", tf_line("1h", &snapshot.tf1h));
+        println!(
+            "regime primary={:?} fallback={:?} context_1h={:?} confirmed={:?} blocked_by_context={}",
+            regime.primary,
+            regime.fallback,
+            regime.context_1h,
+            regime.confirmed,
+            regime.blocked_by_context
+        );
+        println!(
+            "1m_confirmation state={} regime={:?}",
+            confirmation_label(confirmation),
+            regime.confirmed
+        );
+        println!("direction={}", direction_summary(&regime, &snapshot.tf5m));
+        println!(
+            "cascade dir={} prev_dir={} strength={:.2} samples={} avg_size={:.6} recommendation_side={:?} enter_now={} entry_gate={}",
+            cascade_signal.dir,
+            cascade_signal.prev_dir,
+            cascade_signal.strength,
+            cascade_signal.samples,
+            cascade_signal.average_size,
+            recommendation_side,
+            recommendation.enter_now,
+            gate_summary(&recommendation.gate),
+        );
+        match exit_plan {
+            Some(plan) => {
+                println!(
+                    "expected_exit source={:?} tp={:.6} sl={:.6} structural_tp={:.6} structural_sl={:.6} reliable={}",
+                    plan.source,
+                    plan.take_profit,
+                    plan.stop_loss,
+                    plan.structural_take_profit,
+                    plan.structural_stop_loss,
+                    plan.tp_reliable
+                );
+            }
+            None => {
+                println!("expected_exit none");
+            }
         }
-    );
-    match &entry_plan {
-        Some(plan) => {
+    }
+
+    if opts.show_history {
+        for window in &opts.history_windows {
+            let actual_window = (*window).min(history.len()).max(1);
+            let start = history.len().saturating_sub(actual_window);
+            let window_history = &history[start..];
+            let (window_cascade_state, window_cascade_signal) =
+                cascade_signal_from_history(window_history);
+            let long_pred = predict_side(&snapshot, &window_cascade_signal, PositionState::Long);
+            let short_pred = predict_side(&snapshot, &window_cascade_signal, PositionState::Short);
+            let recommendation = trade_recommendation(&regime, &snapshot, &window_cascade_signal);
+            let confirmation = regime::classify_confirmation(regime.confirmed, &snapshot.tf1m);
             println!(
-                "expected_entry side={:?} price={:.6} notes={}",
-                plan.market_state,
-                plan.price,
-                plan.notes.join("|")
-            );
-        }
-        None => {
-            println!(
-                "expected_entry side=LONG price={:.6} reason=no-long-entry-plan",
-                snapshot.tf1m.candle.close
+                "history[{}] recommendation={:?} enter_now={} reason={} 1m_confirmation={} long={} short={} cascade dir={} samples={} avg={:.6}",
+                window,
+                recommendation.side,
+                recommendation.enter_now,
+                recommendation.reason,
+                confirmation_label(confirmation),
+                long_pred,
+                short_pred,
+                window_cascade_signal.dir,
+                window_cascade_state.samples,
+                window_cascade_state.avg_size,
             );
         }
     }
-    match exit_plan {
-        Some(plan) => {
-            println!(
-                "expected_exit source={:?} tp={:.6} sl={:.6} structural_tp={:.6} structural_sl={:.6} reliable={}",
-                plan.source,
-                plan.take_profit,
-                plan.stop_loss,
-                plan.structural_take_profit,
-                plan.structural_stop_loss,
-                plan.tp_reliable
-            );
-        }
-        None => {
-            println!("expected_exit none");
-        }
-    }
-    println!(
-        "diagnosis={}",
-        if regime.confirmed == MarketState::Long {
-            "long-ready"
-        } else if !entry_plan_ready {
-            "trend-issue-or-cascade-not-ready"
-        } else {
-            "long-potential-but-regime-not-confirmed"
-        }
-    );
     Ok(())
 }
 
-fn parse_args() -> (Vec<String>, usize) {
+fn parse_history_windows(value: &str) -> Vec<usize> {
+    value
+        .split(',')
+        .filter_map(|part| part.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .collect()
+}
+
+fn parse_args() -> (Vec<String>, ProbeOptions) {
     let mut symbols = Vec::new();
-    let mut history = 200usize;
+    let mut history_windows = Vec::new();
+    let mut mode = ProbeMode::Recommendation;
+    let mut show_history = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -456,7 +646,21 @@ fn parse_args() -> (Vec<String>, usize) {
             }
             "--history" => {
                 if let Some(value) = args.next() {
-                    history = value.parse().unwrap_or(history);
+                    history_windows.extend(parse_history_windows(&value));
+                }
+            }
+            "--show-history" => {
+                show_history = true;
+            }
+            "--hide-history" => {
+                show_history = false;
+            }
+            "--mode" => {
+                if let Some(value) = args.next() {
+                    mode = match value.as_str() {
+                        "full" => ProbeMode::Full,
+                        _ => ProbeMode::Recommendation,
+                    };
                 }
             }
             _ => {
@@ -470,13 +674,25 @@ fn parse_args() -> (Vec<String>, usize) {
     if symbols.is_empty() {
         symbols = DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect();
     }
-    (symbols, history)
+    if history_windows.is_empty() {
+        history_windows.push(200);
+    }
+    history_windows.sort_unstable();
+    history_windows.dedup();
+    (
+        symbols,
+        ProbeOptions {
+            mode,
+            show_history,
+            history_windows,
+        },
+    )
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (symbols, history) = parse_args();
+    let (symbols, opts) = parse_args();
     for symbol in symbols {
-        print_symbol(&symbol, history)?;
+        print_symbol(&symbol, &opts)?;
     }
     Ok(())
 }
