@@ -8,7 +8,7 @@ use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState,
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
-use crate::state::{sync_position_state, EngineState};
+use crate::state::{sync_position_state, EngineState, MartingaleRuntime};
 use crate::stop_loss;
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
@@ -228,7 +228,11 @@ fn initialize_exit_plan(
             side,
             reference_price,
             state.position.entry_reason.as_ref(),
-            state.position.martingale_profile,
+            state
+                .position
+                .martingale
+                .as_ref()
+                .map(|martingale| martingale.profile),
         )?
     } else {
         exit::plan(
@@ -662,7 +666,12 @@ pub fn evaluate_with_cascade(
             amount,
         ) {
             let ladder_orders = plan.orders.len();
-            state.position.martingale_profile = Some(plan.profile);
+            state.position.martingale = Some(MartingaleRuntime {
+                profile: plan.profile,
+                base_price: plan.base_price,
+                base_amount: plan.open_position.amount.unwrap_or(amount),
+                last_filled_mark: None,
+            });
             state.position.take_profit = 0.0;
             state.position.stop_loss = plan.stop_loss;
             state.position.exit_mode = ExitMode::Structural;
@@ -735,7 +744,7 @@ mod tests {
     use super::*;
     use crate::model::{TradeDecision, TradeMode};
     use crate::risk::apply_close_pnl;
-    use crate::state::EngineState;
+    use crate::state::{EngineState, MartingaleRuntime};
     use lte_strategy_bridge::abi::{
         ModuleOrderType, ModulePositionSummary, ModulePositions, ModuleSymbolInfo,
     };
@@ -756,6 +765,20 @@ mod tests {
             },
             sug_info: None,
             state: None,
+        }
+    }
+
+    fn martingale_runtime() -> MartingaleRuntime {
+        MartingaleRuntime {
+            profile: crate::martingale::LadderProfile {
+                levels: 11,
+                range_pct: 1.0,
+                step_pct: 0.5,
+                take_profit_pct: 0.4,
+            },
+            base_price: 0.0,
+            base_amount: 0.0,
+            last_filled_mark: None,
         }
     }
 
@@ -1419,10 +1442,7 @@ mod tests {
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1483,10 +1503,7 @@ mod tests {
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
             entry_reason: None,
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1548,10 +1565,7 @@ mod tests {
             exit_mode: ExitMode::TrailAfterVirtualSl,
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1613,15 +1627,7 @@ mod tests {
             exit_mode: ExitMode::TrailAfterVirtualSl,
             tp_mark: "tp-long".to_string(),
             entry_reason: None,
-            martingale_profile: Some(crate::martingale::LadderProfile {
-                levels: 11,
-                range_pct: 1.0,
-                step_pct: 0.5,
-                take_profit_pct: 0.4,
-            }),
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: Some(martingale_runtime()),
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1693,10 +1699,7 @@ mod tests {
                 price: 101.5,
                 started_at_ms: 1_000,
             }),
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1738,10 +1741,7 @@ mod tests {
                 price: 99.2,
                 started_at_ms: 1_000,
             }),
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1781,10 +1781,7 @@ mod tests {
                 price: 100.0,
                 started_at_ms: 1_000,
             }),
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {

@@ -6,6 +6,14 @@ use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 
 #[derive(Debug, Clone, Default)]
+pub struct MartingaleRuntime {
+    pub profile: LadderProfile,
+    pub base_price: f64,
+    pub base_amount: f64,
+    pub last_filled_mark: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct PositionRuntime {
     pub side: PositionState,
     pub entry_price: f64,
@@ -17,10 +25,7 @@ pub struct PositionRuntime {
     pub exit_mode: ExitMode,
     pub tp_mark: String,
     pub entry_reason: Option<EntryReason>,
-    pub martingale_profile: Option<LadderProfile>,
-    pub martingale_base_price: f64,
-    pub martingale_base_amount: f64,
-    pub martingale_next_level: usize,
+    pub martingale: Option<MartingaleRuntime>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -195,10 +200,7 @@ pub fn sync_position_state(
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
-                    martingale_profile: state.position.martingale_profile,
-                    martingale_base_price: state.position.martingale_base_price,
-                    martingale_base_amount: state.position.martingale_base_amount,
-                    martingale_next_level: state.position.martingale_next_level,
+                    martingale: state.position.martingale.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -220,10 +222,7 @@ pub fn sync_position_state(
                     exit_mode: ExitMode::Structural,
                     tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
-                    martingale_profile: state.position.martingale_profile,
-                    martingale_base_price: state.position.martingale_base_price,
-                    martingale_base_amount: state.position.martingale_base_amount,
-                    martingale_next_level: state.position.martingale_next_level,
+                    martingale: state.position.martingale.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);

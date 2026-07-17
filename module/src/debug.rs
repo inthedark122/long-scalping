@@ -139,14 +139,15 @@ fn render_mode_context(state: &EngineState) -> String {
             strategy
         ),
         TradeMode::Martingale => {
-            if let Some(profile) = state.position.martingale_profile {
+            if let Some(martingale) = state.position.martingale.as_ref() {
                 format!(
-                    "martingale exit_src=martingale {} mg_levels={} mg_range={:.4}% mg_step={:.2}% mg_tp={:.2}% mg_orders=2",
+                    "martingale exit_src=martingale {} mg_levels={} mg_range={:.4}% mg_step={:.2}% mg_tp={:.2}% mg_last={} mg_orders=2",
                     strategy,
-                    profile.levels,
-                    profile.range_pct,
-                    profile.step_pct,
-                    profile.take_profit_pct,
+                    martingale.profile.levels,
+                    martingale.profile.range_pct,
+                    martingale.profile.step_pct,
+                    martingale.profile.take_profit_pct,
+                    martingale.last_filled_mark.as_deref().unwrap_or("na"),
                 )
             } else {
                 format!("martingale exit_src=martingale {} mg_profile=na", strategy)
@@ -236,10 +237,7 @@ mod tests {
                 price: 100.0,
                 started_at_ms: 1,
             }),
-            martingale_profile: None,
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
+            martingale: None,
         };
         let debug = render(
             &state,
@@ -276,15 +274,17 @@ mod tests {
                 price: 100.0,
                 started_at_ms: 1,
             }),
-            martingale_profile: Some(crate::martingale::LadderProfile {
-                levels: 9,
-                range_pct: 2.4,
-                step_pct: 0.8,
-                take_profit_pct: 0.64,
+            martingale: Some(crate::state::MartingaleRuntime {
+                profile: crate::martingale::LadderProfile {
+                    levels: 9,
+                    range_pct: 2.4,
+                    step_pct: 0.8,
+                    take_profit_pct: 0.64,
+                },
+                base_price: 0.0,
+                base_amount: 0.0,
+                last_filled_mark: None,
             }),
-            martingale_base_price: 0.0,
-            martingale_base_amount: 0.0,
-            martingale_next_level: 0,
         };
         let debug = render(
             &state,

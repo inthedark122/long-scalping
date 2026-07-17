@@ -15,7 +15,7 @@ pub const MIN_TP_PCT: f64 = 0.35;
 pub const MAX_TP_PCT: f64 = 1.1;
 pub const STOP_BREAK_MULTIPLIER: f64 = 1.25;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LadderProfile {
     pub levels: usize,
     pub range_pct: f64,
@@ -62,14 +62,6 @@ fn direction(side: MarketState) -> Option<Direction> {
     }
 }
 
-fn direction_label(direction: Direction) -> &'static str {
-    match direction {
-        Direction::Long => "long",
-        Direction::Short => "short",
-        Direction::Both => "both",
-    }
-}
-
 fn clamp_price(side: MarketState, price: f64) -> f64 {
     match side {
         MarketState::Long => price.max(f64::EPSILON),
@@ -78,8 +70,14 @@ fn clamp_price(side: MarketState, price: f64) -> f64 {
     }
 }
 
-fn ladder_mark_prefix(side_direction: Direction, profile: LadderProfile) -> String {
-    format!("mg-{}-{}", direction_label(side_direction), profile.levels)
+pub fn ladder_mark(level: usize) -> String {
+    format!("extra-{}", level)
+}
+
+pub fn parse_ladder_mark(mark: Option<&str>) -> Option<usize> {
+    let mark = mark?.strip_prefix("extra-")?;
+    let level = mark.parse::<usize>().ok()?;
+    (level > 0).then_some(level)
 }
 
 pub fn compute_profile(base_price: f64, range: f64) -> Option<LadderProfile> {
@@ -116,14 +114,7 @@ pub fn entry_plan(
         return None;
     }
     let base_amount = total_amount / 4.0;
-    let mark_prefix = ladder_mark_prefix(side_direction, profile);
-
-    let open_position = market_open(
-        side_direction,
-        base_amount,
-        base_price,
-        &format!("{}-open", mark_prefix),
-    );
+    let open_position = market_open(side_direction, base_amount, base_price, "martingale-open");
 
     let mut orders = Vec::with_capacity(ladder_orders);
     for level in 1..=ladder_orders {
@@ -189,19 +180,13 @@ pub fn ladder_order(
         MarketState::Sideways => return None,
     };
     let amount = base_amount * level as f64;
-    let mark_prefix = ladder_mark_prefix(side_direction, profile);
     Some(limit_order(
         side_direction,
         amount,
         price,
-        &format!("{}-{}", mark_prefix, level),
+        &ladder_mark(level),
         Some(&format!("martingale-entry:nearest-{}", level)),
     ))
-}
-
-pub fn is_ladder_fill_mark(mark: Option<&str>) -> bool {
-    mark.map(|value| value.starts_with("mg-") && !value.ends_with("-open"))
-        .unwrap_or(false)
 }
 
 fn to_position(side: MarketState) -> PositionState {

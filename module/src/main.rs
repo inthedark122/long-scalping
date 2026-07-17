@@ -8,6 +8,7 @@ mod exit;
 mod market_data;
 mod martingale;
 mod model;
+mod order_manager;
 mod orders;
 mod prediction;
 mod risk;
