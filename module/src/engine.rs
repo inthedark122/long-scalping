@@ -22,6 +22,14 @@ const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
 const TF_15M: i64 = TimeframeSec::Tf15m.as_i64();
 const TF_1H: i64 = TimeframeSec::Tf1h.as_i64();
 
+fn snapshot_error(raw: &market_data::RawIndicators, error: String) -> String {
+    format!(
+        "{} {}",
+        error,
+        market_data::render_raw_indicator_inventory(raw)
+    )
+}
+
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
         ModuleEvent::Init => {
@@ -150,7 +158,18 @@ fn handle_new_position(
     state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
     let strategy = builder::ensure_runtime_builder(state);
     let snapshot =
-        market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let error = snapshot_error(&input.indicators, error);
+                state.last_error = Some(error.clone());
+                return ModuleOutput {
+                    debug: error,
+                    ..Default::default()
+                };
+            }
+        };
     direction_lock::refresh(
         &mut state.direction_lock,
         &snapshot.tf1m,
@@ -461,7 +480,18 @@ fn refresh_indicators(
     );
 
     let snapshot =
-        market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let error = snapshot_error(&input.indicators, error);
+                state.last_error = Some(error.clone());
+                return ModuleOutput {
+                    debug: error,
+                    ..Default::default()
+                };
+            }
+        };
     if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
         state.last_error = Some(error.clone());
         return ModuleOutput {
@@ -514,7 +544,18 @@ fn process_realtime(
     );
 
     let snapshot =
-        market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let error = snapshot_error(&input.indicators, error);
+                state.last_error = Some(error.clone());
+                return ModuleOutput {
+                    debug: error,
+                    ..Default::default()
+                };
+            }
+        };
     if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
         state.last_error = Some(error.clone());
         return ModuleOutput {

@@ -8,7 +8,7 @@ use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
 use lte_strategy_bridge::sug_info::SuggestionInfo;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const TF_1M: TimeframeSec = TimeframeSec::Tf1m;
 const TF_5M: TimeframeSec = TimeframeSec::Tf5m;
@@ -21,7 +21,7 @@ fn read_float(
     indicator: IndicatorKey,
     field: IndicatorField,
     offset: usize,
-) -> f64 {
+) -> Result<f64, String> {
     match history.get_prev(
         IndicatorFieldKey {
             timeframe,
@@ -30,9 +30,32 @@ fn read_float(
         },
         offset,
     ) {
-        Some(ModuleIndicatorValue::Float(value)) => *value,
-        Some(ModuleIndicatorValue::String(value)) => value.parse::<f64>().unwrap_or(0.0),
-        _ => 0.0,
+        Some(ModuleIndicatorValue::Float(value)) => Ok(*value),
+        Some(ModuleIndicatorValue::String(value)) => value.parse::<f64>().map_err(|_| {
+            format!(
+                "invalid-float tf={} indicator={} field={} offset={} value={}",
+                timeframe.as_i64(),
+                indicator.as_name(),
+                field.as_name(),
+                offset,
+                value
+            )
+        }),
+        Some(other) => Err(format!(
+            "invalid-value tf={} indicator={} field={} offset={} value={:?}",
+            timeframe.as_i64(),
+            indicator.as_name(),
+            field.as_name(),
+            offset,
+            other
+        )),
+        None => Err(format!(
+            "missing-value tf={} indicator={} field={} offset={}",
+            timeframe.as_i64(),
+            indicator.as_name(),
+            field.as_name(),
+            offset
+        )),
     }
 }
 
@@ -50,14 +73,44 @@ fn read_dir(history: &IndicatorHistory, timeframe: TimeframeSec, indicator: Indi
     }
 }
 
-type RawIndicators = BTreeMap<i64, Vec<HashMap<String, HashMap<String, ModuleIndicatorValue>>>>;
+pub(crate) type RawIndicators =
+    BTreeMap<i64, Vec<HashMap<String, HashMap<String, ModuleIndicatorValue>>>>;
+
+pub fn render_raw_indicator_inventory(raw: &RawIndicators) -> String {
+    let mut frames = Vec::new();
+    for (timeframe, candles) in raw {
+        let mut indicators: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for candle in candles {
+            for (indicator, fields) in candle {
+                let entry = indicators.entry(indicator.clone()).or_default();
+                for field in fields.keys() {
+                    entry.insert(field.clone());
+                }
+            }
+        }
+
+        let mut rendered_indicators = Vec::new();
+        for (indicator, fields) in indicators {
+            let fields = fields.into_iter().collect::<Vec<_>>().join(",");
+            rendered_indicators.push(format!("{}({})", indicator, fields));
+        }
+
+        frames.push(format!("{}[{}]", timeframe, rendered_indicators.join(";")));
+    }
+
+    if frames.is_empty() {
+        "indicators=empty".to_string()
+    } else {
+        format!("indicators={}", frames.join(" | "))
+    }
+}
 
 fn read_raw_float(
     indicators: &RawIndicators,
     timeframe: TimeframeSec,
     indicator: &str,
     field: &str,
-) -> f64 {
+) -> Result<f64, String> {
     indicators
         .get(&timeframe.as_i64())
         .and_then(|candles| candles.first())
@@ -68,7 +121,14 @@ fn read_raw_float(
             ModuleIndicatorValue::String(v) => v.parse::<f64>().ok(),
             _ => None,
         })
-        .unwrap_or(0.0)
+        .ok_or_else(|| {
+            format!(
+                "missing-raw tf={} indicator={} field={}",
+                timeframe.as_i64(),
+                indicator,
+                field
+            )
+        })
 }
 
 fn build_timeframe(
@@ -76,16 +136,17 @@ fn build_timeframe(
     raw: &RawIndicators,
     timeframe: TimeframeSec,
     live_price: Option<f64>,
-) -> TimeframeSnapshot {
-    let close = live_price.unwrap_or_else(|| {
-        read_float(
+) -> Result<TimeframeSnapshot, String> {
+    let close = match live_price {
+        Some(price) => price,
+        None => read_float(
             history,
             timeframe,
             IndicatorKey::Candle,
             IndicatorField::Close,
             0,
-        )
-    });
+        )?,
+    };
     let candle = Candle {
         open: read_float(
             history,
@@ -93,21 +154,21 @@ fn build_timeframe(
             IndicatorKey::Candle,
             IndicatorField::Open,
             0,
-        ),
+        )?,
         high: read_float(
             history,
             timeframe,
             IndicatorKey::Candle,
             IndicatorField::High,
             0,
-        ),
+        )?,
         low: read_float(
             history,
             timeframe,
             IndicatorKey::Candle,
             IndicatorField::Low,
             0,
-        ),
+        )?,
         close,
     };
     let mean_line = read_float(
@@ -116,14 +177,14 @@ fn build_timeframe(
         IndicatorKey::Mrc200,
         IndicatorField::MeanLine,
         0,
-    );
+    )?;
     let prev_mean = read_float(
         history,
         timeframe,
         IndicatorKey::Mrc200,
         IndicatorField::MeanLine,
         1,
-    );
+    )?;
     let mrc = MrcBands {
         down_big: read_float(
             history,
@@ -131,28 +192,28 @@ fn build_timeframe(
             IndicatorKey::Mrc200,
             IndicatorField::DownBig,
             0,
-        ),
+        )?,
         down_outer: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::DownOuter,
             0,
-        ),
+        )?,
         down_small: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::DownSmall,
             0,
-        ),
+        )?,
         down_inner: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::DownInner,
             0,
-        ),
+        )?,
         mean_line,
         up_inner: read_float(
             history,
@@ -160,85 +221,85 @@ fn build_timeframe(
             IndicatorKey::Mrc200,
             IndicatorField::UpInner,
             0,
-        ),
+        )?,
         up_small: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::UpSmall,
             0,
-        ),
+        )?,
         up_outer: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::UpOuter,
             0,
-        ),
+        )?,
         up_big: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::UpBig,
             0,
-        ),
+        )?,
         current_cross: read_float(
             history,
             timeframe,
             IndicatorKey::Mrc200,
             IndicatorField::CurrentCross,
             0,
-        ),
+        )?,
         mean_line_slope: mean_line - prev_mean,
     };
 
-    TimeframeSnapshot {
+    Ok(TimeframeSnapshot {
         candle,
         mrc,
         mrc_signal: mrc::analyze(&mrc, close),
         dp_dir: read_dir(history, timeframe, IndicatorKey::DPSignal),
         zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
-        dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee"),
-        dp_zee1: read_raw_float(raw, timeframe, "dpsignal", "Zee1"),
-        zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
-        zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
-        zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice"),
+        dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee")?,
+        dp_zee1: read_raw_float(raw, timeframe, "dpsignal", "Zee1")?,
+        zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice")?,
+        zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice")?,
+        zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice")?,
         volume_gain: read_float(
             history,
             timeframe,
             IndicatorKey::Volume50,
             IndicatorField::Gain,
             0,
-        ),
+        )?,
         volume_gain_min: read_float(
             history,
             timeframe,
             IndicatorKey::Volume50,
             IndicatorField::Min,
             0,
-        ),
+        )?,
         volume_gain_max: read_float(
             history,
             timeframe,
             IndicatorKey::Volume50,
             IndicatorField::Max,
             0,
-        ),
-    }
+        )?,
+    })
 }
 
 pub fn build_indicator_snapshot(
     history: &IndicatorHistory,
     raw: &RawIndicators,
     live_price: f64,
-) -> IndicatorSnapshot {
-    IndicatorSnapshot {
-        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price)),
-        tf5m: build_timeframe(history, raw, TF_5M, None),
-        tf15m: build_timeframe(history, raw, TF_15M, None),
-        tf1h: build_timeframe(history, raw, TF_1H, None),
+) -> Result<IndicatorSnapshot, String> {
+    Ok(IndicatorSnapshot {
+        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price))?,
+        tf5m: build_timeframe(history, raw, TF_5M, None)?,
+        tf15m: build_timeframe(history, raw, TF_15M, None)?,
+        tf1h: build_timeframe(history, raw, TF_1H, None)?,
         ..Default::default()
-    }
+    })
 }
 
 pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), String> {
@@ -251,11 +312,8 @@ pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), S
         ("1h", &snapshot.tf1h),
     ] {
         let mut missing = Vec::new();
-        if tf.dp_dir == 0 {
-            missing.push("dp_dir");
-        }
-        if tf.zz_dir == 0 {
-            missing.push("zz_dir");
+        if tf.dp_dir == 0 && tf.zz_dir == 0 {
+            missing.push("direction");
         }
         if tf.candle.close <= 0.0 {
             missing.push("close");
@@ -395,19 +453,17 @@ mod tests {
     fn missing_fields_degrade_to_neutral() {
         let history = IndicatorHistory::default();
         let raw = BTreeMap::new();
-        let snap = build_indicator_snapshot(&history, &raw, 101.0);
-        assert_eq!(snap.tf1m.dp_dir, 0);
-        assert_eq!(snap.tf1m.zz_dir, 0);
-        assert_eq!(snap.tf1m.mrc.range(), 0.0);
-        assert_eq!(snap.tf1m.candle.close, 101.0);
-        assert_eq!(snap.tf1m.volume_gain, 0.0);
-        assert_eq!(snap.tf1m.gain_zone(), crate::model::GainZone::Weak);
+        match build_indicator_snapshot(&history, &raw, 101.0) {
+            Ok(_) => panic!("expected missing raw indicator error"),
+            Err(err) => assert!(err.contains("missing-raw")),
+        }
     }
 
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw, 106.0);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+            .expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
@@ -417,7 +473,8 @@ mod tests {
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw, 106.0);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+            .expect("indicator snapshot should build");
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
         assert_eq!(snap.tf5m.mrc.down_big, 80.0);
@@ -471,9 +528,10 @@ mod tests {
 
         let sug_snap = build_sug_info_snapshot(&sug_info);
         assert!(sug_snap.fast_candle.is_some());
-        assert!(sug_snap.fast_candle.unwrap().active);
+        assert!(matches!(sug_snap.fast_candle, Some(ref fc) if fc.active));
         assert_eq!(sug_snap.signal.ntps, 77);
-        let snap = build_indicator_snapshot(&history, &raw, 106.0);
+        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+            .expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.volume_gain, 12.5);
         assert_eq!(snap.tf1m.volume_gain_min, 1.0);
         assert_eq!(snap.tf1m.volume_gain_max, 20.0);
