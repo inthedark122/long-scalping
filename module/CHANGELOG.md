@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.42
+
+Indicator inventory error release.
+
+- Removed silent zero fallbacks from raw indicator loading so missing fields now fail fast.
+- Added raw indicator inventory details to debug errors for quick inspection of what data is present.
+- Kept the existing snapshot validation and strategy flow unchanged for valid inputs.
+
 ## 1.0.41
 
 Indicator validation guard release.
