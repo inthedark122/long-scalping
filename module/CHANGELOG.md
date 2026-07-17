@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.41
+
+Indicator validation guard release.
+
+- Added a hard snapshot validator that stops processing when timeframe directions or structural inputs are missing.
+- Surfaced validation failures directly in the debug line so bad snapshots are visible before strategy evaluation.
+- Kept the probe-aligned entry flow and structural level handling intact.
+
 ## 1.0.40
 
 Direction probe parity release.
