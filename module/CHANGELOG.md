@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.43
+
+Trace context release.
+
+- Added event and timestamp context to snapshot error lines so empty raw payloads can be traced back to `Init`, `Indicators`, or `SugInfo`.
+- Kept the raw indicator inventory in the error output so missing bridge fields are visible immediately.
+- Preserved the current snapshot validation behavior for valid indicator payloads.
+
 ## 1.0.42
 
 Indicator inventory error release.
