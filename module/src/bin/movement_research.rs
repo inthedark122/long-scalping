@@ -10,12 +10,18 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[path = "../builder/mod.rs"]
+mod builder;
 #[path = "../detection/cascade.rs"]
 mod cascade_impl;
+#[path = "../martingale.rs"]
+mod martingale;
 #[path = "../model.rs"]
 mod model;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
+#[path = "../orders.rs"]
+mod orders;
 #[path = "../state.rs"]
 mod state;
 mod detection {

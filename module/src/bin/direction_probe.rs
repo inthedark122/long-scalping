@@ -5,16 +5,22 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "../builder/mod.rs"]
+mod builder;
 #[path = "../detection/cascade.rs"]
 mod cascade_impl;
 #[path = "../exit.rs"]
 mod exit_impl;
 #[path = "../detection/levels.rs"]
 mod levels_impl;
+#[path = "../martingale.rs"]
+mod martingale;
 #[path = "../model.rs"]
 mod model;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
+#[path = "../orders.rs"]
+mod orders;
 #[path = "../prediction.rs"]
 mod prediction_impl;
 #[path = "../detection/regime.rs"]
