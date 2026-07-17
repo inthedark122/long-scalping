@@ -22,12 +22,43 @@ const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
 const TF_15M: i64 = TimeframeSec::Tf15m.as_i64();
 const TF_1H: i64 = TimeframeSec::Tf1h.as_i64();
 
-fn snapshot_error(raw: &market_data::RawIndicators, error: String) -> String {
-    format!(
-        "{} {}",
-        error,
-        market_data::render_raw_indicator_inventory(raw)
-    )
+fn snapshot_error(
+    event: &str,
+    context: &str,
+    raw: &market_data::RawIndicators,
+    error: String,
+) -> String {
+    if context.is_empty() {
+        format!(
+            "event={} {} {}",
+            event,
+            error,
+            market_data::render_raw_indicator_inventory(raw)
+        )
+    } else {
+        format!(
+            "event={} {} {} {}",
+            event,
+            context,
+            error,
+            market_data::render_raw_indicator_inventory(raw)
+        )
+    }
+}
+
+fn timeframes_context(timeframes: &[i64]) -> String {
+    if timeframes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "tfs=[{}]",
+            timeframes
+                .iter()
+                .map(|tf| tf.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
 }
 
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
@@ -162,7 +193,8 @@ fn handle_new_position(
         {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                let error = snapshot_error(&input.indicators, error);
+                let error =
+                    snapshot_error("Init", "tfs=[60,300,900,3600]", &input.indicators, error);
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
                     debug: error,
@@ -484,7 +516,12 @@ fn refresh_indicators(
         {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                let error = snapshot_error(&input.indicators, error);
+                let error = snapshot_error(
+                    "Indicators",
+                    &timeframes_context(timeframes),
+                    &input.indicators,
+                    error,
+                );
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
                     debug: error,
@@ -548,7 +585,12 @@ fn process_realtime(
         {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                let error = snapshot_error(&input.indicators, error);
+                let error = snapshot_error(
+                    "SugInfo",
+                    &format!("time={} symbol={}", sug_info.time, sug_info.symbol_key),
+                    &input.indicators,
+                    error,
+                );
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
                     debug: error,
