@@ -66,7 +66,7 @@ pub fn render(
             )
         })
         .unwrap_or_else(|| "na".to_string());
-    format!(
+    let base = format!(
         "t={} p={:.4} mode={} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} casTf={} casSug={} pos={:?} entry={} entry_reason={} mem={} mode_ctx={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
@@ -111,7 +111,12 @@ pub fn render(
         snapshot.tf1m.gain_is_building(),
         snapshot.tf1m.gain_is_late(),
         execution_note,
-    )
+    );
+
+    match state.last_error.as_ref() {
+        Some(error) => format!("{base} error={error}"),
+        None => base,
+    }
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {

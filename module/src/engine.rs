@@ -441,7 +441,6 @@ fn refresh_indicators(
     timeframes: &[i64],
     is_init: bool,
 ) -> ModuleOutput {
-    state.ticks = state.ticks.saturating_add(1);
     if timeframes.contains(&TF_1M) {
         state.bar_1m = state.bar_1m.saturating_add(1);
     }
@@ -463,6 +462,15 @@ fn refresh_indicators(
 
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
+        state.last_error = Some(error.clone());
+        return ModuleOutput {
+            debug: error,
+            ..Default::default()
+        };
+    }
+    state.last_error = None;
+    state.ticks = state.ticks.saturating_add(1);
     direction_lock::refresh(
         &mut state.direction_lock,
         &snapshot.tf1m,
@@ -490,7 +498,6 @@ fn process_realtime(
     state: &mut EngineState,
     sug_info: &SuggestionInfo,
 ) -> ModuleOutput {
-    state.ticks = state.ticks.saturating_add(1);
     sync_position_state(
         state,
         input
@@ -508,6 +515,15 @@ fn process_realtime(
 
     let snapshot =
         market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price);
+    if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
+        state.last_error = Some(error.clone());
+        return ModuleOutput {
+            debug: error,
+            ..Default::default()
+        };
+    }
+    state.last_error = None;
+    state.ticks = state.ticks.saturating_add(1);
     let strategy = builder::ensure_runtime_builder(state);
     direction_lock::refresh(
         &mut state.direction_lock,

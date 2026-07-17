@@ -241,6 +241,50 @@ pub fn build_indicator_snapshot(
     }
 }
 
+pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), String> {
+    let mut problems = Vec::new();
+
+    for (label, tf) in [
+        ("1m", &snapshot.tf1m),
+        ("5m", &snapshot.tf5m),
+        ("15m", &snapshot.tf15m),
+        ("1h", &snapshot.tf1h),
+    ] {
+        let mut missing = Vec::new();
+        if tf.dp_dir == 0 {
+            missing.push("dp_dir");
+        }
+        if tf.zz_dir == 0 {
+            missing.push("zz_dir");
+        }
+        if tf.candle.close <= 0.0 {
+            missing.push("close");
+        }
+        if tf.mrc.range() <= 0.0 {
+            missing.push("mrc_range");
+        }
+        if !missing.is_empty() {
+            problems.push(format!(
+                "{} missing={} dp={} zz={} close={:.6} zee1={:.6} zee={:.6} mean={:.6}",
+                label,
+                missing.join(","),
+                tf.dp_dir,
+                tf.zz_dir,
+                tf.candle.close,
+                tf.dp_zee1,
+                tf.dp_zee,
+                tf.mrc.mean_line,
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("invalid-indicators {}", problems.join(" | ")))
+    }
+}
+
 pub fn build_sug_info_snapshot(sug_info: &SuggestionInfo) -> SugInfoSnapshot {
     let fast_candle = sug_info.fast_candle.as_ref().map(|fc| FastCandleSnapshot {
         candle: Candle {

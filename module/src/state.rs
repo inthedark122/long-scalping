@@ -131,6 +131,7 @@ pub struct EngineState {
     pub cascade_sug: CascadeState,
     pub exit_memory: ExitMemory,
     pub strategy_builder: Option<BuiltStrategy>,
+    pub last_error: Option<String>,
 }
 
 impl Default for EngineState {
@@ -150,6 +151,7 @@ impl Default for EngineState {
             cascade_sug: CascadeState::default(),
             exit_memory: ExitMemory::default(),
             strategy_builder: None,
+            last_error: None,
         }
     }
 }
