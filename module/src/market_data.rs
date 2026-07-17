@@ -264,27 +264,9 @@ fn build_timeframe(
         zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice")?,
         zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice")?,
         zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice")?,
-        volume_gain: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Volume50,
-            IndicatorField::Gain,
-            0,
-        )?,
-        volume_gain_min: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Volume50,
-            IndicatorField::Min,
-            0,
-        )?,
-        volume_gain_max: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Volume50,
-            IndicatorField::Max,
-            0,
-        )?,
+        volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
+        volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
+        volume_gain_max: read_raw_float(raw, timeframe, "volume_50", "GainMax")?,
     })
 }
 

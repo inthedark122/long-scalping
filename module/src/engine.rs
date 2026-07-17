@@ -61,6 +61,10 @@ fn timeframes_context(timeframes: &[i64]) -> String {
     }
 }
 
+fn refresh_last_snapshot(state: &mut EngineState, snapshot: &crate::model::IndicatorSnapshot) {
+    state.last_snapshot = Some(snapshot.clone());
+}
+
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
         ModuleEvent::Init => {
@@ -536,6 +540,7 @@ fn refresh_indicators(
             ..Default::default()
         };
     }
+    refresh_last_snapshot(state, &snapshot);
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     direction_lock::refresh(
@@ -580,31 +585,19 @@ fn process_realtime(
         input.price,
     );
 
-    let snapshot =
-        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let error = snapshot_error(
-                    "SugInfo",
-                    &format!("time={} symbol={}", sug_info.time, sug_info.symbol_key),
-                    &input.indicators,
-                    error,
-                );
-                state.last_error = Some(error.clone());
-                return ModuleOutput {
-                    debug: error,
-                    ..Default::default()
-                };
-            }
-        };
-    if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
+    let Some(snapshot) = state.last_snapshot.clone() else {
+        let error = format!(
+            "event=SugInfo time={} symbol={} missing-cached-snapshot {}",
+            sug_info.time,
+            sug_info.symbol_key,
+            market_data::render_raw_indicator_inventory(&input.indicators)
+        );
         state.last_error = Some(error.clone());
         return ModuleOutput {
             debug: error,
             ..Default::default()
         };
-    }
+    };
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     let strategy = builder::ensure_runtime_builder(state);

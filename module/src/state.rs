@@ -1,7 +1,7 @@
 use crate::builder::BuiltStrategy;
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
-use crate::model::{Config, EntryReason, ExitMemory, ExitMode, PositionState};
+use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 
@@ -132,6 +132,7 @@ pub struct EngineState {
     pub exit_memory: ExitMemory,
     pub strategy_builder: Option<BuiltStrategy>,
     pub last_error: Option<String>,
+    pub last_snapshot: Option<IndicatorSnapshot>,
 }
 
 impl Default for EngineState {
@@ -152,6 +153,7 @@ impl Default for EngineState {
             exit_memory: ExitMemory::default(),
             strategy_builder: None,
             last_error: None,
+            last_snapshot: None,
         }
     }
 }

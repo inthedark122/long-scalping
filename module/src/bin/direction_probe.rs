@@ -117,15 +117,12 @@ fn resolve_host_ip() -> String {
         .unwrap_or_else(|| BASE_FALLBACK_IP.to_string())
 }
 
-fn f64_or(obj: &Value, primary: &str, fallback: &str) -> f64 {
+fn f64_key(obj: &Value, key: &str) -> Option<f64> {
     let parse = |v: &Value| {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     };
-    obj.get(primary)
-        .and_then(parse)
-        .or_else(|| obj.get(fallback).and_then(parse))
-        .unwrap_or(0.0)
+    obj.get(key).and_then(parse)
 }
 
 fn get_i64(map: &Value, key: &str) -> i64 {
@@ -190,60 +187,63 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
     let _signal = ind.get("signal").unwrap_or(&Value::Null);
     let volume_50 = ind.get("volume_50").unwrap_or(&Value::Null);
 
-    let mean_line = f64_or(mrc, "MeanLine", "mean_line");
+    let mean_line = f64_key(mrc, "MeanLine")?;
     let prev_mean_line = prev
         .and_then(|row| row.get("indicators"))
         .and_then(|i| i.get("mrc_200"))
-        .map(|prev_mrc| f64_or(prev_mrc, "MeanLine", "mean_line"))
+        .and_then(|prev_mrc| f64_key(prev_mrc, "MeanLine"))
         .unwrap_or(mean_line);
 
-    let close = live_price.unwrap_or_else(|| f64_or(candle, "Close", "close"));
+    let close = match live_price {
+        Some(price) => price,
+        None => f64_key(candle, "Close")?,
+    };
     let snapshot = TimeframeSnapshot {
         candle: Candle {
-            open: f64_or(candle, "Open", "open"),
-            high: f64_or(candle, "High", "high"),
-            low: f64_or(candle, "Low", "low"),
+            open: f64_key(candle, "Open")?,
+            high: f64_key(candle, "High")?,
+            low: f64_key(candle, "Low")?,
             close,
         },
         mrc: model::MrcBands {
-            down_big: f64_or(mrc, "DownBig", "down_big"),
-            down_outer: f64_or(mrc, "DownOuter", "down_outer"),
-            down_small: f64_or(mrc, "DownSmall", "down_small"),
-            down_inner: f64_or(mrc, "DownInner", "down_inner"),
+            down_big: f64_key(mrc, "DownBig")?,
+            down_outer: f64_key(mrc, "DownOuter")?,
+            down_small: f64_key(mrc, "DownSmall")?,
+            down_inner: f64_key(mrc, "DownInner")?,
             mean_line,
-            up_inner: f64_or(mrc, "UpInner", "up_inner"),
-            up_small: f64_or(mrc, "UpSmall", "up_small"),
-            up_outer: f64_or(mrc, "UpOuter", "up_outer"),
-            up_big: f64_or(mrc, "UpBig", "up_big"),
-            current_cross: f64_or(mrc, "CurrentCross", "current_cross"),
+            up_inner: f64_key(mrc, "UpInner")?,
+            up_small: f64_key(mrc, "UpSmall")?,
+            up_outer: f64_key(mrc, "UpOuter")?,
+            up_big: f64_key(mrc, "UpBig")?,
+            current_cross: f64_key(mrc, "CurrentCross")?,
             mean_line_slope: mean_line - prev_mean_line,
         },
         mrc_signal: mrc::analyze(
             &model::MrcBands {
-                down_big: f64_or(mrc, "DownBig", "down_big"),
-                down_outer: f64_or(mrc, "DownOuter", "down_outer"),
-                down_small: f64_or(mrc, "DownSmall", "down_small"),
-                down_inner: f64_or(mrc, "DownInner", "down_inner"),
+                down_big: f64_key(mrc, "DownBig")?,
+                down_outer: f64_key(mrc, "DownOuter")?,
+                down_small: f64_key(mrc, "DownSmall")?,
+                down_inner: f64_key(mrc, "DownInner")?,
                 mean_line,
-                up_inner: f64_or(mrc, "UpInner", "up_inner"),
-                up_small: f64_or(mrc, "UpSmall", "up_small"),
-                up_outer: f64_or(mrc, "UpOuter", "up_outer"),
-                up_big: f64_or(mrc, "UpBig", "up_big"),
-                current_cross: f64_or(mrc, "CurrentCross", "current_cross"),
+                up_inner: f64_key(mrc, "UpInner")?,
+                up_small: f64_key(mrc, "UpSmall")?,
+                up_outer: f64_key(mrc, "UpOuter")?,
+                up_big: f64_key(mrc, "UpBig")?,
+                current_cross: f64_key(mrc, "CurrentCross")?,
                 mean_line_slope: mean_line - prev_mean_line,
             },
             close,
         ),
         dp_dir: dir_to_int(dp.get("Direction")),
         zz_dir: dir_to_int(zz.get("Direction")),
-        dp_zee: f64_or(dp, "Zee", "zee"),
-        dp_zee1: f64_or(dp, "Zee1", "zee1"),
-        zz_buy_price: f64_or(zz, "BuyPrice", "buy_price"),
-        zz_sell_price: f64_or(zz, "SellPrice", "sell_price"),
-        zz_break_price: f64_or(zz, "BreakPrice", "break_price"),
-        volume_gain: f64_or(volume_50, "Gain", "gain"),
-        volume_gain_min: f64_or(volume_50, "Min", "min"),
-        volume_gain_max: f64_or(volume_50, "Max", "max"),
+        dp_zee: f64_key(dp, "Zee")?,
+        dp_zee1: f64_key(dp, "Zee1")?,
+        zz_buy_price: f64_key(zz, "BuyPrice")?,
+        zz_sell_price: f64_key(zz, "SellPrice")?,
+        zz_break_price: f64_key(zz, "BreakPrice")?,
+        volume_gain: f64_key(volume_50, "Gain")?,
+        volume_gain_min: f64_key(volume_50, "GainMin")?,
+        volume_gain_max: f64_key(volume_50, "GainMax")?,
     };
 
     Some(LiveFrame {
@@ -563,7 +563,10 @@ fn directional_break_level(
             (tf5.mrc.down_outer, "5m-down-outer"),
             (tf5.mrc.down_big, "5m-down-big"),
             (
-                level_book.nearest_below(current_price).unwrap_or(0.0),
+                match level_book.nearest_below(current_price) {
+                    Some(level) => level,
+                    None => return None,
+                },
                 "structural-below",
             ),
         ],
@@ -574,7 +577,10 @@ fn directional_break_level(
             (tf5.mrc.up_outer, "5m-up-outer"),
             (tf5.mrc.up_big, "5m-up-big"),
             (
-                level_book.nearest_above(current_price).unwrap_or(0.0),
+                match level_book.nearest_above(current_price) {
+                    Some(level) => level,
+                    None => return None,
+                },
                 "structural-above",
             ),
         ],
@@ -776,8 +782,14 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         recommendation.reason,
         confirmation_label(confirmation),
         entry_price,
-        exit_plan.as_ref().map(|plan| plan.take_profit).unwrap_or(0.0),
-        exit_plan.as_ref().map(|plan| plan.stop_loss).unwrap_or(0.0),
+        match exit_plan.as_ref() {
+            Some(plan) => plan.take_profit,
+            None => 0.0,
+        },
+        match exit_plan.as_ref() {
+            Some(plan) => plan.stop_loss,
+            None => 0.0,
+        },
         exit_plan.as_ref().map(|plan| plan.source),
         gate_break_instruction(
             &recommendation.gate,
