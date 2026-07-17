@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.40
+
+Direction probe parity release.
+
+- Tiered structural levels by timeframe instead of flattening them into a single clustered band.
+- Kept nearby low-TF levels visible so low-priced symbols do not inherit a far 1h stop.
+- Matched the probe's intended entry / TP / SL references more closely and removed same-price break anchors.
+
 ## 1.0.39
 
 Typed order status release.

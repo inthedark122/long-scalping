@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.39",
+      "module_version": "1.0.40",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.39"
+          "module_version": "1.0.40"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-          "description": "Start the 1.0.39 typed-status martingale release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now separates initial, single, and martingale builders into focused files and uses the bridge's typed order status for martingale rollover.",
+          "description": "Start the 1.0.40 direction-probe parity release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module keeps the tiered structural level book, the probe-aligned entry / TP / SL flow, and the bridge's typed order status for martingale rollover.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.39",
+    "version": "1.0.40",
     "defaults": {}
   }
 }
