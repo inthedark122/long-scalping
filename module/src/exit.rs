@@ -7,7 +7,6 @@ use crate::stop_loss;
 pub enum ExitSource {
     #[default]
     Structural,
-    SugInfo,
     Movement,
     Sideway,
     Martingale,
@@ -17,7 +16,6 @@ impl ExitSource {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Structural => "structural",
-            Self::SugInfo => "sug-info",
             Self::Movement => "movement",
             Self::Sideway => "sideway",
             Self::Martingale => "martingale",
@@ -203,46 +201,6 @@ fn compute(
 
     if let Some(plan) = movement_plan(snapshot, sug_snapshot, cascade, price, side, structural) {
         return Some(plan);
-    }
-
-    if let Some(sug) = sug_snapshot.sug_candle {
-        let range = (sug.high - sug.low).abs();
-        if range > 0.0 {
-            let plan = match side {
-                PositionState::Long => ExitPlan {
-                    take_profit: if sug.close > price {
-                        sug.close
-                    } else {
-                        sug.high.max(price + range * 0.25)
-                    },
-                    stop_loss: sug.low.min(price - range * 0.10),
-                    tp_reliable: true,
-                    source: ExitSource::SugInfo,
-                    structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
-                    structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
-                },
-                PositionState::Short => ExitPlan {
-                    take_profit: if sug.close < price {
-                        sug.close
-                    } else {
-                        sug.low.min(price - range * 0.25)
-                    },
-                    stop_loss: sug.high.max(price + range * 0.10),
-                    tp_reliable: true,
-                    source: ExitSource::SugInfo,
-                    structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
-                    structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
-                },
-                PositionState::Flat => ExitPlan::default(),
-            };
-            if plan.take_profit.is_finite()
-                && plan.stop_loss.is_finite()
-                && plan.take_profit > 0.0
-                && plan.stop_loss > 0.0
-            {
-                return Some(plan);
-            }
-        }
     }
 
     match side {
