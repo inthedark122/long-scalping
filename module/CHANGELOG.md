@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.51
+
+Debug and execution fixes release.
+
+- Consolidated entry-wait output into one concise execution line with tick-formatted prices.
+- Removed redundant cascade debug fields and wait-note values.
+- Reset TP repricing history after flat positions and include the current history in TP replacement order notes.
+
 # 1.0.50
 
 Strategy fixes release.
