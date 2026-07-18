@@ -2,6 +2,27 @@ use crate::model::IndicatorSnapshot;
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrcPriceZoneSide {
+    Lower,
+    Upper,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrcLineDistance {
+    One,
+    Two,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MrcPriceWindow {
+    pub side: MrcPriceZoneSide,
+    pub distance: MrcLineDistance,
+    pub lower: f64,
+    pub upper: f64,
+    pub width: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelSource {
     Tf1m,
     Tf5m,
@@ -380,6 +401,80 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
     sort_levels(&mut below);
 
     LevelBook { above, below }
+}
+
+pub fn mrc_price_window(mrc: &crate::model::MrcBands, price: f64) -> Option<MrcPriceWindow> {
+    if !mrc.ordered() || !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+
+    let (side, distance, lower, upper) = if price >= mrc.mean_line {
+        if price <= mrc.up_inner {
+            (
+                MrcPriceZoneSide::Upper,
+                MrcLineDistance::One,
+                mrc.mean_line,
+                mrc.up_inner,
+            )
+        } else if price <= mrc.up_small {
+            (
+                MrcPriceZoneSide::Upper,
+                MrcLineDistance::One,
+                mrc.up_inner,
+                mrc.up_small,
+            )
+        } else if price <= mrc.up_outer {
+            (
+                MrcPriceZoneSide::Upper,
+                MrcLineDistance::One,
+                mrc.up_small,
+                mrc.up_outer,
+            )
+        } else {
+            (
+                MrcPriceZoneSide::Upper,
+                MrcLineDistance::Two,
+                mrc.up_small,
+                mrc.up_big,
+            )
+        }
+    } else if price >= mrc.down_inner {
+        (
+            MrcPriceZoneSide::Lower,
+            MrcLineDistance::One,
+            mrc.down_inner,
+            mrc.mean_line,
+        )
+    } else if price >= mrc.down_small {
+        (
+            MrcPriceZoneSide::Lower,
+            MrcLineDistance::One,
+            mrc.down_small,
+            mrc.down_inner,
+        )
+    } else if price >= mrc.down_outer {
+        (
+            MrcPriceZoneSide::Lower,
+            MrcLineDistance::One,
+            mrc.down_outer,
+            mrc.down_small,
+        )
+    } else {
+        (
+            MrcPriceZoneSide::Lower,
+            MrcLineDistance::Two,
+            mrc.down_big,
+            mrc.down_small,
+        )
+    };
+
+    Some(MrcPriceWindow {
+        side,
+        distance,
+        lower,
+        upper,
+        width: (upper - lower).abs(),
+    })
 }
 
 #[cfg(test)]

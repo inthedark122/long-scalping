@@ -35,6 +35,18 @@ fn signal_candle<'a>(
         .unwrap_or(&snapshot.tf1m.candle)
 }
 
+fn mrc_window(snapshot: &IndicatorSnapshot, price: f64) -> Option<levels::MrcPriceWindow> {
+    levels::mrc_price_window(&snapshot.tf1m.mrc, price)
+}
+
+fn mrc_window_band(window: &levels::MrcPriceWindow) -> f64 {
+    let factor = match window.distance {
+        levels::MrcLineDistance::One => 0.25,
+        levels::MrcLineDistance::Two => 0.35,
+    };
+    (window.width * factor).max(f64::EPSILON)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementEntryKind {
     ReverseReady,
@@ -440,9 +452,13 @@ fn sideway_entry_gate(
 
     let signal = sideways::analyze(state, &snapshot.tf1m);
     let current_price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    let Some(window) = mrc_window(snapshot, current_price) else {
+        return None;
+    };
+    let mrc_window_width = window.width;
     if signal.active && matches!(signal.source, sideways::SidewaySource::LineCross) {
         let cascade_pullback = (cascade.average_size * 0.60)
-            .max(snapshot.tf1m.mrc.range() * 0.005)
+            .max(mrc_window_width * 0.20)
             .max(f64::EPSILON);
         let pullback_cap = if matches!(signal.side, PositionState::Long) {
             signal.block_low + cascade_pullback
@@ -558,56 +574,40 @@ pub fn sug_entry_plan(
         return None;
     }
 
-    let entry = match side {
-        PositionState::Long => sug.open.min(sug.close),
-        PositionState::Short => sug.open.max(sug.close),
-        PositionState::Flat => return None,
-    };
-    let target = match side {
-        PositionState::Long => sug.close.max(entry),
-        PositionState::Short => sug.close.min(entry),
-        PositionState::Flat => return None,
-    };
-    let range = (sug.high - sug.low).abs().max(f64::EPSILON);
-    let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
     let price = sug.close;
-    let near_entry = (price - entry).abs() <= band;
-
-    let market_state = match side {
-        PositionState::Long => MarketState::Long,
-        PositionState::Short => MarketState::Short,
-        PositionState::Flat => return None,
+    let Some(window) = mrc_window(snapshot, price) else {
+        return None;
     };
+    let (market_state, entry, target) = match side {
+        PositionState::Long if matches!(window.side, levels::MrcPriceZoneSide::Lower) => {
+            (MarketState::Long, window.lower, window.upper)
+        }
+        PositionState::Short if matches!(window.side, levels::MrcPriceZoneSide::Upper) => {
+            (MarketState::Short, window.upper, window.lower)
+        }
+        PositionState::Flat => return None,
+        _ => return None,
+    };
+    let band = mrc_window_band(&window);
+    let near_entry = (price - entry).abs() <= band;
 
     let mut notes = vec![
         "sug-info-scalp".to_string(),
         format!("entry={:.4}", entry),
         format!("tp={:.4}", target),
         format!("band={:.4}", band),
+        format!(
+            "mrc_window={:.4}-{:.4} dist={:?}",
+            window.lower, window.upper, window.distance
+        ),
         format!("cascade_dir={}", cascade.dir),
         format!("cascade_samples={}", cascade.samples),
     ];
     if near_entry {
-        if force_pullback {
-            notes.insert(1, "forced-pullback".to_string());
-            notes.insert(2, format!("force_pct={:.2}", state.cfg.pullback_amount));
-        }
         notes.push("1m-confirmed".to_string());
         Some(SugEntryPlan {
             market_state,
             entry,
-            target,
-            band,
-            notes,
-        })
-    } else if force_pullback {
-        notes.insert(1, "forced-pullback".to_string());
-        notes.insert(2, format!("force_pct={:.2}", state.cfg.pullback_amount));
-        notes.push(format!("pullback_entry={:.4}", entry));
-        notes.push("1m-confirmed".to_string());
-        Some(SugEntryPlan {
-            market_state,
-            entry: price,
             target,
             band,
             notes,
@@ -677,19 +677,43 @@ fn sug_entry_gate(
         }));
     }
 
-    let entry = match side {
-        PositionState::Long => sug.open.min(sug.close),
-        PositionState::Short => sug.open.max(sug.close),
-        PositionState::Flat => return None,
-    };
-    let target = match side {
-        PositionState::Long => sug.close.max(entry),
-        PositionState::Short => sug.close.min(entry),
-        PositionState::Flat => return None,
-    };
-    let range = (sug.high - sug.low).abs().max(f64::EPSILON);
-    let band = (range * 0.20).max(snapshot.tf1m.mrc.range() * 0.01);
     let price = sug.close;
+    let Some(window) = mrc_window(snapshot, price) else {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "mrc-window-unavailable".to_string(),
+            solutions: vec![],
+            notes: vec!["sug-info default scalping path".to_string()],
+        }));
+    };
+    let (entry, target) = match side {
+        PositionState::Long if matches!(window.side, levels::MrcPriceZoneSide::Lower) => {
+            (window.lower, window.upper)
+        }
+        PositionState::Short if matches!(window.side, levels::MrcPriceZoneSide::Upper) => {
+            (window.upper, window.lower)
+        }
+        PositionState::Flat => return None,
+        _ => {
+            return Some(EntryGate::Wait(EntryWait {
+                reason: "mrc-window-mismatch".to_string(),
+                solutions: vec![EntryWaitSolution::WaitForCooling {
+                    note: format!(
+                        "window={:.4}-{:.4} dist={:?}",
+                        window.lower, window.upper, window.distance
+                    ),
+                }],
+                notes: vec![
+                    "sug-info default scalping path".to_string(),
+                    format!("price={:.4}", price),
+                    format!(
+                        "mrc_window={:.4}-{:.4} dist={:?}",
+                        window.lower, window.upper, window.distance
+                    ),
+                ],
+            }));
+        }
+    };
+    let band = mrc_window_band(&window);
     let near_entry = (price - entry).abs() <= band;
 
     if near_entry {
@@ -699,11 +723,22 @@ fn sug_entry_gate(
                 format!("entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("band={:.4}", band),
+                format!(
+                    "mrc_window={:.4}-{:.4} dist={:?}",
+                    window.lower, window.upper, window.distance
+                ),
                 "1m-confirmed".to_string(),
             ],
         })
     } else if state.cfg.pullback_ratio() > 0.0 {
-        Some(EntryGate::Open {
+        Some(EntryGate::Wait(EntryWait {
+            reason: "sug-info-pullback-wait".to_string(),
+            solutions: vec![EntryWaitSolution::ReclaimLevel {
+                source: "mrc-window".to_string(),
+                level: entry,
+                band_low: (entry - band).max(0.0),
+                band_high: entry + band,
+            }],
             notes: vec![
                 "sug-info-scalp".to_string(),
                 "forced-pullback".to_string(),
@@ -712,14 +747,18 @@ fn sug_entry_gate(
                 format!("pullback_entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("band={:.4}", band),
+                format!(
+                    "mrc_window={:.4}-{:.4} dist={:?}",
+                    window.lower, window.upper, window.distance
+                ),
                 "1m-confirmed".to_string(),
             ],
-        })
+        }))
     } else {
         Some(EntryGate::Wait(EntryWait {
             reason: "sug-info-pullback-wait".to_string(),
             solutions: vec![EntryWaitSolution::ReclaimLevel {
-                source: "sug-info".to_string(),
+                source: "mrc-window".to_string(),
                 level: entry,
                 band_low: (entry - band).max(0.0),
                 band_high: entry + band,
@@ -729,6 +768,10 @@ fn sug_entry_gate(
                 format!("entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("price={:.4}", price),
+                format!(
+                    "mrc_window={:.4}-{:.4} dist={:?}",
+                    window.lower, window.upper, window.distance
+                ),
                 format!("cascade_dir={}", cascade.dir),
                 format!("cascade_samples={}", cascade.samples),
             ],
