@@ -1,5 +1,6 @@
 use crate::detection::{cascade::CascadeSignal, sideways};
-use crate::model::{IndicatorSnapshot, RegimeSnapshot, TradeDecision, TradeMode};
+use crate::format::fmt_metric;
+use crate::model::{IndicatorSnapshot, RegimeSnapshot, TradeDecision};
 use crate::state::EngineState;
 
 pub fn render(
@@ -15,47 +16,6 @@ pub fn render(
     let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
     let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
-    let mode_ctx = render_mode_context(state);
-    let entry_reason = match &decision.entry_reason {
-        Some(crate::model::EntryReason::SugInfoScalp { price, .. }) => {
-            format!("sug-info-scalp price={:.4}", price)
-        }
-        Some(crate::model::EntryReason::SugInfoMovement { price, .. }) => {
-            format!("sug-info-movement price={:.4}", price)
-        }
-        Some(crate::model::EntryReason::SidewayScalp {
-            price,
-            block_low,
-            block_high,
-            source,
-            ..
-        }) => {
-            format!(
-                "sideway-scalp price={:.4} block={:.4}-{:.4} source={}",
-                price, block_low, block_high, source
-            )
-        }
-        None => "none".to_string(),
-    };
-    let entry = match &decision.entry {
-        crate::model::EntryGate::Open { notes } => {
-            if notes.is_empty() {
-                "open".to_string()
-            } else {
-                format!("open:{}", notes.join("|"))
-            }
-        }
-        crate::model::EntryGate::Wait(wait) => {
-            let mut text = format!("wait:{}", wait.reason);
-            if !wait.solutions.is_empty() {
-                text.push_str(&format!(" sol={}", wait.solutions.len()));
-            }
-            if !wait.notes.is_empty() {
-                text.push_str(&format!(" notes={}", wait.notes.join("|")));
-            }
-            text
-        }
-    };
     let pending_entry = state
         .movement_entry_pending
         .as_ref()
@@ -66,57 +26,73 @@ pub fn render(
             )
         })
         .unwrap_or_else(|| "na".to_string());
-    let base = format!(
-        "t={} p={:.4} mode={} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} dir_hist=[{}] casTf={} casSug={} pos={:?} entry={} entry_reason={} mem={} mode_ctx={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
-        state.ticks,
-        snapshot.tf1m.candle.close,
-        state.cfg.trade_mode.as_str(),
-        regime.primary,
-        regime.fallback,
-        regime.fallback_used,
-        regime.context_1h,
-        state.direction_lock.label(),
-        pending_entry,
-        if sideway.active {
-            format!(
-                "on:{:?} bias={} block={:.4}-{:.4} {}",
-                sideway.source,
-                sideway.price_bias,
-                sideway.block_low,
-                sideway.block_high,
-                sideway.reason
-            )
-        } else {
-            format!("off:{:?} {}", sideway.source, sideway.reason)
-        },
-        state.direction_history.summary(),
-        cascade_tf_text,
-        cascade_sug_text,
-        state.position.side,
-        entry,
-        entry_reason,
-        state.exit_memory.summary(),
-        mode_ctx,
-        if state.position.tp_mark.is_empty() {
-            "na"
-        } else {
-            &state.position.tp_mark
-        },
-        state.position.take_profit,
-        state.position.stop_loss,
-        vt.long_side.count,
-        vt.short_side.count,
-        snapshot.tf1m.volume_gain,
-        snapshot.tf1m.gain_zone(),
-        snapshot.tf1m.gain_progress_pct(),
-        snapshot.tf1m.gain_is_building(),
-        snapshot.tf1m.gain_is_late(),
-        execution_note,
-    );
+    let gain_1m = fmt_metric(snapshot.tf1m.volume_gain, 4);
+    let gain_prog = fmt_metric(snapshot.tf1m.gain_progress_pct(), 2);
+    let vml = if vt.long_side.count == 0 && vt.short_side.count == 0 {
+        "na".to_string()
+    } else {
+        format!("{}/{}", vt.long_side.count, vt.short_side.count)
+    };
+    let mut parts = vec![
+        format!("t={}", state.ticks),
+        format!("p={:.4}", snapshot.tf1m.candle.close),
+        format!("mode={}", state.cfg.trade_mode.as_str()),
+        format!("5m={:?}", regime.primary),
+        format!("15m={:?}", regime.fallback),
+        format!("15m_fb={}", regime.fallback_used),
+        format!("1h={:?}", regime.context_1h),
+        format!("dir_lock={}", state.direction_lock.label()),
+        format!("pending={}", pending_entry),
+        format!(
+            "sideway={}",
+            if sideway.active {
+                format!(
+                    "on:{:?} bias={} block={:.4}-{:.4} {}",
+                    sideway.source,
+                    sideway.price_bias,
+                    sideway.block_low,
+                    sideway.block_high,
+                    sideway.reason
+                )
+            } else {
+                format!("off:{:?} {}", sideway.source, sideway.reason)
+            }
+        ),
+        format!("dir_hist=[{}]", state.direction_history.summary()),
+        format!("casTf={}", cascade_tf_text),
+        format!("casSug={}", cascade_sug_text),
+        format!("vml={}", vml),
+        format!("gain_1m={}", gain_1m),
+        format!("gain_zone={:?}", snapshot.tf1m.gain_zone()),
+        format!("gain_prog={}", gain_prog),
+        format!("gain_building={}", snapshot.tf1m.gain_is_building()),
+        format!("gain_late={}", snapshot.tf1m.gain_is_late()),
+        format!("exec={}", execution_note),
+    ];
+    if let Some(gate) = format_entry_gate(&decision.entry) {
+        parts.push(format!("gate={gate}"));
+    }
+    let base = parts.join(" ");
 
     match state.last_error.as_ref() {
         Some(error) => format!("{base} error={error}"),
         None => base,
+    }
+}
+
+fn format_entry_gate(entry: &crate::model::EntryGate) -> Option<String> {
+    match entry {
+        crate::model::EntryGate::Wait(wait) => {
+            let mut text = format!("wait:{}", wait.reason);
+            if !wait.solutions.is_empty() {
+                text.push_str(&format!(" sol={}", wait.solutions.len()));
+            }
+            if !wait.notes.is_empty() {
+                text.push_str(&format!(" notes={}", wait.notes.join("|")));
+            }
+            Some(text)
+        }
+        crate::model::EntryGate::Open { .. } => None,
     }
 }
 
@@ -130,36 +106,6 @@ fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
         "{:?}:{}:avg={:.2}%:s={:.2}:b={:.4}",
         cascade.phase, cascade.dir, cascade_avg_pct, cascade.strength, cascade.break_price,
     )
-}
-
-fn render_mode_context(state: &EngineState) -> String {
-    let strategy = state
-        .strategy_builder
-        .as_ref()
-        .map(|builder| builder.describe())
-        .unwrap_or_else(|| "strategy=na".to_string());
-    match state.cfg.trade_mode {
-        TradeMode::Single => format!(
-            "single exit_src={} {}",
-            state.position.exit_mode.as_str(),
-            strategy
-        ),
-        TradeMode::Martingale => {
-            if let Some(martingale) = state.position.martingale.as_ref() {
-                format!(
-                    "martingale exit_src=martingale {} mg_levels={} mg_range={:.4}% mg_step={:.2}% mg_tp={:.2}% mg_last={} mg_orders=2",
-                    strategy,
-                    martingale.profile.levels,
-                    martingale.profile.range_pct,
-                    martingale.profile.step_pct,
-                    martingale.profile.take_profit_pct,
-                    martingale.last_filled_mark.as_deref().unwrap_or("na"),
-                )
-            } else {
-                format!("martingale exit_src=martingale {} mg_profile=na", strategy)
-            }
-        }
-    }
 }
 
 #[cfg(test)]

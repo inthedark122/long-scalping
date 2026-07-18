@@ -1,3 +1,4 @@
+use crate::format::{fmt_duration_ms, fmt_duration_ms_f64, fmt_price};
 use crate::model::MarketState;
 
 #[derive(Debug, Clone)]
@@ -101,20 +102,20 @@ impl DirectionChangeHistory {
             .unwrap_or_else(|| "na".to_string());
         let last_interval = self
             .last_interval_ms()
-            .map(|value| format!("{}ms", value))
+            .map(fmt_duration_ms)
             .unwrap_or_else(|| "na".to_string());
         let avg3 = self
             .average_interval_ms(3)
-            .map(|value| format!("{:.0}ms", value))
+            .map(fmt_duration_ms_f64)
             .unwrap_or_else(|| "na".to_string());
         let avg8 = self
             .average_interval_ms(8)
-            .map(|value| format!("{:.0}ms", value))
+            .map(fmt_duration_ms_f64)
             .unwrap_or_else(|| "na".to_string());
 
         match self.records.last() {
             Some(record) => format!(
-                "current={} last={} avg3={} avg8={} count={} last_change={:?}->{:?} at={} price={:.4} min={:.4} max={:.4}",
+                "current={} last={} avg3={} avg8={} count={} last_change={:?}->{:?} at={} price={} min={} max={}",
                 current,
                 last_interval,
                 avg3,
@@ -123,12 +124,12 @@ impl DirectionChangeHistory {
                 record.from,
                 record.to,
                 record.detected_at_ms,
-                record.detect_price,
-                record.min_price,
-                record.max_price
+                fmt_price(record.detect_price),
+                fmt_price(record.min_price),
+                fmt_price(record.max_price)
             ),
             None => format!(
-                "current={} last={} avg3={} avg8={} count=0",
+                "current={} last={} avg3={} avg8={} count=na",
                 current, last_interval, avg3, avg8
             ),
         }
@@ -153,6 +154,11 @@ mod tests {
         assert_eq!(history.last_interval_ms(), Some(5_500));
         assert_eq!(history.average_interval_ms(3), Some(4_250.0));
         assert_eq!(history.average_interval_ms(8), Some(4_250.0));
+
+        let summary = history.summary();
+        assert!(summary.contains("last=5.5s"));
+        assert!(summary.contains("avg3=4.2s"));
+        assert!(summary.contains("avg8=4.2s"));
 
         let first = &history.records[0];
         assert_eq!(first.from, MarketState::Short);

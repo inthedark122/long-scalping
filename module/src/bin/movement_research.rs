@@ -18,6 +18,8 @@ mod cascade_impl;
 mod martingale;
 #[path = "../model.rs"]
 mod model;
+#[path = "../format.rs"]
+mod format;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
 #[path = "../orders.rs"]

@@ -11,6 +11,8 @@ mod builder;
 mod cascade_impl;
 #[path = "../exit.rs"]
 mod exit_impl;
+#[path = "../format.rs"]
+mod format;
 #[path = "../detection/levels.rs"]
 mod levels_impl;
 #[path = "../martingale.rs"]

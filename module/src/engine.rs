@@ -643,6 +643,7 @@ fn process_realtime(
         &decision,
         &cas_sug,
     );
+    let execution_summary = execution.summary().to_string();
 
     ModuleOutput {
         open_positions: execution.open_positions,
@@ -657,7 +658,7 @@ fn process_realtime(
             &cas_tf,
             &cas_sug,
             &decision,
-            &execution.note,
+            &execution_summary,
         ),
         ..Default::default()
     }

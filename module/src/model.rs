@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::detection::mrc::MrcSignal;
+use crate::format::fmt_price;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MarketState {
@@ -291,14 +292,18 @@ impl ExitMemory {
     pub fn summary(&self) -> String {
         match self.kind {
             Some(kind) if self.price > 0.0 => format!(
-                "side={:?} kind={:?} price={:.4} tp={:.4} sl={:.4} reliable={} tick={}",
+                "side={:?} kind={:?} price={} tp={} sl={} reliable={} tick={}",
                 self.side,
                 kind,
-                self.price,
-                self.take_profit,
-                self.stop_loss,
+                fmt_price(self.price),
+                fmt_price(self.take_profit),
+                fmt_price(self.stop_loss),
                 self.reliable,
-                self.tick
+                if self.tick == 0 {
+                    "na".to_string()
+                } else {
+                    self.tick.to_string()
+                }
             ),
             _ => "exit-mem=na".to_string(),
         }

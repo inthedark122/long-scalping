@@ -110,6 +110,9 @@ impl DirectionLockState {
         if self.direction == MarketState::Sideways {
             return "na".to_string();
         }
+        if self.break_price <= 0.0 {
+            return format!("{:?}:na:{}", self.direction, self.reason);
+        }
         format!(
             "{:?}:{:.4}:{}",
             self.direction, self.break_price, self.reason

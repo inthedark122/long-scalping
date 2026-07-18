@@ -5,6 +5,7 @@ mod detection;
 mod engine;
 mod execution;
 mod exit;
+mod format;
 mod market_data;
 mod martingale;
 mod observer;
