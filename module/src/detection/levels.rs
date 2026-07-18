@@ -62,8 +62,6 @@ pub enum LevelKind {
     DpZee1,
     ZzSellPrice,
     ZzBreakPrice,
-    CandleHigh,
-    CandleLow,
 }
 
 impl LevelKind {
@@ -79,8 +77,6 @@ impl LevelKind {
             Self::DpZee1 => "dp_zee1",
             Self::ZzSellPrice => "zz_sell",
             Self::ZzBreakPrice => "zz_break",
-            Self::CandleHigh => "candle_high",
-            Self::CandleLow => "candle_low",
         }
     }
 }
@@ -375,24 +371,6 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 kind: LevelKind::ZzBreakPrice,
                 side: LevelSide::Below,
                 value: tf.zz_break_price,
-            },
-        );
-        push_level(
-            &mut above,
-            LevelPoint {
-                source,
-                kind: LevelKind::CandleHigh,
-                side: LevelSide::Above,
-                value: tf.candle.high,
-            },
-        );
-        push_level(
-            &mut below,
-            LevelPoint {
-                source,
-                kind: LevelKind::CandleLow,
-                side: LevelSide::Below,
-                value: tf.candle.low,
             },
         );
     }

@@ -1624,7 +1624,7 @@ mod tests {
         );
 
         assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
-        assert_eq!(result.as_ref().unwrap().tp_orders[0].enter_price, 99.5);
+        assert_eq!(result.as_ref().unwrap().tp_orders[0].enter_price, 105.0);
         assert!(result.as_ref().unwrap().tp_orders[0]
             .note
             .as_deref()
