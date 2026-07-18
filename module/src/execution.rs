@@ -323,7 +323,7 @@ fn ensure_active_exit_order(
     }
 
     if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        if builder.virtual_sl_tp_advance() {
+        if builder.is_martingale() && builder.virtual_sl_tp_advance() {
             if virtual_sl_hit {
                 let desired_tp =
                     stop_loss::martingale_recovery_take_profit(input.price, side, tick);
@@ -356,16 +356,25 @@ fn ensure_active_exit_order(
             );
         }
 
-        if builder.breakeven_reclaim() {
-            let desired_tp = stop_loss::breakeven_price(state.position.entry_price, side, tick);
-            if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
-                state.position.take_profit = desired_tp;
-                notes.push(format!("tp-reclaim={:.4}", desired_tp));
-                let note = Some("tp:reclaim".to_string());
+        let trail_plan = exit::plan(
+            snapshot,
+            sug_snapshot,
+            &state.cascade_sug,
+            input.price,
+            side,
+            state.position.entry_reason.as_ref(),
+        );
+        if let Some(plan) = trail_plan {
+            state.position.exit_tp_reliable = plan.tp_reliable;
+            if (plan.take_profit - state.position.take_profit).abs() > f64::EPSILON {
+                state.position.take_profit = plan.take_profit;
+                notes.push(format!("tp-reprice={:.4}", plan.take_profit));
+                notes.push(format!("source={}", plan.source.as_str()));
+                let note = Some(format!("tp:reprice|{}", plan.source.as_str()));
                 let order = tp_limit_order(
                     direction,
                     qty,
-                    desired_tp,
+                    plan.take_profit,
                     &state.position.tp_mark,
                     note.as_deref(),
                 );
@@ -380,6 +389,18 @@ fn ensure_active_exit_order(
                     ),
                 );
             }
+            return (
+                Vec::new(),
+                Vec::new(),
+                format!(
+                    "exit={} price={:.4} tp={:.4} sl={:.4} source={}",
+                    state.position.exit_mode.as_str(),
+                    input.price,
+                    state.position.take_profit,
+                    state.position.stop_loss,
+                    plan.source.as_str()
+                ),
+            );
         }
         return (
             Vec::new(),
@@ -1551,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn trail_after_virtual_sl_keeps_fee_floor() {
+    fn trail_after_virtual_sl_reprices_single_tp() {
         let mut state = EngineState::default();
         state.cfg.trade_mode = TradeMode::Single;
         state.position = crate::state::PositionRuntime {
@@ -1608,8 +1629,10 @@ mod tests {
         );
 
         assert_eq!(result.tp_orders.len(), 1);
+        assert_eq!(result.tp_orders[0].enter_price, 99.5);
         assert!(result.update_positions.is_empty());
-        assert!(result.note.contains("tp-reclaim"));
+        assert!(result.note.contains("tp-reprice"));
+        assert!(!result.note.contains("tp-reclaim"));
     }
 
     #[test]

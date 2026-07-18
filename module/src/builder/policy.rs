@@ -18,7 +18,7 @@ impl StrategyPolicy {
                 entry_wait_gate: true,
                 apply_direction_lock: true,
                 direction_change_close: false,
-                breakeven_reclaim: true,
+                breakeven_reclaim: false,
                 virtual_sl_tp_advance: false,
             },
             TradeMode::Martingale => Self {
