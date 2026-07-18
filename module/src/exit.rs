@@ -206,49 +206,41 @@ fn compute(
     }
 
     if let Some(sug) = sug_snapshot.sug_candle {
-        let sug_side = sug_snapshot.sug_direction;
-        let side_dir = match side {
-            PositionState::Long => 1,
-            PositionState::Short => -1,
-            PositionState::Flat => 0,
-        };
-        if sug_side == 0 || sug_side == side_dir {
-            let range = (sug.high - sug.low).abs();
-            if range > 0.0 {
-                let plan = match side {
-                    PositionState::Long => ExitPlan {
-                        take_profit: if sug.close > price {
-                            sug.close
-                        } else {
-                            sug.high.max(price + range * 0.25)
-                        },
-                        stop_loss: sug.low.min(price - range * 0.10),
-                        tp_reliable: true,
-                        source: ExitSource::SugInfo,
-                        structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
-                        structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
+        let range = (sug.high - sug.low).abs();
+        if range > 0.0 {
+            let plan = match side {
+                PositionState::Long => ExitPlan {
+                    take_profit: if sug.close > price {
+                        sug.close
+                    } else {
+                        sug.high.max(price + range * 0.25)
                     },
-                    PositionState::Short => ExitPlan {
-                        take_profit: if sug.close < price {
-                            sug.close
-                        } else {
-                            sug.low.min(price - range * 0.25)
-                        },
-                        stop_loss: sug.high.max(price + range * 0.10),
-                        tp_reliable: true,
-                        source: ExitSource::SugInfo,
-                        structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
-                        structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
+                    stop_loss: sug.low.min(price - range * 0.10),
+                    tp_reliable: true,
+                    source: ExitSource::SugInfo,
+                    structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
+                    structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
+                },
+                PositionState::Short => ExitPlan {
+                    take_profit: if sug.close < price {
+                        sug.close
+                    } else {
+                        sug.low.min(price - range * 0.25)
                     },
-                    PositionState::Flat => ExitPlan::default(),
-                };
-                if plan.take_profit.is_finite()
-                    && plan.stop_loss.is_finite()
-                    && plan.take_profit > 0.0
-                    && plan.stop_loss > 0.0
-                {
-                    return Some(plan);
-                }
+                    stop_loss: sug.high.max(price + range * 0.10),
+                    tp_reliable: true,
+                    source: ExitSource::SugInfo,
+                    structural_take_profit: structural.map(|(tp, _)| tp).unwrap_or(0.0),
+                    structural_stop_loss: structural.map(|(_, sl)| sl).unwrap_or(0.0),
+                },
+                PositionState::Flat => ExitPlan::default(),
+            };
+            if plan.take_profit.is_finite()
+                && plan.stop_loss.is_finite()
+                && plan.take_profit > 0.0
+                && plan.stop_loss > 0.0
+            {
+                return Some(plan);
             }
         }
     }

@@ -374,13 +374,6 @@ pub fn build_sug_info_snapshot(sug_info: &SuggestionInfo) -> SugInfoSnapshot {
         low: sug_info.candle.min,
         close: sug_info.candle.exit,
     });
-    let sug_direction = if sug_info.direction.is_long() {
-        1
-    } else if sug_info.direction.is_short() {
-        -1
-    } else {
-        0
-    };
     let signal = SignalIndicatorSnapshot {
         ntps: sug_info.indicator.ntps,
     };
@@ -388,7 +381,6 @@ pub fn build_sug_info_snapshot(sug_info: &SuggestionInfo) -> SugInfoSnapshot {
     SugInfoSnapshot {
         fast_candle,
         sug_candle,
-        sug_direction,
         signal,
     }
 }

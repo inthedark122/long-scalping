@@ -551,9 +551,6 @@ pub fn sug_entry_plan(
         PositionState::Short => -1,
         PositionState::Flat => return None,
     };
-    if sug_snapshot.sug_direction != 0 && sug_snapshot.sug_direction != side_dir {
-        return None;
-    }
 
     if !force_pullback
         && direction_lock_gate(
@@ -630,17 +627,6 @@ fn sug_entry_gate(
         PositionState::Short => -1,
         PositionState::Flat => return None,
     };
-    if sug_snapshot.sug_direction != 0 && sug_snapshot.sug_direction != side_dir {
-        return Some(EntryGate::Wait(EntryWait {
-            reason: "sug-info-direction-mismatch".to_string(),
-            solutions: vec![],
-            notes: vec![
-                "sug-info default scalping path".to_string(),
-                format!("sug_dir={}", sug_snapshot.sug_direction),
-                format!("plan={:?}", side),
-            ],
-        }));
-    }
 
     if state.cfg.pullback_ratio() <= 0.0 {
         if let Some(wait) = direction_lock_gate(
@@ -1116,7 +1102,6 @@ mod tests {
                 low: 99.8,
                 close: 100.03,
             }),
-            sug_direction: 1,
             ..Default::default()
         }
     }
