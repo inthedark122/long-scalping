@@ -481,8 +481,12 @@ pub enum EntryWaitSolution {
         band_low: f64,
         band_high: f64,
     },
-    WaitForCooling {
-        note: String,
+    FastCandle {
+        phase: FastCandlePhase,
+        fast_candle_pct: f64,
+        candle_pct: f64,
+        gain_zone: GainZone,
+        gain_progress_pct: f64,
     },
 }
 

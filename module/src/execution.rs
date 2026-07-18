@@ -26,13 +26,7 @@ pub struct ExecutionResult {
     pub update_positions: Vec<ModuleUpdatePosition>,
     pub tp_orders: Vec<ModulePlaceOrder>,
     pub cancel_orders: Vec<String>,
-    pub note: String,
-}
-
-impl ExecutionResult {
-    pub fn summary(&self) -> &str {
-        self.note.split_whitespace().next().unwrap_or("na")
-    }
+    pub constraint: Option<String>,
 }
 
 fn open_note(
@@ -294,9 +288,9 @@ fn ensure_active_exit_order(
     sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
     builder: &BuiltStrategy,
-) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>, String) {
+) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
     if side == PositionState::Flat {
-        return (Vec::new(), Vec::new(), "exit=flat".to_string());
+        return (Vec::new(), Vec::new());
     }
 
     let direction = match side {
@@ -312,27 +306,16 @@ fn ensure_active_exit_order(
     let mut update_positions = Vec::new();
     let qty = position_qty(input, side);
     if qty <= 0.0 {
-        return (
-            Vec::new(),
-            Vec::new(),
-            format!("exit={} qty=0", state.position.exit_mode.as_str()),
-        );
+        return (Vec::new(), Vec::new());
     }
 
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
         if let Some(order) =
             initialize_exit_plan(input, state, snapshot, sug_snapshot, side, builder)
         {
-            notes.push("tp-init".to_string());
-            notes.push(format!("tp={:.4}", state.position.take_profit));
-            notes.push(format!("sl={:.4}", state.position.stop_loss));
-            return (vec![order], Vec::new(), notes.join("|"));
+            return (vec![order], Vec::new());
         }
-        return (
-            Vec::new(),
-            Vec::new(),
-            format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
-        );
+        return (Vec::new(), Vec::new());
     }
 
     let tick = tick_size(input);
@@ -371,29 +354,10 @@ fn ensure_active_exit_order(
                             tick
                         ),
                     );
-                    return (
-                        Vec::new(),
-                        update_positions,
-                        format!(
-                            "exit={} price={:.4} {}",
-                            state.position.exit_mode.as_str(),
-                            input.price,
-                            notes.join("|")
-                        ),
-                    );
+                    return (Vec::new(), update_positions);
                 }
             }
-            return (
-                Vec::new(),
-                Vec::new(),
-                format!(
-                    "exit={} price={:.4} tp={:.4} sl={:.4}",
-                    state.position.exit_mode.as_str(),
-                    input.price,
-                    state.position.take_profit,
-                    state.position.stop_loss
-                ),
-            );
+            return (Vec::new(), Vec::new());
         }
 
         let trail_plan = exit::plan(
@@ -438,61 +402,18 @@ fn ensure_active_exit_order(
                         tick
                     ),
                 );
-                return (
-                    vec![order],
-                    Vec::new(),
-                    format!(
-                        "exit={} price={:.4} {}",
-                        state.position.exit_mode.as_str(),
-                        input.price,
-                        notes.join("|")
-                    ),
-                );
+                return (vec![order], Vec::new());
             }
-            return (
-                Vec::new(),
-                Vec::new(),
-                format!(
-                    "exit={} price={:.4} tp={:.4} sl={:.4} source={}",
-                    state.position.exit_mode.as_str(),
-                    input.price,
-                    state.position.take_profit,
-                    state.position.stop_loss,
-                    plan.source.as_str()
-                ),
-            );
+            return (Vec::new(), Vec::new());
         }
-        return (
-            Vec::new(),
-            Vec::new(),
-            format!(
-                "exit={} price={:.4} tp={:.4} sl={:.4}",
-                state.position.exit_mode.as_str(),
-                input.price,
-                state.position.take_profit,
-                state.position.stop_loss
-            ),
-        );
+        return (Vec::new(), Vec::new());
     }
 
     if state.position.take_profit > 0.0 {
-        return (
-            Vec::new(),
-            Vec::new(),
-            format!(
-                "exit={} tp={:.4} sl={:.4}",
-                state.position.exit_mode.as_str(),
-                state.position.take_profit,
-                state.position.stop_loss
-            ),
-        );
+        return (Vec::new(), Vec::new());
     }
 
-    (
-        Vec::new(),
-        Vec::new(),
-        format!("exit={} tp=n/a sl=n/a", state.position.exit_mode.as_str()),
-    )
+    (Vec::new(), Vec::new())
 }
 
 #[cfg(test)]
@@ -511,6 +432,7 @@ pub fn evaluate(
         decision,
         &CascadeSignal::default(),
     )
+    .unwrap_or_default()
 }
 
 pub fn evaluate_with_cascade(
@@ -520,7 +442,7 @@ pub fn evaluate_with_cascade(
     sug_snapshot: &SugInfoSnapshot,
     decision: &TradeDecision,
     cascade: &CascadeSignal,
-) -> ExecutionResult {
+) -> Option<ExecutionResult> {
     let builder = ensure_runtime_builder(state);
     let long = input
         .positions
@@ -535,7 +457,7 @@ pub fn evaluate_with_cascade(
     sync_position_state(state, long, short, input.price);
 
     if input.positions.long.is_some() && input.positions.short.is_some() {
-        return ExecutionResult {
+        return Some(ExecutionResult {
             close_positions: vec![
                 close(
                     Direction::Long,
@@ -557,16 +479,15 @@ pub fn evaluate_with_cascade(
                 ),
             ],
             cancel_orders: vec![tp_mark(Direction::Long), tp_mark(Direction::Short)],
-            note: "flatten-both".to_string(),
             ..Default::default()
-        };
+        });
     }
 
     if input.positions.long.is_some() {
         if direction_changed(PositionState::Long, decision.market_state)
             && builder.should_close_on_direction_change(input, state)
         {
-            return ExecutionResult {
+            return Some(ExecutionResult {
                 close_positions: vec![close(
                     Direction::Long,
                     &format!(
@@ -575,14 +496,10 @@ pub fn evaluate_with_cascade(
                         position_snapshot(input, state, PositionState::Long, tick_size(input))
                     ),
                 )],
-                note: format!(
-                    "close-long direction-changed {}",
-                    position_snapshot(input, state, PositionState::Long, tick_size(input))
-                ),
                 ..Default::default()
-            };
+            });
         }
-        let (tp_orders, update_positions, note) = ensure_active_exit_order(
+        let (tp_orders, update_positions) = ensure_active_exit_order(
             input,
             state,
             snapshot,
@@ -590,19 +507,18 @@ pub fn evaluate_with_cascade(
             PositionState::Long,
             &builder,
         );
-        return ExecutionResult {
+        return Some(ExecutionResult {
             tp_orders,
             update_positions,
-            note: format!("hold-long {}", note),
             ..Default::default()
-        };
+        });
     }
 
     if input.positions.short.is_some() {
         if direction_changed(PositionState::Short, decision.market_state)
             && builder.should_close_on_direction_change(input, state)
         {
-            return ExecutionResult {
+            return Some(ExecutionResult {
                 close_positions: vec![close(
                     Direction::Short,
                     &format!(
@@ -611,14 +527,10 @@ pub fn evaluate_with_cascade(
                         position_snapshot(input, state, PositionState::Short, tick_size(input))
                     ),
                 )],
-                note: format!(
-                    "close-short direction-changed {}",
-                    position_snapshot(input, state, PositionState::Short, tick_size(input))
-                ),
                 ..Default::default()
-            };
+            });
         }
-        let (tp_orders, update_positions, note) = ensure_active_exit_order(
+        let (tp_orders, update_positions) = ensure_active_exit_order(
             input,
             state,
             snapshot,
@@ -626,12 +538,11 @@ pub fn evaluate_with_cascade(
             PositionState::Short,
             &builder,
         );
-        return ExecutionResult {
+        return Some(ExecutionResult {
             tp_orders,
             update_positions,
-            note: format!("hold-short {}", note),
             ..Default::default()
-        };
+        });
     }
 
     let entry_side = match decision.market_state {
@@ -642,42 +553,20 @@ pub fn evaluate_with_cascade(
 
     if builder.entry_wait_gate() {
         match &decision.entry {
-            EntryGate::Wait(wait) => {
-                return ExecutionResult {
-                    note: format!(
-                        "entry-wait reason={} solutions={} notes={}",
-                        wait.reason,
-                        wait.solutions.len(),
-                        wait.notes.join("|")
-                    ),
-                    ..Default::default()
-                };
+            EntryGate::Wait(_) => {
+                return None;
             }
             EntryGate::Open { .. } => {}
         }
 
-        if let EntryGate::Wait(wait) =
+        if let EntryGate::Wait(_) =
             prediction::entry_gate(snapshot, sug_snapshot, cascade, state, entry_side)
         {
-            return ExecutionResult {
-                note: format!(
-                    "entry-wait reason={} solutions={} notes={}",
-                    wait.reason,
-                    wait.solutions.len(),
-                    wait.notes.join("|")
-                ),
-                ..Default::default()
-            };
+            return None;
         }
 
         if decision.entry_reason.is_none() {
-            return ExecutionResult {
-                note: format!(
-                    "entry-blocked reason=missing-entry-reason market_state={:?}",
-                    decision.market_state
-                ),
-                ..Default::default()
-            };
+            return None;
         }
     }
 
@@ -687,17 +576,17 @@ pub fn evaluate_with_cascade(
     }
     let leverage = (input.leverage as f64).max(1.0);
     if amount <= 0.0 {
-        return ExecutionResult {
-            note: "budget-too-small".to_string(),
+        return Some(ExecutionResult {
+            constraint: Some("budget-too-small".to_string()),
             ..Default::default()
-        };
+        });
     }
     if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
         if amount * leverage < min_notional {
-            return ExecutionResult {
-                note: "budget-too-small".to_string(),
+            return Some(ExecutionResult {
+                constraint: Some("budget-too-small".to_string()),
                 ..Default::default()
-            };
+            });
         }
     }
 
@@ -710,7 +599,6 @@ pub fn evaluate_with_cascade(
             decision.entry_reason.as_ref(),
             amount,
         ) {
-            let ladder_orders = plan.orders.len();
             state.position.martingale = Some(MartingaleRuntime {
                 profile: plan.profile,
                 base_price: plan.base_price,
@@ -720,29 +608,16 @@ pub fn evaluate_with_cascade(
             state.position.take_profit = 0.0;
             state.position.stop_loss = plan.stop_loss;
             state.position.exit_mode = ExitMode::Structural;
-            return ExecutionResult {
+            return Some(ExecutionResult {
                 open_positions: vec![plan.open_position],
                 tp_orders: plan.orders,
-                note: format!(
-                    "open-{}-martingale immediate levels={} orders={} step={:.2}% base={:.4} {}",
-                    match plan.market_state {
-                        MarketState::Long => "long",
-                        MarketState::Short => "short",
-                        MarketState::Sideways => "flat",
-                    },
-                    plan.profile.levels,
-                    ladder_orders,
-                    plan.profile.step_pct,
-                    plan.base_price,
-                    plan.notes.join("|")
-                ),
                 ..Default::default()
-            };
+            });
         }
-        return ExecutionResult {
-            note: "martingale-plan-unavailable".to_string(),
+        return Some(ExecutionResult {
+            constraint: Some("martingale-plan-unavailable".to_string()),
             ..Default::default()
-        };
+        });
     }
 
     let entry_price = decision
@@ -750,14 +625,8 @@ pub fn evaluate_with_cascade(
         .as_ref()
         .map(|reason| reason.price())
         .unwrap_or(input.price);
-    let entry_tag = match decision.entry_reason {
-        Some(EntryReason::SugInfoScalp { .. }) => "sug-info",
-        Some(EntryReason::SugInfoMovement { .. }) => "movement",
-        Some(EntryReason::SidewayScalp { .. }) => "sideway",
-        None => "default",
-    };
     match decision.market_state {
-        MarketState::Long => ExecutionResult {
+        MarketState::Long => Some(ExecutionResult {
                 open_positions: vec![limit_open(
                     Direction::Long,
                     amount,
@@ -771,10 +640,9 @@ pub fn evaluate_with_cascade(
                         state,
                     ),
                 )],
-            note: format!("open-long-{}", entry_tag),
             ..Default::default()
-        },
-        MarketState::Short => ExecutionResult {
+        }),
+        MarketState::Short => Some(ExecutionResult {
                 open_positions: vec![limit_open(
                     Direction::Short,
                     amount,
@@ -788,13 +656,9 @@ pub fn evaluate_with_cascade(
                         state,
                     ),
                 )],
-            note: format!("open-short-{}", entry_tag),
             ..Default::default()
-        },
-        _ => ExecutionResult {
-            note: "flat".to_string(),
-            ..Default::default()
-        },
+        }),
+        _ => None,
     }
 }
 
@@ -951,7 +815,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("fc-phase=Building"));
     }
 
     #[test]
@@ -988,7 +851,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("fc-phase=Tiring"));
     }
 
     #[test]
@@ -1078,7 +940,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
-        assert!(result.note.contains("open-long"));
     }
 
     #[test]
@@ -1125,7 +986,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("post-sl-recovery"));
     }
 
     #[test]
@@ -1173,8 +1033,6 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.note.contains("post-sl-recovery"));
-        assert!(result.note.contains("solutions=3"));
     }
 
     #[test]
@@ -1211,7 +1069,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("candle-not-small"));
     }
     #[test]
     fn legacy_tiring_fast_candle_blocks_entries() {
@@ -1247,7 +1104,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("fc-phase=Tiring"));
     }
 
     #[test]
@@ -1277,7 +1133,6 @@ mod tests {
             &reasonless_decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("missing-entry-reason"));
     }
 
     #[test]
@@ -1351,7 +1206,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.open_positions.len(), 1);
-        assert!(result.note.contains("open-long"));
     }
 
     #[test]
@@ -1398,7 +1252,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("post-sl-recovery"));
     }
 
     #[test]
@@ -1446,8 +1299,6 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.note.contains("post-sl-recovery"));
-        assert!(result.note.contains("solutions=3"));
     }
 
     #[test]
@@ -1484,7 +1335,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.open_positions.is_empty());
-        assert!(result.note.contains("candle-not-small"));
     }
 
     #[test]
@@ -1545,7 +1395,6 @@ mod tests {
         assert_eq!(result.tp_orders[0].qty, Some(0.1));
         assert!(result.tp_orders[0].amount.is_none());
         assert!(result.close_positions.is_empty());
-        assert!(result.note.contains("tp-init"));
     }
 
     #[test]
@@ -1606,7 +1455,6 @@ mod tests {
         assert_eq!(result.tp_orders[0].qty, Some(0.1));
         assert!(result.tp_orders[0].amount.is_none());
         assert!(result.close_positions.is_empty());
-        assert!(result.note.contains("trail-after-virtual-sl"));
     }
 
     #[test]
@@ -1669,8 +1517,6 @@ mod tests {
         assert_eq!(result.tp_orders.len(), 1);
         assert_eq!(result.tp_orders[0].enter_price, 99.5);
         assert!(result.update_positions.is_empty());
-        assert!(result.note.contains("tp-reprice"));
-        assert!(!result.note.contains("tp-reclaim"));
     }
 
     #[test]
@@ -1740,7 +1586,6 @@ mod tests {
         );
         assert_eq!(result.update_positions[0].take_profit, Some(expected_tp));
         assert!(result.update_positions[0].stop_loss.is_none());
-        assert!(result.note.contains("tp-advance"));
     }
 
     #[test]
@@ -1779,7 +1624,6 @@ mod tests {
         );
         assert_eq!(result.close_positions.len(), 1);
         assert!(result.update_positions.is_empty());
-        assert!(result.note.contains("direction-changed"));
     }
 
     #[test]
@@ -1845,8 +1689,6 @@ mod tests {
         );
 
         assert!(result.close_positions.is_empty());
-        assert!(result.note.contains("hold-long"));
-        assert!(!result.note.contains("direction-changed"));
     }
 
     #[test]
@@ -1988,7 +1830,6 @@ mod tests {
         assert_eq!(result.open_positions[0].order_type, ModuleOrderType::Market);
         assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
         assert_eq!(result.tp_orders.len(), 2);
-        assert!(result.note.contains("immediate"));
     }
 
     #[test]
@@ -2005,7 +1846,6 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].enter_price, Some(99.5));
-        assert_eq!(result.note, "open-long-movement");
     }
 
     #[test]
@@ -2029,7 +1869,6 @@ mod tests {
         );
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].enter_price, Some(99.5));
-        assert_eq!(result.note, "open-long-sug-info");
     }
 
     #[test]
@@ -2078,6 +1917,5 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.tp_orders.len(), 1);
-        assert!(result.note.contains("tp-init"));
     }
 }

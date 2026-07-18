@@ -420,17 +420,11 @@ fn sideway_reentry_gate(
 
     Some(EntryGate::Wait(EntryWait {
         reason: "sideway-reentry-wait".to_string(),
-        solutions: vec![EntryWaitSolution::WaitForCooling {
-            note: format!(
-                "sideway={} reentry-side={:?} need-zone={}",
-                signal.reason,
-                side,
-                if matches!(side, PositionState::Long) {
-                    "-1..-2"
-                } else {
-                    "1..2"
-                }
-            ),
+        solutions: vec![EntryWaitSolution::ReclaimLevel {
+            source: "sideway-reentry".to_string(),
+            level: (signal.block_low + signal.block_high) / 2.0,
+            band_low: signal.block_low,
+            band_high: signal.block_high,
         }],
         notes: vec![
             format!("sideway={}", signal.reason),
@@ -515,8 +509,11 @@ fn sideway_entry_gate(
     if signal.active && !sideways::reentry_ready(&signal, side) {
         return Some(EntryGate::Wait(EntryWait {
             reason: "sideway-opposite-wait".to_string(),
-            solutions: vec![EntryWaitSolution::WaitForCooling {
-                note: format!("sideway={} side={:?} need-ready", signal.reason, side),
+            solutions: vec![EntryWaitSolution::ReclaimLevel {
+                source: "sideway-opposite".to_string(),
+                level: (signal.block_low + signal.block_high) / 2.0,
+                band_low: signal.block_low,
+                band_high: signal.block_high,
             }],
             notes: vec![
                 format!("sideway={}", signal.reason),
@@ -775,10 +772,17 @@ pub fn entry_gate(
     }
 
     if let Some(reason) = fast_candle_entry_block(snapshot, sug_snapshot) {
+        let candle = signal_candle(snapshot, sug_snapshot);
+        let fc = sug_snapshot.fast_candle;
+        let fc_phase = fc.map(|fc| fc.phase(candle)).unwrap_or(FastCandlePhase::Absent);
         return EntryGate::Wait(EntryWait {
-            reason: "fast-candle-wait".to_string(),
-            solutions: vec![EntryWaitSolution::WaitForCooling {
-                note: reason.clone(),
+            reason: reason.clone(),
+            solutions: vec![EntryWaitSolution::FastCandle {
+                phase: fc_phase,
+                fast_candle_pct: fc.map(|fc| fc.range_pct()).unwrap_or(0.0),
+                candle_pct: candle_range_pct(candle),
+                gain_zone: snapshot.tf1m.gain_zone(),
+                gain_progress_pct: snapshot.tf1m.gain_progress_pct(),
             }],
             notes: vec![reason],
         });
@@ -960,9 +964,6 @@ pub fn entry_gate(
                     },
                     band_low: (anchor - band).max(0.0),
                     band_high: anchor + band,
-                },
-                EntryWaitSolution::WaitForCooling {
-                    note: format!("fc={:?} candle={:.2}%", fc_phase, candle_pct),
                 },
                 EntryWaitSolution::ReclaimLevel {
                     source: "structural".to_string(),

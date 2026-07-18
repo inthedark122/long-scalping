@@ -643,7 +643,17 @@ fn process_realtime(
         &decision,
         &cas_sug,
     );
-    let execution_summary = execution.summary().to_string();
+    let debug = debug::render(
+        state,
+        &snapshot,
+        &regime,
+        &cas_tf,
+        &cas_sug,
+        &decision,
+        execution.as_ref().and_then(|result| result.constraint.as_deref()),
+        input.symbol_info.price_tick_size,
+    );
+    let execution = execution.unwrap_or_default();
 
     ModuleOutput {
         open_positions: execution.open_positions,
@@ -651,16 +661,7 @@ fn process_realtime(
         update_positions: execution.update_positions,
         place_orders: execution.tp_orders,
         cancel_orders: execution.cancel_orders,
-        debug: debug::render(
-            state,
-            &snapshot,
-            &regime,
-            &cas_tf,
-            &cas_sug,
-            &decision,
-            &execution_summary,
-            input.symbol_info.price_tick_size,
-        ),
+        debug,
         ..Default::default()
     }
 }

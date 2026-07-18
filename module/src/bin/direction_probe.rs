@@ -485,8 +485,8 @@ fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
                     EntryWaitSolution::WaitForConfirmation { price, .. } => return *price,
                     EntryWaitSolution::ReclaimLevel { level, .. } => return *level,
                     EntryWaitSolution::ReclaimDpsignal { anchor, .. } => return *anchor,
-                    EntryWaitSolution::WaitForSamples { .. }
-                    | EntryWaitSolution::WaitForCooling { .. } => {}
+                    EntryWaitSolution::FastCandle { .. } => {}
+                    EntryWaitSolution::WaitForSamples { .. } => {}
                 }
             }
             fallback
@@ -551,8 +551,8 @@ fn directional_break_level(
                         candidates.push(candidate);
                     }
                 }
-                EntryWaitSolution::WaitForSamples { .. }
-                | EntryWaitSolution::WaitForCooling { .. } => {}
+                EntryWaitSolution::FastCandle { .. } => {}
+                EntryWaitSolution::WaitForSamples { .. } => {}
             }
         }
     }

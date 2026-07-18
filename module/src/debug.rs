@@ -10,7 +10,7 @@ pub fn render(
     cascade_tf: &CascadeSignal,
     cascade_sug: &CascadeSignal,
     decision: &TradeDecision,
-    execution_note: &str,
+    constraint: Option<&str>,
     tick_size: f64,
 ) -> String {
     let vt = &state.vlines[4];
@@ -75,8 +75,11 @@ pub fn render(
         format!("gain_prog={}", gain_prog),
         format!("gain_building={}", snapshot.tf1m.gain_is_building()),
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
-        format!("exec={}", execution_note),
+        format!("exec={}", format_execution_text(decision)),
     ];
+    if let Some(constraint) = constraint {
+        parts.push(format!("constraint={constraint}"));
+    }
     if let Some(gate) = format_entry_gate(&decision.entry) {
         parts.push(format!("gate={gate}"));
     }
@@ -96,7 +99,13 @@ fn format_entry_gate(entry: &crate::model::EntryGate) -> Option<String> {
         crate::model::EntryGate::Wait(wait) => {
             let mut text = format!("wait:{}", wait.reason);
             if !wait.solutions.is_empty() {
-                text.push_str(&format!(" sol={}", wait.solutions.len()));
+                let solutions = wait
+                    .solutions
+                    .iter()
+                    .map(format_entry_wait_solution)
+                    .collect::<Vec<_>>()
+                    .join(";");
+                text.push_str(&format!(" sol=[{}]", solutions));
             }
             if !wait.notes.is_empty() {
                 text.push_str(&format!(" notes={}", wait.notes.join("|")));
@@ -104,6 +113,68 @@ fn format_entry_gate(entry: &crate::model::EntryGate) -> Option<String> {
             Some(text)
         }
         crate::model::EntryGate::Open { .. } => None,
+    }
+}
+
+fn format_execution_text(decision: &TradeDecision) -> String {
+    if let crate::model::EntryGate::Wait(wait) = &decision.entry {
+        return format!(
+            "entry-wait reason={} expect={}",
+            wait.reason,
+            wait.solutions
+                .first()
+                .map(format_entry_wait_solution)
+                .unwrap_or_else(|| "wait".to_string())
+        );
+    }
+    "na".to_string()
+}
+
+fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> String {
+    match solution {
+        crate::model::EntryWaitSolution::WaitForSamples { required, current } => {
+            format!("samples:{current}/{required}")
+        }
+        crate::model::EntryWaitSolution::WaitForDirectionBreak {
+            source,
+            direction,
+            break_price,
+        } => format!("dir-break:{}:{:?}@{break_price}", source, direction),
+        crate::model::EntryWaitSolution::WaitForConfirmation {
+            source,
+            direction,
+            armed_tick,
+            price,
+        } => format!(
+            "confirm:{}:{:?}:armed={}:price={}",
+            source, direction, armed_tick, price
+        ),
+        crate::model::EntryWaitSolution::ReclaimLevel {
+            source,
+            level,
+            band_low,
+            band_high,
+        } => format!("reclaim:{}:{}[{}..{}]", source, level, band_low, band_high),
+        crate::model::EntryWaitSolution::ReclaimDpsignal {
+            source,
+            anchor,
+            distance_pct,
+            band_low,
+            band_high,
+        } => format!(
+            "dpsignal:{}:{} dist={:.2}% [{}..{}]",
+            source, anchor, distance_pct, band_low, band_high
+        ),
+        crate::model::EntryWaitSolution::FastCandle {
+            phase,
+            fast_candle_pct,
+            candle_pct,
+            gain_zone,
+            gain_progress_pct,
+        } => format!(
+            "fast-candle:{:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
+            phase, fast_candle_pct, candle_pct, gain_zone, gain_progress_pct
+        ),
     }
 }
 
@@ -232,7 +303,7 @@ mod tests {
             &cascade(1),
             &cascade(1),
             &decision(),
-            "exec=hold-long",
+            None,
             0.01,
         );
 
@@ -241,6 +312,38 @@ mod tests {
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
         assert!(!debug.contains("pullback_amount="));
+    }
+
+    #[test]
+    fn entry_wait_debug_renders_solutions() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Single;
+        let mut decision = decision();
+        decision.entry = EntryGate::Wait(crate::model::EntryWait {
+            reason: "sug-info-pullback-wait".to_string(),
+            solutions: vec![crate::model::EntryWaitSolution::ReclaimLevel {
+                source: "mrc-window".to_string(),
+                level: 99.0,
+                band_low: 98.0,
+                band_high: 100.0,
+            }],
+            notes: vec!["forced-pullback".to_string()],
+        });
+
+        let debug = render(
+            &state,
+            &snapshot(),
+            &regime(),
+            &cascade(1),
+            &cascade(1),
+            &decision,
+            None,
+            1.0,
+        );
+
+        assert!(debug.contains(
+            "gate=wait:sug-info-pullback-wait sol=[reclaim:mrc-window:99[98..100]] notes=forced-pullback"
+        ));
     }
 
     #[test]
@@ -280,7 +383,7 @@ mod tests {
             &cascade(1),
             &cascade(1),
             &decision(),
-            "exec=hold-long",
+            None,
             0.01,
         );
 
@@ -290,5 +393,22 @@ mod tests {
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
         assert!(!debug.contains("pullback_amount="));
+    }
+
+    #[test]
+    fn constraint_debug_renders_budget_too_small() {
+        let state = EngineState::default();
+        let debug = render(
+            &state,
+            &snapshot(),
+            &regime(),
+            &cascade(1),
+            &cascade(1),
+            &decision(),
+            Some("budget-too-small"),
+            0.01,
+        );
+
+        assert!(debug.contains("constraint=budget-too-small"));
     }
 }
