@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.56
+
+Direction trace release.
+
+- Record the actual direction decision source and runtime reason in debug output.
+- Include direction-change window percentages with tick-accurate prices.
+
 # 1.0.55
 
 Short-position close fix release.
