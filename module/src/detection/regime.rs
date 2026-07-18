@@ -63,6 +63,54 @@ pub fn classify_regime(
     }
 }
 
+pub fn direction_reason(tf5: &TimeframeSnapshot, tf15: &TimeframeSnapshot) -> String {
+    format!(
+        "5m[{}]|15m[{}]",
+        timeframe_reason(tf5),
+        timeframe_reason(tf15)
+    )
+}
+
+fn timeframe_reason(timeframe: &TimeframeSnapshot) -> String {
+    let long_ready = classify(timeframe) == MarketState::Long;
+    if long_ready {
+        return "long".to_string();
+    }
+    if classify(timeframe) == MarketState::Short {
+        return "short".to_string();
+    }
+
+    let long_fail = direction_failures(
+        timeframe.mrc_signal.bullish_structure,
+        timeframe.dp_zee1 > 0.0 && timeframe.candle.close >= timeframe.dp_zee1,
+        timeframe.zz_dir >= 0,
+    );
+    let short_fail = direction_failures(
+        timeframe.mrc_signal.bearish_structure,
+        timeframe.dp_zee1 > 0.0 && timeframe.candle.close <= timeframe.dp_zee1,
+        timeframe.zz_dir <= 0,
+    );
+    format!("L-{}:S-{}", long_fail, short_fail)
+}
+
+fn direction_failures(mrc: bool, anchor: bool, zigzag: bool) -> String {
+    let mut failures = String::new();
+    if !mrc {
+        failures.push('m');
+    }
+    if !anchor {
+        failures.push('a');
+    }
+    if !zigzag {
+        failures.push('z');
+    }
+    if failures.is_empty() {
+        "ok".to_string()
+    } else {
+        failures
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

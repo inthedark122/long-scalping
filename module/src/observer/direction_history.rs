@@ -1,4 +1,4 @@
-use crate::format::{fmt_duration_ms, fmt_duration_ms_f64, fmt_price};
+use crate::format::{fmt_duration_ms, fmt_duration_ms_f64, fmt_price_tick};
 use crate::model::MarketState;
 
 #[derive(Debug, Clone)]
@@ -95,7 +95,22 @@ impl DirectionChangeHistory {
         (samples > 0).then_some(total / samples as f64)
     }
 
-    pub fn summary(&self) -> String {
+    pub fn average_window_pct(&self, count: usize) -> Option<f64> {
+        if count == 0 || self.records.is_empty() {
+            return None;
+        }
+        let mut total = 0.0;
+        let mut samples = 0usize;
+        for record in self.records.iter().rev().take(count) {
+            if record.detect_price > 0.0 {
+                total += (record.max_price - record.min_price).abs() / record.detect_price * 100.0;
+                samples += 1;
+            }
+        }
+        (samples > 0).then_some(total / samples as f64)
+    }
+
+    pub fn summary(&self, tick_size: f64) -> String {
         let current = self
             .current_direction
             .map(|direction| format!("{:?}", direction))
@@ -112,25 +127,36 @@ impl DirectionChangeHistory {
             .average_interval_ms(8)
             .map(fmt_duration_ms_f64)
             .unwrap_or_else(|| "na".to_string());
+        let avg3_window = self
+            .average_window_pct(3)
+            .map(|value| format!("{value:.2}%"))
+            .unwrap_or_else(|| "na".to_string());
+        let avg8_window = self
+            .average_window_pct(8)
+            .map(|value| format!("{value:.2}%"))
+            .unwrap_or_else(|| "na".to_string());
 
         match self.records.last() {
             Some(record) => format!(
-                "current={} last={} avg3={} avg8={} count={} last_change={:?}->{:?} at={} price={} min={} max={}",
+                "current={} last={} avg3={}:{} avg8={}:{} count={} last_change={:?}->{:?} at={} price={} min={} max={} window={:.2}%",
                 current,
                 last_interval,
                 avg3,
+                avg3_window,
                 avg8,
+                avg8_window,
                 self.records.len(),
                 record.from,
                 record.to,
                 record.detected_at_ms,
-                fmt_price(record.detect_price),
-                fmt_price(record.min_price),
-                fmt_price(record.max_price)
+                fmt_price_tick(record.detect_price, tick_size),
+                fmt_price_tick(record.min_price, tick_size),
+                fmt_price_tick(record.max_price, tick_size),
+                (record.max_price - record.min_price).abs() / record.detect_price * 100.0
             ),
             None => format!(
-                "current={} last={} avg3={} avg8={} count=na",
-                current, last_interval, avg3, avg8
+                "current={} last={} avg3={}:{} avg8={}:{} count=na",
+                current, last_interval, avg3, avg3_window, avg8, avg8_window
             ),
         }
     }
@@ -155,10 +181,10 @@ mod tests {
         assert_eq!(history.average_interval_ms(3), Some(4_250.0));
         assert_eq!(history.average_interval_ms(8), Some(4_250.0));
 
-        let summary = history.summary();
+        let summary = history.summary(0.01);
         assert!(summary.contains("last=5.5s"));
-        assert!(summary.contains("avg3=4.2s"));
-        assert!(summary.contains("avg8=4.2s"));
+        assert!(summary.contains("avg3=4.2s:10.80%"));
+        assert!(summary.contains("avg8=4.2s:10.80%"));
 
         let first = &history.records[0];
         assert_eq!(first.from, MarketState::Short);

@@ -619,6 +619,8 @@ fn process_realtime(
     let sideway = sideways::analyze(state, &snapshot.tf1m);
 
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
+    state.direction_source = "regime".to_string();
+    state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
     let entry_side = match regime.confirmed {
         crate::model::MarketState::Long => crate::model::PositionState::Long,
         crate::model::MarketState::Short => crate::model::PositionState::Short,

@@ -35,6 +35,11 @@ pub(super) fn refine_common(
         if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
             if sideway.active {
                 decision.market_state = plan.market_state;
+                state.direction_source = "sideway-plan".to_string();
+                state.direction_reason = format!(
+                    "sideway-plan:market={:?}:source={:?}",
+                    plan.market_state, sideway.source
+                );
                 decision.entry = EntryGate::Open {
                     notes: plan.notes.clone(),
                     reason: EntryOpenReason::Entry(EntryReason::SidewayScalp {
@@ -58,6 +63,11 @@ pub(super) fn refine_common(
     {
         if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
             decision.market_state = plan.market_state;
+            state.direction_source = "sideway-plan".to_string();
+            state.direction_reason = format!(
+                "sideway-plan:market={:?}:source={:?}",
+                plan.market_state, sideway.source
+            );
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
                 reason: EntryOpenReason::Entry(EntryReason::SidewayScalp {
@@ -92,6 +102,8 @@ pub(super) fn refine_common(
         ) {
             let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;
+            state.direction_source = "sug-info-plan".to_string();
+            state.direction_reason = format!("sug-info-plan:market={:?}", plan.market_state);
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: plan.entry }),
@@ -109,6 +121,8 @@ pub(super) fn refine_common(
     {
         if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade_sug) {
             decision.market_state = plan.market_state;
+            state.direction_source = "movement-plan".to_string();
+            state.direction_reason = format!("movement-plan:market={:?}", plan.market_state);
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
@@ -121,6 +135,11 @@ pub(super) fn refine_common(
         && mrc1.bullish_structure
         && cascade_tf.dir > 0
     {
+        state.direction_source = "1m-recovery".to_string();
+        state.direction_reason = format!(
+            "1m-recovery:mrc1_bull={}:casTf_dir={}",
+            mrc1.bullish_structure, cascade_tf.dir
+        );
         decision = TradeDecision {
             market_state: MarketState::Long,
             entry: match decision.entry {
@@ -139,6 +158,11 @@ pub(super) fn refine_common(
     if apply_direction_lock {
         let locked_direction = state.direction_lock.direction;
         if locked_direction != MarketState::Sideways && decision.market_state != locked_direction {
+            state.direction_source = "direction-lock".to_string();
+            state.direction_reason = format!(
+                "direction-lock:direction={:?}:reason={}",
+                locked_direction, state.direction_lock.reason
+            );
             decision = TradeDecision {
                 market_state: locked_direction,
                 entry: EntryGate::Wait(EntryWait {

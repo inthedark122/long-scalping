@@ -40,6 +40,11 @@ pub fn render(
         format!("{}/{}", vt.long_side.count, vt.short_side.count)
     };
     let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
+    // Direction debug: base/final are the regime and final refined direction;
+    // src identifies the actual decision stage that supplied the final value.
+    // For the base regime, why=5m[...]|15m[...] uses L/S for Long/Short and
+    // m/a/z for failed MRC, dp_zee1 anchor, and ZigZag conditions. If a later
+    // stage changes direction, why is replaced by that stage's runtime values.
     let mut parts = vec![
         format!("t={}", state.ticks),
         format!(
@@ -50,7 +55,6 @@ pub fn render(
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
         format!("15m_fb={}", regime.fallback_used),
-        format!("1h={:?}", regime.context_1h),
         format!(
             "dir_lock={}",
             format_direction_lock(&state.direction_lock, tick_size)
@@ -71,7 +75,11 @@ pub fn render(
                 format!("off:{:?} {}", sideway.source, sideway.reason)
             }
         ),
-        format!("dir_hist=[{}]", state.direction_history.summary()),
+        format!(
+            "dir=base={:?}:final={:?}:src={}:why={}",
+            regime.confirmed, decision.market_state, state.direction_source, state.direction_reason
+        ),
+        format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf={}", cascade_tf_text),
         format!("casSug={}", cascade_sug_text),
         format!("vml={}", vml),
