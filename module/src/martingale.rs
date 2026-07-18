@@ -1,4 +1,4 @@
-use crate::exit::{ExitPlan, ExitSource};
+use crate::exit::{ExitPlan, TakeProfit};
 use crate::model::{EntryReason, IndicatorSnapshot, MarketState, PositionState};
 use crate::orders::{limit_order, market_open};
 use crate::state::EngineState;
@@ -234,12 +234,9 @@ pub fn exit_plan(
         };
 
         return Some(ExitPlan {
-            take_profit,
+            take_profit: TakeProfit::Sideway { price: take_profit },
             stop_loss,
             tp_reliable: true,
-            source: ExitSource::Sideway,
-            structural_take_profit: take_profit,
-            structural_stop_loss: stop_loss,
         });
     }
 
@@ -271,14 +268,9 @@ pub fn exit_plan(
     };
 
     Some(ExitPlan {
-        take_profit,
+        take_profit: TakeProfit::Martingale { price: take_profit },
         stop_loss,
         tp_reliable: true,
-        source: ExitSource::Martingale,
-        structural_take_profit: entry_reason
-            .map(|reason| reason.price())
-            .unwrap_or(entry_price),
-        structural_stop_loss: break_price,
     })
 }
 
@@ -362,9 +354,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(plan.take_profit > 100.0);
+        assert!(plan.take_profit.price() > 100.0);
         assert!(plan.stop_loss < 100.0);
-        assert_eq!(plan.source, ExitSource::Martingale);
+        assert!(matches!(plan.take_profit, TakeProfit::Martingale { .. }));
     }
 
     #[test]
@@ -382,8 +374,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(plan.source, ExitSource::Sideway);
-        assert!(plan.take_profit >= 100.8);
+        assert!(matches!(plan.take_profit, TakeProfit::Sideway { .. }));
+        assert!(plan.take_profit.price() >= 100.8);
         assert!(plan.stop_loss < 99.2);
         assert!(plan.stop_loss > 98.0);
     }

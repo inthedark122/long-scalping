@@ -322,7 +322,7 @@ fn initialize_exit_plan(
             state.position.entry_reason.as_ref(),
         )?
     };
-    state.position.take_profit = plan.take_profit;
+    state.position.take_profit = plan.take_profit.price();
     state.position.stop_loss = plan.stop_loss;
     state.position.exit_tp_reliable = plan.tp_reliable;
     state.position.exit_mode = ExitMode::Structural;
@@ -333,11 +333,11 @@ fn initialize_exit_plan(
     if qty <= 0.0 {
         return None;
     }
-    let order_note = Some(format!("tp:{}", plan.source.as_str()));
+    let order_note = Some(plan.take_profit.order_note());
     Some(tp_limit_order(
         direction,
         qty,
-        plan.take_profit,
+        plan.take_profit.price(),
         &state.position.tp_mark,
         order_note.as_deref(),
     ))
@@ -429,19 +429,19 @@ fn ensure_active_exit_order(
         );
         if let Some(plan) = trail_plan {
             state.position.exit_tp_reliable = plan.tp_reliable;
-            if (plan.take_profit - state.position.take_profit).abs() > f64::EPSILON {
+            if (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON {
                 let previous_tp = state.position.take_profit;
-                state.position.take_profit = plan.take_profit;
-                notes.push(format!("tp-reprice={:.4}", plan.take_profit));
-                notes.push(format!("source={}", plan.source.as_str()));
+                state.position.take_profit = plan.take_profit.price();
+                notes.push(format!("tp-reprice={:.4}", plan.take_profit.price()));
+                notes.push(format!("source={}", plan.take_profit.source_label()));
                 record_tp_reprice(
                     state,
                     input,
                     side,
                     previous_tp,
-                    plan.take_profit,
+                    plan.take_profit.price(),
                     "tp-reprice",
-                    plan.source.as_str(),
+                    plan.take_profit.source_label(),
                     virtual_sl_hit,
                     format!(
                         "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|mark={}|tick={:.4}",
@@ -456,12 +456,12 @@ fn ensure_active_exit_order(
                 let note = tp_reprice_order_note(
                     state,
                     tick,
-                    &format!("tp:reprice|{}", plan.source.as_str()),
+                    &format!("{}|reprice", plan.take_profit.order_note()),
                 );
                 let order = tp_limit_order(
                     direction,
                     qty,
-                    plan.take_profit,
+                    plan.take_profit.price(),
                     &state.position.tp_mark,
                     Some(&note),
                 );

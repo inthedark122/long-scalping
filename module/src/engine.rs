@@ -236,7 +236,7 @@ fn handle_new_position(
     };
     let mut tp_orders = Vec::new();
     if let Some(plan) = plan {
-        state.position.take_profit = plan.take_profit;
+        state.position.take_profit = plan.take_profit.price();
         state.position.stop_loss = plan.stop_loss;
         let qty = input
             .positions
@@ -246,11 +246,11 @@ fn handle_new_position(
             .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
             .unwrap_or(0.0);
         if qty > 0.0 {
-            let note = Some(format!("tp:{}", plan.source.as_str()));
+            let note = Some(plan.take_profit.order_note());
             tp_orders.push(tp_limit_order(
                 direction,
                 qty,
-                plan.take_profit,
+                plan.take_profit.price(),
                 &state.position.tp_mark,
                 note.as_deref(),
             ));
