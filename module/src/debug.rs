@@ -16,8 +16,8 @@ pub fn render(
     tick_size: f64,
 ) -> String {
     let vt = &state.vlines[4];
-    let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close, tick_size);
-    let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close, tick_size);
+    let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
+    let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let pending_entry = state
         .movement_entry_pending
@@ -198,19 +198,15 @@ fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64
     )
 }
 
-fn format_cascade(cascade: &CascadeSignal, price: f64, tick_size: f64) -> String {
+fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
     let cascade_avg_pct = if price > 0.0 {
         cascade.average_size / price * 100.0
     } else {
         0.0
     };
     format!(
-        "{:?}:{}:avg={:.2}%:s={:.2}:b={}",
-        cascade.phase,
-        cascade.dir,
-        cascade_avg_pct,
-        cascade.strength,
-        fmt_price_tick(cascade.break_price, tick_size),
+        "{:?}:{}:avg={:.2}%",
+        cascade.phase, cascade.dir, cascade_avg_pct,
     )
 }
 
