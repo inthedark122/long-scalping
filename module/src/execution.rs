@@ -146,8 +146,8 @@ fn active_position<'a>(
 fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
     active_position(input, side)
         .map(|position| {
-            if position.qty > 0.0 {
-                position.qty
+            if position.qty != 0.0 {
+                position.qty.abs()
             } else if position.notional > 0.0 {
                 (position.notional / input.price.max(f64::EPSILON)).max(0.0)
             } else {
@@ -888,6 +888,19 @@ mod tests {
         assert!(second.open_positions.is_empty());
         assert_eq!(second.close_positions.len(), 1);
         assert!(second.update_positions.is_empty());
+    }
+
+    #[test]
+    fn short_position_exit_uses_absolute_raw_quantity() {
+        let mut input = input();
+        input.positions.short = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 9.9,
+            pnl: 0.0,
+            qty: -0.1,
+        });
+
+        assert_eq!(position_qty(&input, PositionState::Short), 0.1);
     }
 
     #[test]
