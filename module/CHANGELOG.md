@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.52
+
+Execution safety release.
+
+- Disabled the SugInfo exit pattern so exits use movement, sideway, or structural plans.
+- Removed the unused cascade argument from execution evaluation.
+- Returned missing execution results as errors in the test evaluation helper instead of panicking.
+
 # 1.0.51
 
 Debug and execution fixes release.
