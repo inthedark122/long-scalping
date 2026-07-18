@@ -87,22 +87,6 @@ pub fn render(
             format_execution_text(decision, tick_size)
         ));
     }
-    if let EntryGate::Wait(wait) = &decision.entry {
-        let mut text = format!("wait:{}", wait.reason);
-        if !wait.solutions.is_empty() {
-            let solutions = wait
-                .solutions
-                .iter()
-                .map(format_entry_wait_solution)
-                .collect::<Vec<_>>()
-                .join(";");
-            text.push_str(&format!(" sol=[{}]", solutions));
-        }
-        if !wait.notes.is_empty() {
-            text.push_str(&format!(" notes={}", wait.notes.join("|")));
-        }
-        parts.push(format!("gate={text}"));
-    }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));
     }
@@ -122,7 +106,7 @@ fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
             wait.reason,
             wait.solutions
                 .first()
-                .map(format_entry_wait_solution)
+                .map(|solution| format_entry_wait_solution(solution, tick_size))
                 .unwrap_or_else(|| "wait".to_string())
         ),
         EntryGate::Open { reason, .. } => match reason {
@@ -135,7 +119,10 @@ fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
     }
 }
 
-fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> String {
+fn format_entry_wait_solution(
+    solution: &crate::model::EntryWaitSolution,
+    tick_size: f64,
+) -> String {
     match solution {
         crate::model::EntryWaitSolution::WaitForSamples { required, current } => {
             format!("samples:{current}/{required}")
@@ -144,7 +131,12 @@ fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> Str
             source,
             direction,
             break_price,
-        } => format!("dir-break:{}:{:?}@{break_price}", source, direction),
+        } => format!(
+            "dir-break:{}:{:?}@{}",
+            source,
+            direction,
+            fmt_price_tick(*break_price, tick_size)
+        ),
         crate::model::EntryWaitSolution::WaitForConfirmation {
             source,
             direction,
@@ -152,14 +144,23 @@ fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> Str
             price,
         } => format!(
             "confirm:{}:{:?}:armed={}:price={}",
-            source, direction, armed_tick, price
+            source,
+            direction,
+            armed_tick,
+            fmt_price_tick(*price, tick_size)
         ),
         crate::model::EntryWaitSolution::ReclaimLevel {
             source,
             level,
             band_low,
             band_high,
-        } => format!("reclaim:{}:{}[{}..{}]", source, level, band_low, band_high),
+        } => format!(
+            "reclaim:{}:{}[{}..{}]",
+            source,
+            fmt_price_tick(*level, tick_size),
+            fmt_price_tick(*band_low, tick_size),
+            fmt_price_tick(*band_high, tick_size)
+        ),
         crate::model::EntryWaitSolution::ReclaimDpsignal {
             source,
             anchor,
@@ -168,7 +169,11 @@ fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> Str
             band_high,
         } => format!(
             "dpsignal:{}:{} dist={:.2}% [{}..{}]",
-            source, anchor, distance_pct, band_low, band_high
+            source,
+            fmt_price_tick(*anchor, tick_size),
+            distance_pct,
+            fmt_price_tick(*band_low, tick_size),
+            fmt_price_tick(*band_high, tick_size)
         ),
         crate::model::EntryWaitSolution::FastCandle {
             phase,
@@ -338,9 +343,7 @@ mod tests {
             1.0,
         );
 
-        assert!(debug.contains(
-            "gate=wait:sug-info-pullback-wait sol=[reclaim:mrc-window:99[98..100]] notes=forced-pullback"
-        ));
+        assert!(!debug.contains("gate="));
         assert!(debug.contains(
             "exec=entry-wait reason=sug-info-pullback-wait expect=reclaim:mrc-window:99[98..100]"
         ));
