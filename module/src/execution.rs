@@ -1,6 +1,6 @@
 use crate::builder::{ensure_runtime_builder, BuiltStrategy};
 use crate::detection::cascade::CascadeSignal;
-use crate::format::{fmt_duration_ms, fmt_price, fmt_qty};
+use crate::format::{fmt_duration_ms, fmt_price_tick, fmt_qty};
 use crate::exit;
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
@@ -39,6 +39,7 @@ fn open_note(
     side: Direction,
     amount: f64,
     price: f64,
+    tick_size: f64,
     decision: &TradeDecision,
     state: &EngineState,
 ) -> String {
@@ -76,11 +77,11 @@ fn open_note(
         })
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "open {} because {} reason={} price={:.4} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        "open {} because {} reason={} price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
         entry_note,
         reason_note,
-        price,
+        fmt_price_tick(price, tick_size),
         amount,
         state.cfg.cap_init,
         state.cfg.trading_amount,
@@ -88,10 +89,14 @@ fn open_note(
     )
 }
 
-fn close_reason(reason: &str, state: &EngineState, price: f64) -> String {
+fn close_reason(reason: &str, state: &EngineState, price: f64, tick_size: f64) -> String {
     format!(
-        "close because {} price={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
-        reason, price, state.cfg.cap_init, state.cfg.trading_amount, state.trade_budget
+        "close because {} price={} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        reason,
+        fmt_price_tick(price, tick_size),
+        state.cfg.cap_init,
+        state.cfg.trading_amount,
+        state.trade_budget
     )
 }
 
@@ -104,7 +109,12 @@ fn is_forced_pullback_open(decision: &TradeDecision) -> bool {
     )
 }
 
-fn position_snapshot(input: &ModuleInput, state: &EngineState, side: PositionState) -> String {
+fn position_snapshot(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+    tick_size: f64,
+) -> String {
     let position = active_position(input, side);
     let raw_qty = position.map(|position| position.qty).unwrap_or(0.0);
     let notional = position.map(|position| position.notional).unwrap_or(0.0);
@@ -115,11 +125,11 @@ fn position_snapshot(input: &ModuleInput, state: &EngineState, side: PositionSta
         side,
         fmt_qty(raw_qty),
         fmt_qty(abs_qty),
-        fmt_price(notional),
-        fmt_price(pnl),
-        fmt_price(state.position.entry_price),
-        fmt_price(state.position.take_profit),
-        fmt_price(state.position.stop_loss),
+        fmt_price_tick(notional, tick_size),
+        fmt_price_tick(pnl, tick_size),
+        fmt_price_tick(state.position.entry_price, tick_size),
+        fmt_price_tick(state.position.take_profit, tick_size),
+        fmt_price_tick(state.position.stop_loss, tick_size),
         state.position.exit_mode.as_str(),
         match state.position.entry_reason.as_ref() {
             Some(reason) => fmt_duration_ms(reason.started_at_ms()),
@@ -460,11 +470,21 @@ pub fn evaluate_with_cascade(
             close_positions: vec![
                 close(
                     Direction::Long,
-                    &close_reason("one-position-invariant", state, input.price),
+                    &close_reason(
+                        "one-position-invariant",
+                        state,
+                        input.price,
+                        tick_size(input),
+                    ),
                 ),
                 close(
                     Direction::Short,
-                    &close_reason("one-position-invariant", state, input.price),
+                    &close_reason(
+                        "one-position-invariant",
+                        state,
+                        input.price,
+                        tick_size(input),
+                    ),
                 ),
             ],
             cancel_orders: vec![tp_mark(Direction::Long), tp_mark(Direction::Short)],
@@ -482,13 +502,13 @@ pub fn evaluate_with_cascade(
                     Direction::Long,
                     &format!(
                         "{} {}",
-                        close_reason("direction-changed", state, input.price),
-                        position_snapshot(input, state, PositionState::Long)
+                        close_reason("direction-changed", state, input.price, tick_size(input)),
+                        position_snapshot(input, state, PositionState::Long, tick_size(input))
                     ),
                 )],
                 note: format!(
                     "close-long direction-changed {}",
-                    position_snapshot(input, state, PositionState::Long)
+                    position_snapshot(input, state, PositionState::Long, tick_size(input))
                 ),
                 ..Default::default()
             };
@@ -518,13 +538,13 @@ pub fn evaluate_with_cascade(
                     Direction::Short,
                     &format!(
                         "{} {}",
-                        close_reason("direction-changed", state, input.price),
-                        position_snapshot(input, state, PositionState::Short)
+                        close_reason("direction-changed", state, input.price, tick_size(input)),
+                        position_snapshot(input, state, PositionState::Short, tick_size(input))
                     ),
                 )],
                 note: format!(
                     "close-short direction-changed {}",
-                    position_snapshot(input, state, PositionState::Short)
+                    position_snapshot(input, state, PositionState::Short, tick_size(input))
                 ),
                 ..Default::default()
             };
@@ -669,22 +689,36 @@ pub fn evaluate_with_cascade(
     };
     match decision.market_state {
         MarketState::Long => ExecutionResult {
-            open_positions: vec![limit_open(
-                Direction::Long,
-                amount,
-                entry_price,
-                &open_note(Direction::Long, amount, entry_price, decision, state),
-            )],
+                open_positions: vec![limit_open(
+                    Direction::Long,
+                    amount,
+                    entry_price,
+                    &open_note(
+                        Direction::Long,
+                        amount,
+                        entry_price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )],
             note: format!("open-long-{}", entry_tag),
             ..Default::default()
         },
         MarketState::Short => ExecutionResult {
-            open_positions: vec![limit_open(
-                Direction::Short,
-                amount,
-                entry_price,
-                &open_note(Direction::Short, amount, entry_price, decision, state),
-            )],
+                open_positions: vec![limit_open(
+                    Direction::Short,
+                    amount,
+                    entry_price,
+                    &open_note(
+                        Direction::Short,
+                        amount,
+                        entry_price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )],
             note: format!("open-short-{}", entry_tag),
             ..Default::default()
         },

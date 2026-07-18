@@ -1,5 +1,5 @@
 use crate::detection::{cascade::CascadeSignal, sideways};
-use crate::format::fmt_metric;
+use crate::format::{fmt_metric, fmt_price_tick};
 use crate::model::{IndicatorSnapshot, RegimeSnapshot, TradeDecision};
 use crate::state::EngineState;
 
@@ -11,18 +11,22 @@ pub fn render(
     cascade_sug: &CascadeSignal,
     decision: &TradeDecision,
     execution_note: &str,
+    tick_size: f64,
 ) -> String {
     let vt = &state.vlines[4];
-    let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
-    let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close);
+    let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close, tick_size);
+    let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close, tick_size);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let pending_entry = state
         .movement_entry_pending
         .as_ref()
         .map(|pending| {
             format!(
-                "{:?}:armed={} price={:.4} reason={}",
-                pending.direction, pending.armed_tick, pending.price, pending.reason
+                "{:?}:armed={} price={} reason={}",
+                pending.direction,
+                pending.armed_tick,
+                fmt_price_tick(pending.price, tick_size),
+                pending.reason
             )
         })
         .unwrap_or_else(|| "na".to_string());
@@ -35,23 +39,26 @@ pub fn render(
     };
     let mut parts = vec![
         format!("t={}", state.ticks),
-        format!("p={:.4}", snapshot.tf1m.candle.close),
+        format!("p={}", fmt_price_tick(snapshot.tf1m.candle.close, tick_size)),
         format!("mode={}", state.cfg.trade_mode.as_str()),
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
         format!("15m_fb={}", regime.fallback_used),
         format!("1h={:?}", regime.context_1h),
-        format!("dir_lock={}", state.direction_lock.label()),
+        format!(
+            "dir_lock={}",
+            format_direction_lock(&state.direction_lock, tick_size)
+        ),
         format!("pending={}", pending_entry),
         format!(
             "sideway={}",
             if sideway.active {
                 format!(
-                    "on:{:?} bias={} block={:.4}-{:.4} {}",
+                    "on:{:?} bias={} block={}-{} {}",
                     sideway.source,
                     sideway.price_bias,
-                    sideway.block_low,
-                    sideway.block_high,
+                    fmt_price_tick(sideway.block_low, tick_size),
+                    fmt_price_tick(sideway.block_high, tick_size),
                     sideway.reason
                 )
             } else {
@@ -96,15 +103,34 @@ fn format_entry_gate(entry: &crate::model::EntryGate) -> Option<String> {
     }
 }
 
-fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
+fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64) -> String {
+    if lock.direction == crate::model::MarketState::Sideways {
+        return "na".to_string();
+    }
+    if lock.break_price <= 0.0 {
+        return format!("{:?}:na:{}", lock.direction, lock.reason);
+    }
+    format!(
+        "{:?}:{}:{}",
+        lock.direction,
+        fmt_price_tick(lock.break_price, tick_size),
+        lock.reason
+    )
+}
+
+fn format_cascade(cascade: &CascadeSignal, price: f64, tick_size: f64) -> String {
     let cascade_avg_pct = if price > 0.0 {
         cascade.average_size / price * 100.0
     } else {
         0.0
     };
     format!(
-        "{:?}:{}:avg={:.2}%:s={:.2}:b={:.4}",
-        cascade.phase, cascade.dir, cascade_avg_pct, cascade.strength, cascade.break_price,
+        "{:?}:{}:avg={:.2}%:s={:.2}:b={}",
+        cascade.phase,
+        cascade.dir,
+        cascade_avg_pct,
+        cascade.strength,
+        fmt_price_tick(cascade.break_price, tick_size),
     )
 }
 
@@ -199,6 +225,7 @@ mod tests {
             &cascade(1),
             &decision(),
             "exec=hold-long",
+            0.01,
         );
 
         assert!(debug.contains("mode=single"));
@@ -246,6 +273,7 @@ mod tests {
             &cascade(1),
             &decision(),
             "exec=hold-long",
+            0.01,
         );
 
         assert!(debug.contains("mode=martingale"));

@@ -659,6 +659,7 @@ fn process_realtime(
             &cas_sug,
             &decision,
             &execution_summary,
+            input.symbol_info.price_tick_size,
         ),
         ..Default::default()
     }
