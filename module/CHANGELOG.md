@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.47
+
+Direction history observer release.
+
+- Moved direction-change tracking into a dedicated observer module so runtime state stays simpler.
+- Recorded direction-change intervals, rolling averages, and per-change min/max prices for debug tracing.
+- Kept the existing entry and exit behavior unchanged while surfacing the new history summary in the debug line.
+
 # 1.0.46
 
 MRC window release.
