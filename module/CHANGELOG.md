@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.50
+
+Strategy fixes release.
+
+- Removed obsolete entry timing metadata and contextual entry reasons.
+- Fixed forced pullback orders to use the planned MRC entry price.
+- Restored direction-change closes for Single mode and fixed indicator/test coverage.
+
 # 1.0.49
 
 Execution note cleanup release.

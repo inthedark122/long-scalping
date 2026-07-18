@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.49",
+      "module_version": "1.0.50",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.49"
+          "module_version": "1.0.50"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.49 execution cleanup release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module keeps blocker reasons explicit, routes notes into order/position notes, and keeps the main debug line compact.",
+      "description": "Start the 1.0.50 strategy fixes release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module keeps blocker reasons explicit, routes notes into order/position notes, and uses the planned pullback entry price.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.48",
+    "version": "1.0.50",
     "defaults": {}
   }
 }
