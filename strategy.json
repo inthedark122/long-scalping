@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.52",
+      "module_version": "1.0.53",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.52"
+          "module_version": "1.0.53"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.52 execution safety release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module disables the SugInfo exit pattern, keeps entry-wait logs concise, formats prices by tick size, and tracks TP repricing per position.",
+      "description": "Start the 1.0.53 typed take-profit release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module includes structural level names in TP notes, disables the SugInfo exit pattern, and tracks TP repricing per position.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.52",
+    "version": "1.0.53",
     "defaults": {}
   }
 }

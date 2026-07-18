@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.53
+
+Typed take-profit release.
+
+- Represented take-profit plans as typed structural, movement, sideway, or martingale values.
+- Included the selected structural level name in TP order notes.
+- Centralized TP order-note rendering and removed duplicated structural TP metadata.
+
 # 1.0.52
 
 Execution safety release.
