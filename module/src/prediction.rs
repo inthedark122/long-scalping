@@ -672,40 +672,23 @@ fn sug_entry_gate(
         }));
     };
     let (entry, target) = match side {
-        PositionState::Long if matches!(window.side, levels::MrcPriceZoneSide::Lower) => {
-            (window.lower, window.upper)
-        }
-        PositionState::Short if matches!(window.side, levels::MrcPriceZoneSide::Upper) => {
-            (window.upper, window.lower)
-        }
+        PositionState::Long => (window.lower, window.upper),
+        PositionState::Short => (window.upper, window.lower),
         PositionState::Flat => return None,
-        _ => {
-            return Some(EntryGate::Wait(EntryWait {
-                reason: "mrc-window-mismatch".to_string(),
-                solutions: vec![EntryWaitSolution::WaitForCooling {
-                    note: format!(
-                        "window={:.4}-{:.4} dist={:?}",
-                        window.lower, window.upper, window.distance
-                    ),
-                }],
-                notes: vec![
-                    "sug-info default scalping path".to_string(),
-                    format!("price={:.4}", price),
-                    format!(
-                        "mrc_window={:.4}-{:.4} dist={:?}",
-                        window.lower, window.upper, window.distance
-                    ),
-                ],
-            }));
-        }
     };
+    let two_line_zone = matches!(window.distance, levels::MrcLineDistance::Two);
     let band = mrc_window_band(&window);
-    let near_entry = (price - entry).abs() <= band;
+    let near_entry = two_line_zone || (price - entry).abs() <= band;
 
     if near_entry {
         Some(EntryGate::Open {
             notes: vec![
                 "sug-info-scalp".to_string(),
+                if two_line_zone {
+                    "mrc-two-line-eligible".to_string()
+                } else {
+                    "mrc-one-line-eligible".to_string()
+                },
                 format!("entry={:.4}", entry),
                 format!("tp={:.4}", target),
                 format!("band={:.4}", band),
@@ -728,6 +711,11 @@ fn sug_entry_gate(
             notes: vec![
                 "sug-info-scalp".to_string(),
                 "forced-pullback".to_string(),
+                if two_line_zone {
+                    "mrc-two-line-eligible".to_string()
+                } else {
+                    "mrc-one-line-eligible".to_string()
+                },
                 format!("force_pct={:.2}", state.cfg.pullback_amount),
                 format!("entry={:.4}", price),
                 format!("pullback_entry={:.4}", entry),
@@ -1171,6 +1159,30 @@ mod tests {
         assert!(plan.is_some());
         let plan = plan.expect("forced pullback plan");
         assert!(plan.notes.iter().any(|note| note == "forced-pullback"));
+    }
+
+    #[test]
+    fn two_line_mrc_zone_opens_immediately() {
+        let mut state = EngineState::default();
+        let cascade = CascadeSignal {
+            dir: 1,
+            samples: 30,
+            ..Default::default()
+        };
+        let gate = entry_gate(
+            &snapshot_with_close(80.0),
+            &sug_snapshot(),
+            &cascade,
+            &mut state,
+            PositionState::Long,
+        );
+
+        match gate {
+            EntryGate::Open { notes } => {
+                assert!(notes.iter().any(|note| note == "mrc-two-line-eligible"));
+            }
+            EntryGate::Wait(wait) => panic!("unexpected wait: {}", wait.reason),
+        }
     }
 
     #[test]
