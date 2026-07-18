@@ -278,6 +278,9 @@ fn created_position_update(
         .map(|reason| reason.price())
         .filter(|price| *price > 0.0)
         .unwrap_or(input.price);
+    if (state.position.entry_price - desired_price).abs() <= f64::EPSILON {
+        return None;
+    }
     state.position.entry_price = desired_price;
     Some(update_position(direction, Some(desired_price)))
 }
@@ -544,7 +547,7 @@ pub fn evaluate_with_cascade(
         });
     }
 
-    if input.positions.long.is_some() {
+    if let Some(long_position) = input.positions.long.as_ref() {
         if direction_changed(PositionState::Long, decision.market_state)
             && builder.should_close_on_direction_change(input, state)
         {
@@ -557,6 +560,18 @@ pub fn evaluate_with_cascade(
                         position_snapshot(input, state, PositionState::Long, tick_size(input))
                     ),
                 )],
+                ..Default::default()
+            });
+        }
+        if !has_active_position(Some(long_position)) {
+            if matches!(decision.entry, EntryGate::Wait(_)) {
+                return cancel_pending_entry(input, state, PositionState::Long);
+            }
+            state.position.entry_reason = entry_reason(decision).cloned();
+            return Some(ExecutionResult {
+                update_positions: created_position_update(input, state, PositionState::Long)
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             });
         }
@@ -575,7 +590,7 @@ pub fn evaluate_with_cascade(
         });
     }
 
-    if input.positions.short.is_some() {
+    if let Some(short_position) = input.positions.short.as_ref() {
         if direction_changed(PositionState::Short, decision.market_state)
             && builder.should_close_on_direction_change(input, state)
         {
@@ -588,6 +603,18 @@ pub fn evaluate_with_cascade(
                         position_snapshot(input, state, PositionState::Short, tick_size(input))
                     ),
                 )],
+                ..Default::default()
+            });
+        }
+        if !has_active_position(Some(short_position)) {
+            if matches!(decision.entry, EntryGate::Wait(_)) {
+                return cancel_pending_entry(input, state, PositionState::Short);
+            }
+            state.position.entry_reason = entry_reason(decision).cloned();
+            return Some(ExecutionResult {
+                update_positions: created_position_update(input, state, PositionState::Short)
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             });
         }
@@ -888,6 +915,32 @@ mod tests {
         assert!(second.open_positions.is_empty());
         assert_eq!(second.close_positions.len(), 1);
         assert!(second.update_positions.is_empty());
+    }
+
+    #[test]
+    fn created_position_updates_entry_until_filled() {
+        let mut state = EngineState::default();
+        let mut pending_input = input();
+        pending_input.positions.long = Some(ModulePositionSummary {
+            entry_price: 99.0,
+            notional: 0.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+
+        let result = evaluate(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        )
+        .expect("created position should return an execution result");
+
+        assert!(result.open_positions.is_empty());
+        assert!(result.close_positions.is_empty());
+        assert_eq!(result.update_positions.len(), 1);
+        assert_eq!(result.update_positions[0].enter_price, Some(100.0));
     }
 
     #[test]
