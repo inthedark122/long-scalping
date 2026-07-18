@@ -301,8 +301,9 @@ pub fn merge_indicator_snapshot(
     }
 
     for timeframe in timeframes {
-        let tf = timeframe_from_secs(*timeframe)
-            .ok_or_else(|| format!("unsupported-timeframe tf={}", timeframe))?;
+        let Some(tf) = timeframe_from_secs(*timeframe) else {
+            continue;
+        };
         let tf_snapshot = build_timeframe(history, raw, tf)?;
         match tf {
             TF_1M => snapshot.tf1m = tf_snapshot,
