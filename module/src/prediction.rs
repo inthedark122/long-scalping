@@ -975,7 +975,7 @@ pub fn entry_gate(
             reason: format!(
                 "tp-unreliable tp={:.4} sl={:.4}",
                 plan.take_profit.price(),
-                plan.stop_loss
+                plan.stop_loss.price()
             ),
             solutions: vec![
                 EntryWaitSolution::ReclaimDpsignal {
@@ -1002,7 +1002,7 @@ pub fn entry_gate(
             ],
             notes: vec![
                 format!("tp={:.4}", plan.take_profit.price()),
-                format!("sl={:.4}", plan.stop_loss),
+                format!("sl={:.4}", plan.stop_loss.price()),
                 format!("tp_reliable={}", plan.tp_reliable),
                 state.exit_memory.summary(),
             ],
@@ -1031,7 +1031,7 @@ pub fn entry_gate(
             }],
             notes: vec![
                 format!("tp={:.4}", plan.take_profit.price()),
-                format!("sl={:.4}", plan.stop_loss),
+                format!("sl={:.4}", plan.stop_loss.price()),
                 state.exit_memory.summary(),
             ],
         });
@@ -1041,7 +1041,7 @@ pub fn entry_gate(
         notes: vec![format!(
             "tp={:.4} sl={:.4} tp_reliable={}",
             plan.take_profit.price(),
-            plan.stop_loss,
+            plan.stop_loss.price(),
             plan.tp_reliable
         )],
         reason: EntryOpenReason::Entry(EntryReason::Structural {

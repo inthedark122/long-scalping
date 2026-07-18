@@ -95,6 +95,16 @@ pub fn render(
             format_execution_text(decision, tick_size)
         ));
     }
+    if state.position.side != PositionState::Flat
+        && state.position.stop_loss > 0.0
+        && !state.position.stop_loss_reason.is_empty()
+    {
+        parts.push(format!(
+            "sl={} reason={}",
+            fmt_price_tick(state.position.stop_loss, tick_size),
+            state.position.stop_loss_reason
+        ));
+    }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));
     }
@@ -301,6 +311,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
+            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
@@ -409,6 +420,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
+            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
@@ -427,6 +439,7 @@ mod tests {
         );
 
         assert!(!debug.contains("exec="));
+        assert!(debug.contains("sl=99 reason=structural"));
     }
 
     #[test]
@@ -440,6 +453,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
+            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),

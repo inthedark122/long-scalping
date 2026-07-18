@@ -326,7 +326,8 @@ fn initialize_exit_plan(
         )?
     };
     state.position.take_profit = plan.take_profit.price();
-    state.position.stop_loss = plan.stop_loss;
+    state.position.stop_loss = plan.stop_loss.price();
+    state.position.stop_loss_reason = plan.stop_loss.reason();
     state.position.exit_tp_reliable = plan.tp_reliable;
     state.position.exit_mode = ExitMode::Structural;
     if state.position.tp_mark.is_empty() {
@@ -702,7 +703,8 @@ pub fn evaluate_with_cascade(
                 last_filled_mark: None,
             });
             state.position.take_profit = 0.0;
-            state.position.stop_loss = plan.stop_loss;
+            state.position.stop_loss = plan.stop_loss.price();
+            state.position.stop_loss_reason = plan.stop_loss.reason();
             state.position.exit_mode = ExitMode::Structural;
             return Some(ExecutionResult {
                 open_positions: vec![plan.open_position],
@@ -1522,6 +1524,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 0.0,
             stop_loss: 0.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
@@ -1582,6 +1585,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 97.5,
             stop_loss: 100.5,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
@@ -1643,6 +1647,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 100.2,
             stop_loss: 99.5,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::TrailAfterVirtualSl,
             tp_mark: "tp-long".to_string(),
@@ -1709,6 +1714,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 100.2,
             stop_loss: 99.5,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::TrailAfterVirtualSl,
             tp_mark: "tp-long".to_string(),
@@ -1780,6 +1786,7 @@ mod tests {
             trough_price: 100.0,
             take_profit: 0.0,
             stop_loss: 0.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
@@ -1816,6 +1823,7 @@ mod tests {
             trough_price: 99.5,
             take_profit: 101.0,
             stop_loss: 99.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),

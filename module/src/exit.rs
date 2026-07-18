@@ -6,8 +6,50 @@ use crate::stop_loss;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExitPlan {
     pub take_profit: TakeProfit,
-    pub stop_loss: f64,
+    pub stop_loss: StopLoss,
     pub tp_reliable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StopLoss {
+    Structural {
+        level: levels::LevelPoint,
+    },
+    Sideway {
+        price: f64,
+    },
+    SupportBreak {
+        price: f64,
+    },
+    Martingale {
+        break_price: f64,
+        distance: f64,
+        price: f64,
+    },
+}
+
+impl StopLoss {
+    pub fn price(self) -> f64 {
+        match self {
+            Self::Structural { level } => level.value,
+            Self::Sideway { price }
+            | Self::SupportBreak { price }
+            | Self::Martingale { price, .. } => price,
+        }
+    }
+
+    pub fn reason(self) -> String {
+        match self {
+            Self::Structural { level } => format!("structural:{}", level.label()),
+            Self::Sideway { .. } => "sideway:block-edge".to_string(),
+            Self::SupportBreak { .. } => "support-break".to_string(),
+            Self::Martingale {
+                break_price,
+                distance,
+                ..
+            } => format!("martingale:support-break@{break_price:.4}:distance={distance:.4}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,16 +152,20 @@ fn movement_plan(
 
     let (structural_take_profit_level, structural_stop_loss_level) = structural?;
     let structural_take_profit = structural_take_profit_level.value;
-    let structural_stop_loss = structural_stop_loss_level.value;
-    let support_stop =
-        stop_loss::support_break_level(snapshot, side, None).unwrap_or(structural_stop_loss);
+    let stop_loss = stop_loss::support_break_level(snapshot, side, None)
+        .map(|price| StopLoss::SupportBreak {
+            price: price.max(f64::EPSILON),
+        })
+        .unwrap_or(StopLoss::Structural {
+            level: structural_stop_loss_level,
+        });
 
     let plan = match side {
         PositionState::Long => ExitPlan {
             take_profit: TakeProfit::Movement {
                 price: clamp_take_profit(price, side, price + tp_distance, structural_take_profit),
             },
-            stop_loss: support_stop.max(f64::EPSILON),
+            stop_loss,
             tp_reliable: true,
         },
         PositionState::Short => ExitPlan {
@@ -131,16 +177,16 @@ fn movement_plan(
                     structural_take_profit,
                 ),
             },
-            stop_loss: support_stop.max(f64::EPSILON),
+            stop_loss,
             tp_reliable: true,
         },
         PositionState::Flat => return None,
     };
 
     if plan.take_profit.price().is_finite()
-        && plan.stop_loss.is_finite()
+        && plan.stop_loss.price().is_finite()
         && plan.take_profit.price() > 0.0
-        && plan.stop_loss > 0.0
+        && plan.stop_loss.price() > 0.0
     {
         Some(plan)
     } else {
@@ -179,7 +225,7 @@ fn sideway_plan(reason: &EntryReason, side: PositionState) -> Option<ExitPlan> {
 
     Some(ExitPlan {
         take_profit: TakeProfit::Sideway { price: take_profit },
-        stop_loss,
+        stop_loss: StopLoss::Sideway { price: stop_loss },
         tp_reliable: true,
     })
 }
@@ -218,7 +264,7 @@ fn compute(
 
             Some(ExitPlan {
                 take_profit: TakeProfit::Structural { level: raw_tp },
-                stop_loss: raw_sl.value,
+                stop_loss: StopLoss::Structural { level: raw_sl },
                 tp_reliable: true,
             })
         }
@@ -232,7 +278,7 @@ fn compute(
 
             Some(ExitPlan {
                 take_profit: TakeProfit::Structural { level: raw_tp },
-                stop_loss: raw_sl.value,
+                stop_loss: StopLoss::Structural { level: raw_sl },
                 tp_reliable: true,
             })
         }
@@ -256,7 +302,7 @@ pub fn describe(plan: Option<ExitPlan>) -> String {
         Some(plan) => format!(
             "tp={:.4} sl={:.4} src={} tp_note={}",
             plan.take_profit.price(),
-            plan.stop_loss,
+            plan.stop_loss.price(),
             plan.take_profit.source_label(),
             if plan.tp_reliable {
                 "reliable"
@@ -317,7 +363,7 @@ mod tests {
         };
         let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Long, None).unwrap();
         assert!(plan.take_profit.price() > 100.0);
-        assert!(plan.stop_loss < 100.0);
+        assert!(plan.stop_loss.price() < 100.0);
     }
 
     #[test]
@@ -337,7 +383,7 @@ mod tests {
         };
         let plan = plan(&snapshot, &sug, &cascade, 100.0, PositionState::Short, None).unwrap();
         assert!(plan.take_profit.price() < 100.0);
-        assert!(plan.stop_loss > 100.0);
+        assert!(plan.stop_loss.price() > 100.0);
     }
 
     #[test]
@@ -403,6 +449,6 @@ mod tests {
         .unwrap();
         assert!(matches!(plan.take_profit, TakeProfit::Sideway { .. }));
         assert!(plan.take_profit.price() >= 102.0);
-        assert!(plan.stop_loss < 98.0);
+        assert!(plan.stop_loss.price() < 98.0);
     }
 }

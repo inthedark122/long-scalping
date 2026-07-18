@@ -182,6 +182,7 @@ fn handle_new_position(
         trough_price: input.price.min(entry_price),
         take_profit: 0.0,
         stop_loss: 0.0,
+        stop_loss_reason: String::new(),
         exit_tp_reliable: false,
         exit_mode: ExitMode::Structural,
         tp_mark: tp_mark(direction),
@@ -237,7 +238,8 @@ fn handle_new_position(
     let mut tp_orders = Vec::new();
     if let Some(plan) = plan {
         state.position.take_profit = plan.take_profit.price();
-        state.position.stop_loss = plan.stop_loss;
+        state.position.stop_loss = plan.stop_loss.price();
+        state.position.stop_loss_reason = plan.stop_loss.reason();
         let qty = input
             .positions
             .long
@@ -365,6 +367,7 @@ mod tests {
             trough_price: 100.0,
             take_profit: 0.0,
             stop_loss: 0.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
@@ -412,6 +415,7 @@ mod tests {
             trough_price: 100.0,
             take_profit: 0.0,
             stop_loss: 0.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
@@ -454,6 +458,7 @@ mod tests {
             trough_price: 100.0,
             take_profit: 0.0,
             stop_loss: 0.0,
+            stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),

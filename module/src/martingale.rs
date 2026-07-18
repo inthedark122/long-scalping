@@ -1,4 +1,4 @@
-use crate::exit::{ExitPlan, TakeProfit};
+use crate::exit::{ExitPlan, StopLoss, TakeProfit};
 use crate::model::{EntryReason, IndicatorSnapshot, MarketState, PositionState};
 use crate::orders::{limit_order, market_open};
 use crate::state::EngineState;
@@ -49,7 +49,7 @@ pub struct MartingaleEntryPlan {
     pub profile: LadderProfile,
     pub base_price: f64,
     pub open_position: ModuleOpenPosition,
-    pub stop_loss: f64,
+    pub stop_loss: StopLoss,
     pub orders: Vec<ModulePlaceOrder>,
     pub notes: Vec<String>,
 }
@@ -131,7 +131,7 @@ pub fn entry_plan(
         });
     let ladder_range = step * ladder_orders as f64;
     let range_stop = ladder_range * STOP_BREAK_MULTIPLIER;
-    let stop_loss = match side {
+    let stop_loss_price = match side {
         MarketState::Long => (support_break - range_stop).max(f64::EPSILON),
         MarketState::Short => (support_break + range_stop).max(f64::EPSILON),
         MarketState::Sideways => return None,
@@ -146,7 +146,7 @@ pub fn entry_plan(
         format!("step={:.2}%", profile.step_pct),
         format!("tp={:.2}%", profile.take_profit_pct),
         format!("base={:.4}", base_price),
-        format!("sl={:.4}", stop_loss),
+        format!("sl={:.4}", stop_loss_price),
         format!("ladder-orders={}", orders.len()),
     ];
 
@@ -155,7 +155,11 @@ pub fn entry_plan(
         profile,
         base_price,
         open_position,
-        stop_loss,
+        stop_loss: StopLoss::Martingale {
+            break_price: support_break,
+            distance: range_stop,
+            price: stop_loss_price,
+        },
         orders,
         notes,
     })
@@ -235,7 +239,7 @@ pub fn exit_plan(
 
         return Some(ExitPlan {
             take_profit: TakeProfit::Sideway { price: take_profit },
-            stop_loss,
+            stop_loss: StopLoss::Sideway { price: stop_loss },
             tp_reliable: true,
         });
     }
@@ -269,7 +273,11 @@ pub fn exit_plan(
 
     Some(ExitPlan {
         take_profit: TakeProfit::Martingale { price: take_profit },
-        stop_loss,
+        stop_loss: StopLoss::Martingale {
+            break_price,
+            distance: stop_distance,
+            price: stop_loss,
+        },
         tp_reliable: true,
     })
 }
@@ -341,7 +349,7 @@ mod tests {
         assert!((first - open).abs() < f64::EPSILON);
         assert!((second - first * 2.0).abs() < f64::EPSILON);
         assert!(plan.orders[0].enter_price < plan.open_position.enter_price.unwrap());
-        assert!(plan.stop_loss < 100.0);
+        assert!(plan.stop_loss.price() < 100.0);
     }
 
     #[test]
@@ -355,7 +363,7 @@ mod tests {
         )
         .unwrap();
         assert!(plan.take_profit.price() > 100.0);
-        assert!(plan.stop_loss < 100.0);
+        assert!(plan.stop_loss.price() < 100.0);
         assert!(matches!(plan.take_profit, TakeProfit::Martingale { .. }));
     }
 
@@ -376,7 +384,7 @@ mod tests {
         .unwrap();
         assert!(matches!(plan.take_profit, TakeProfit::Sideway { .. }));
         assert!(plan.take_profit.price() >= 100.8);
-        assert!(plan.stop_loss < 99.2);
-        assert!(plan.stop_loss > 98.0);
+        assert!(plan.stop_loss.price() < 99.2);
+        assert!(plan.stop_loss.price() > 98.0);
     }
 }
