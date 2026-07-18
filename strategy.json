@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.56",
+      "module_version": "1.0.57",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.56"
+          "module_version": "1.0.57"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.56 direction-trace release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module records the actual direction decision source and reason, uses raw absolute position quantities for full close orders, includes structural level names in TP notes, disables the SugInfo exit pattern, and tracks TP repricing per position.",
+      "description": "Start the 1.0.57 typed-stop-loss release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module reports informative stop-loss sources and active-position SL debug details, records the actual direction decision source and reason, uses raw absolute position quantities for full close orders, includes structural level names in TP notes, disables the SugInfo exit pattern, and tracks TP repricing per position.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.56",
+    "version": "1.0.57",
     "defaults": {}
   }
 }

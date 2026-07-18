@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.57
+
+Informative stop-loss release.
+
+- Represented stop-loss plans as typed structural, sideway, support-break, or martingale values.
+- Included the actual stop-loss source and level details in active-position debug output.
+
 # 1.0.56
 
 Direction trace release.
