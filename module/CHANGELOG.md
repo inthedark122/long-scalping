@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.49
+
+Execution note cleanup release.
+
+- Kept blocker reasons explicit for entry refusals while removing the exit-helper constraint transport.
+- Moved fast-candle waits to a concrete fast-candle solution and removed the placeholder cooling variant.
+- Kept order and position notes on the actual trade objects instead of duplicating execution note text.
+
 # 1.0.48
 
 Debug formatting release.
