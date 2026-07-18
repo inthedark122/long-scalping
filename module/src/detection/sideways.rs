@@ -368,13 +368,13 @@ fn detect_line_cross(state: &EngineState, snapshot: &TimeframeSnapshot) -> Sidew
         price_bias: price_bias(current_price, window_low, window_high),
         reason: if active {
             format!(
-                "line-active crosses={} range={:.2}% span={:.2}% mean={:.4}",
-                crosses, current_range_pct, window_span_pct, mean
+                "line-active crosses={} range={:.2}% span={:.2}%",
+                crosses, current_range_pct, window_span_pct
             )
         } else {
             format!(
-                "line-wait crosses={} range={:.2}% span={:.2}% mean={:.4}",
-                crosses, current_range_pct, window_span_pct, mean
+                "line-wait crosses={} range={:.2}% span={:.2}%",
+                crosses, current_range_pct, window_span_pct
             )
         },
     }
