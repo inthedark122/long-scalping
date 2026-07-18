@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.45
+
+Init snapshot fix release.
+
+- Built init snapshots from indicators only so timeframe close values no longer depend on live price.
+- Kept partial indicator updates and cached realtime snapshot reuse unchanged.
+- Preserved the validation and raw inventory tracing added in prior releases.
+
 # 1.0.44
 
 Partial indicator merge release.
