@@ -17,17 +17,6 @@ pub fn fmt_price_tick(value: f64, tick_size: f64) -> String {
     trim_price(rounded)
 }
 
-pub fn fmt_price_tick_opt(value: f64, tick_size: f64, digits: usize) -> String {
-    if value <= 0.0 {
-        return "na".to_string();
-    }
-    if tick_size <= 0.0 || !tick_size.is_finite() {
-        return format!("{value:.digits$}");
-    }
-    let rounded = (value / tick_size).round() * tick_size;
-    trim_price_precision(rounded, digits)
-}
-
 pub fn fmt_qty(value: f64) -> String {
     if value <= 0.0 {
         "na".to_string()
@@ -69,11 +58,7 @@ pub fn fmt_metric(value: f64, precision: usize) -> String {
 }
 
 fn trim_price(value: f64) -> String {
-    trim_price_precision(value, 12)
-}
-
-fn trim_price_precision(value: f64, precision: usize) -> String {
-    let mut text = format!("{value:.precision$}");
+    let mut text = format!("{:.12}", value);
     while text.contains('.') && text.ends_with('0') {
         text.pop();
     }

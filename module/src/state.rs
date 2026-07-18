@@ -1,5 +1,5 @@
 use crate::builder::BuiltStrategy;
-use crate::observer::DirectionChangeHistory;
+use crate::observer::{DirectionChangeHistory, TpRepriceHistory};
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
@@ -131,6 +131,7 @@ pub struct EngineState {
     pub vlines: [VLineState; 9],
     pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
+    pub tp_reprice_history: TpRepriceHistory,
     pub movement_entry_pending: Option<PendingEntryState>,
     pub cascade_tf: CascadeState,
     pub cascade_sug: CascadeState,
@@ -153,6 +154,7 @@ impl Default for EngineState {
             vlines: [VLineState::default(); 9],
             direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
+            tp_reprice_history: TpRepriceHistory::default(),
             movement_entry_pending: None,
             cascade_tf: CascadeState::default(),
             cascade_sug: CascadeState::default(),

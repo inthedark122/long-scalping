@@ -167,6 +167,37 @@ fn tick_size(input: &ModuleInput) -> f64 {
     input.symbol_info.price_tick_size.max(f64::EPSILON)
 }
 
+fn reprice_timestamp_ms(input: &ModuleInput) -> Option<u64> {
+    input.sug_info.as_ref().map(|sug_info| sug_info.system_time as u64)
+}
+
+fn record_tp_reprice(
+    state: &mut EngineState,
+    input: &ModuleInput,
+    side: PositionState,
+    previous_tp: f64,
+    new_tp: f64,
+    reason: &str,
+    source: &str,
+    virtual_sl_hit: bool,
+    extra: String,
+) {
+    let Some(detected_at_ms) = reprice_timestamp_ms(input) else {
+        return;
+    };
+    state.tp_reprice_history.observe(
+        detected_at_ms,
+        input.price,
+        previous_tp,
+        new_tp,
+        reason.to_string(),
+        source.to_string(),
+        state.position.exit_mode,
+        virtual_sl_hit,
+        format!("side={:?}|{}", side, extra),
+    );
+}
+
 fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
     matches!(
         (position_side, decision_state),
@@ -319,9 +350,27 @@ fn ensure_active_exit_order(
                 let desired_tp =
                     stop_loss::martingale_recovery_take_profit(input.price, side, tick);
                 if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
+                    let previous_tp = state.position.take_profit;
                     state.position.take_profit = desired_tp;
                     notes.push(format!("tp-advance={:.4}", desired_tp));
                     update_positions.push(update_position(direction, None, Some(desired_tp), None));
+                    record_tp_reprice(
+                        state,
+                        input,
+                        side,
+                        previous_tp,
+                        desired_tp,
+                        "tp-advance",
+                        "virtual-sl",
+                        true,
+                        format!(
+                            "mode=martingale|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
+                            state.position.tp_mark,
+                            input.price,
+                            state.position.stop_loss,
+                            tick
+                        ),
+                    );
                     return (
                         Vec::new(),
                         update_positions,
@@ -358,6 +407,7 @@ fn ensure_active_exit_order(
         if let Some(plan) = trail_plan {
             state.position.exit_tp_reliable = plan.tp_reliable;
             if (plan.take_profit - state.position.take_profit).abs() > f64::EPSILON {
+                let previous_tp = state.position.take_profit;
                 state.position.take_profit = plan.take_profit;
                 notes.push(format!("tp-reprice={:.4}", plan.take_profit));
                 notes.push(format!("source={}", plan.source.as_str()));
@@ -368,6 +418,25 @@ fn ensure_active_exit_order(
                     plan.take_profit,
                     &state.position.tp_mark,
                     note.as_deref(),
+                );
+                record_tp_reprice(
+                    state,
+                    input,
+                    side,
+                    previous_tp,
+                    plan.take_profit,
+                    "tp-reprice",
+                    plan.source.as_str(),
+                    virtual_sl_hit,
+                    format!(
+                        "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|mark={}|tick={:.4}",
+                        plan.tp_reliable,
+                        state.position.exit_mode.as_str(),
+                        input.price,
+                        state.position.stop_loss,
+                        state.position.tp_mark,
+                        tick
+                    ),
                 );
                 return (
                     vec![order],

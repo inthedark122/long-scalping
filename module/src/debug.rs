@@ -37,6 +37,7 @@ pub fn render(
     } else {
         format!("{}/{}", vt.long_side.count, vt.short_side.count)
     };
+    let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
     let mut parts = vec![
         format!("t={}", state.ticks),
         format!("p={}", fmt_price_tick(snapshot.tf1m.candle.close, tick_size)),
@@ -78,6 +79,9 @@ pub fn render(
     ];
     if let Some(gate) = format_entry_gate(&decision.entry) {
         parts.push(format!("gate={gate}"));
+    }
+    if let Some(tp_reprice) = tp_reprice {
+        parts.push(format!("tp_reprice={tp_reprice}"));
     }
     let base = parts.join(" ");
 
@@ -132,6 +136,10 @@ fn format_cascade(cascade: &CascadeSignal, price: f64, tick_size: f64) -> String
         cascade.strength,
         fmt_price_tick(cascade.break_price, tick_size),
     )
+}
+
+fn format_tp_reprice(history: &crate::observer::TpRepriceHistory, tick_size: f64) -> Option<String> {
+    history.summary(tick_size)
 }
 
 #[cfg(test)]
