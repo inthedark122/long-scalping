@@ -645,14 +645,8 @@ fn process_realtime(
         sug_info.system_time as u64,
     );
 
-    let execution = execution::evaluate_with_cascade(
-        input,
-        state,
-        &snapshot,
-        &sug_snapshot,
-        &decision,
-        &cas_sug,
-    );
+    let execution =
+        execution::evaluate_with_cascade(input, state, &snapshot, &sug_snapshot, &decision);
     let debug = debug::render(
         state,
         &snapshot,

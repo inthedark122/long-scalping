@@ -1,5 +1,4 @@
 use crate::builder::{ensure_runtime_builder, BuiltStrategy};
-use crate::detection::cascade::CascadeSignal;
 use crate::exit;
 use crate::format::{fmt_price_tick, fmt_qty};
 use crate::martingale;
@@ -9,7 +8,6 @@ use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TradeDecision,
 };
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
-use crate::prediction;
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState, MartingaleRuntime};
 use crate::stop_loss;
@@ -21,6 +19,9 @@ use lte_strategy_bridge::abi::{
 #[cfg(test)]
 use crate::model::ExitKind;
 
+// Keep Default available for type compatibility only. Never construct an
+// empty execution result with a default value; no action is represented by
+// `Option::None`.
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
@@ -210,6 +211,54 @@ fn direction_changed(position_side: PositionState, decision_state: MarketState) 
         (position_side, decision_state),
         (PositionState::Long, MarketState::Short) | (PositionState::Short, MarketState::Long)
     )
+}
+
+fn pending_position<'a>(
+    input: &'a ModuleInput,
+    side: PositionState,
+) -> Option<&'a ModulePositionSummary> {
+    match side {
+        PositionState::Long => input.positions.long.as_ref(),
+        PositionState::Short => input.positions.short.as_ref(),
+        PositionState::Flat => None,
+    }
+}
+
+fn cancel_pending_entry(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+) -> Option<ExecutionResult> {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return None,
+    };
+    if pending_position(input, side)
+        .filter(|position| !has_active_position(Some(position)))
+        .is_some()
+    {
+        return Some(ExecutionResult {
+            close_positions: vec![close(
+                direction,
+                &close_reason(
+                    "entry-wait-cancel-pending",
+                    state,
+                    input.price,
+                    tick_size(input),
+                ),
+            )],
+            ..Default::default()
+        });
+    }
+
+    None
+}
+
+fn has_active_position(position: Option<&ModulePositionSummary>) -> bool {
+    position
+        .map(|position| position.qty > 0.0 || position.notional > 0.0)
+        .unwrap_or(false)
 }
 
 fn created_position_update(
@@ -437,16 +486,9 @@ pub fn evaluate(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     decision: &TradeDecision,
-) -> ExecutionResult {
-    evaluate_with_cascade(
-        input,
-        state,
-        snapshot,
-        sug_snapshot,
-        decision,
-        &CascadeSignal::default(),
-    )
-    .unwrap_or_default()
+) -> Result<ExecutionResult, &'static str> {
+    evaluate_with_cascade(input, state, snapshot, sug_snapshot, decision)
+        .ok_or("test evaluation returned no execution result")
 }
 
 pub fn evaluate_with_cascade(
@@ -455,7 +497,6 @@ pub fn evaluate_with_cascade(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     decision: &TradeDecision,
-    cascade: &CascadeSignal,
 ) -> Option<ExecutionResult> {
     let builder = ensure_runtime_builder(state);
     let long = input
@@ -565,29 +606,8 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
-    if builder.entry_wait_gate() {
-        match &decision.entry {
-            EntryGate::Wait(_) => {
-                return None;
-            }
-            EntryGate::Open { .. } => {}
-        }
-
-        if let EntryGate::Wait(_) =
-            prediction::entry_gate(snapshot, sug_snapshot, cascade, state, entry_side)
-        {
-            return None;
-        }
-
-        if matches!(
-            decision.entry,
-            EntryGate::Open {
-                reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
-                ..
-            }
-        ) {
-            return None;
-        }
+    if matches!(decision.entry, EntryGate::Wait(_)) {
+        return cancel_pending_entry(input, state, entry_side);
     }
 
     let mut amount = entry_budget(input, state);
@@ -611,6 +631,29 @@ pub fn evaluate_with_cascade(
     }
 
     state.position.entry_reason = entry_reason(decision).cloned();
+    let entry_price = entry_reason(decision)
+        .map(|reason| reason.price())
+        .unwrap_or(input.price);
+    if let Some(pending_position) =
+        pending_position(input, entry_side).filter(|position| !has_active_position(Some(position)))
+    {
+        if !entry_price.is_finite() || entry_price <= 0.0 {
+            return None;
+        }
+        if (pending_position.entry_price - entry_price).abs() > f64::EPSILON {
+            let direction = match entry_side {
+                PositionState::Long => Direction::Long,
+                PositionState::Short => Direction::Short,
+                PositionState::Flat => Direction::Both,
+            };
+            return Some(ExecutionResult {
+                update_positions: vec![update_position(direction, Some(entry_price), None, None)],
+                ..Default::default()
+            });
+        }
+        return None;
+    }
+
     if builder.is_martingale() {
         if let Some(plan) = martingale::entry_plan(
             state,
@@ -640,9 +683,6 @@ pub fn evaluate_with_cascade(
         });
     }
 
-    let entry_price = entry_reason(decision)
-        .map(|reason| reason.price())
-        .unwrap_or(input.price);
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
             open_positions: vec![limit_open(
@@ -789,24 +829,82 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert!(result.as_ref().unwrap().open_positions.is_empty());
     }
 
     #[test]
     fn sideways_blocks_entries() {
         let mut state = EngineState::default();
-        let result = evaluate(
+        let result = evaluate_with_cascade(
             &input(),
             &mut state,
             &IndicatorSnapshot::default(),
             &crate::model::SugInfoSnapshot::default(),
             &reasonless_decision(MarketState::Sideways),
         );
-        assert!(result.open_positions.is_empty());
+        assert!(result.is_none());
     }
 
     #[test]
-    fn building_fast_candle_blocks_entries() {
+    fn waiting_entry_does_not_create_and_cancels_pending_position() {
+        let mut state = EngineState::default();
+        let wait_decision = TradeDecision {
+            market_state: MarketState::Long,
+            entry: EntryGate::Wait(crate::model::EntryWait {
+                reason: "sug-info-pullback-wait".to_string(),
+                solutions: vec![crate::model::EntryWaitSolution::ReclaimLevel {
+                    source: "mrc-window".to_string(),
+                    level: 99.0,
+                    band_low: 98.9,
+                    band_high: 99.1,
+                }],
+                notes: vec!["forced-pullback".to_string()],
+            }),
+        };
+        let first = evaluate_with_cascade(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &wait_decision,
+        );
+        assert!(first.is_none());
+
+        let mut pending_input = input();
+        pending_input.positions.long = Some(ModulePositionSummary {
+            entry_price: 99.0,
+            notional: 0.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+        let second = evaluate(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &wait_decision,
+        );
+        assert!(second.as_ref().unwrap().open_positions.is_empty());
+        assert_eq!(second.as_ref().unwrap().close_positions.len(), 1);
+        assert!(second.as_ref().unwrap().update_positions.is_empty());
+
+        let third = evaluate(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert!(third.as_ref().unwrap().open_positions.is_empty());
+        assert_eq!(third.as_ref().unwrap().update_positions.len(), 1);
+        assert_eq!(
+            third.as_ref().unwrap().update_positions[0].enter_price,
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn building_fast_candle_does_not_override_open_decision() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         let sug_snapshot = crate::model::SugInfoSnapshot {
@@ -838,11 +936,11 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
-    fn legacy_tiring_fast_candle_blocks_entries_2() {
+    fn legacy_tiring_fast_candle_does_not_override_open_decision_2() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         let sug_snapshot = crate::model::SugInfoSnapshot {
@@ -874,7 +972,7 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -889,8 +987,8 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].amount, Some(1.0));
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions[0].amount, Some(1.0));
     }
 
     #[test]
@@ -926,7 +1024,7 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -963,11 +1061,11 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
-    fn legacy_post_sl_wait_requires_reclaim() {
+    fn legacy_post_sl_open_decision_is_not_rechecked() {
         let mut state = EngineState::default();
         state.exit_memory = crate::model::ExitMemory {
             side: PositionState::Long,
@@ -1009,7 +1107,7 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1060,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cooling_fast_candle_with_large_candle_waits() {
+    fn legacy_cooling_fast_candle_does_not_override_open_decision() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         let sug_snapshot = crate::model::SugInfoSnapshot {
@@ -1092,10 +1190,10 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
     #[test]
-    fn legacy_tiring_fast_candle_blocks_entries() {
+    fn legacy_tiring_fast_candle_does_not_override_open_decision() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         let sug_snapshot = crate::model::SugInfoSnapshot {
@@ -1127,7 +1225,7 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1142,12 +1240,12 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].amount, Some(1.0));
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions[0].amount, Some(1.0));
     }
 
     #[test]
-    fn missing_entry_reason_blocks_entries() {
+    fn structural_entry_is_allowed_when_decided_open() {
         let mut state = EngineState::default();
         let result = evaluate(
             &input(),
@@ -1156,7 +1254,7 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &reasonless_decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1192,7 +1290,7 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1229,11 +1327,11 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
-    fn post_sl_wait_requires_reclaim() {
+    fn post_sl_open_decision_is_not_rechecked() {
         let mut state = EngineState::default();
         state.exit_memory = crate::model::ExitMemory {
             side: PositionState::Long,
@@ -1275,7 +1373,7 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1326,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn cooling_fast_candle_with_large_candle_waits() {
+    fn cooling_fast_candle_does_not_override_open_decision() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
         let sug_snapshot = crate::model::SugInfoSnapshot {
@@ -1358,7 +1456,7 @@ mod tests {
             &sug_snapshot,
             &decision(MarketState::Long),
         );
-        assert!(result.open_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
     }
 
     #[test]
@@ -1415,10 +1513,10 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.tp_orders.len(), 1);
-        assert_eq!(result.tp_orders[0].qty, Some(0.1));
-        assert!(result.tp_orders[0].amount.is_none());
-        assert!(result.close_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert_eq!(result.as_ref().unwrap().tp_orders[0].qty, Some(0.1));
+        assert!(result.as_ref().unwrap().tp_orders[0].amount.is_none());
+        assert!(result.as_ref().unwrap().close_positions.is_empty());
     }
 
     #[test]
@@ -1475,10 +1573,10 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Short),
         );
-        assert_eq!(result.tp_orders.len(), 1);
-        assert_eq!(result.tp_orders[0].qty, Some(0.1));
-        assert!(result.tp_orders[0].amount.is_none());
-        assert!(result.close_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert_eq!(result.as_ref().unwrap().tp_orders[0].qty, Some(0.1));
+        assert!(result.as_ref().unwrap().tp_orders[0].amount.is_none());
+        assert!(result.as_ref().unwrap().close_positions.is_empty());
     }
 
     #[test]
@@ -1538,13 +1636,13 @@ mod tests {
             &decision(MarketState::Long),
         );
 
-        assert_eq!(result.tp_orders.len(), 1);
-        assert_eq!(result.tp_orders[0].enter_price, 99.5);
-        assert!(result.tp_orders[0]
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert_eq!(result.as_ref().unwrap().tp_orders[0].enter_price, 99.5);
+        assert!(result.as_ref().unwrap().tp_orders[0]
             .note
             .as_deref()
             .is_some_and(|note| note.contains("tp_reprice=")));
-        assert!(result.update_positions.is_empty());
+        assert!(result.as_ref().unwrap().update_positions.is_empty());
     }
 
     #[test]
@@ -1604,16 +1702,24 @@ mod tests {
             &decision(MarketState::Long),
         );
 
-        assert!(result.tp_orders.is_empty());
-        assert_eq!(result.update_positions.len(), 1);
-        assert_eq!(result.update_positions[0].direction, Direction::Long);
+        assert!(result.as_ref().unwrap().tp_orders.is_empty());
+        assert_eq!(result.as_ref().unwrap().update_positions.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().update_positions[0].direction,
+            Direction::Long
+        );
         let expected_tp = stop_loss::martingale_recovery_take_profit(
             inp.price,
             PositionState::Long,
             tick_size(&inp),
         );
-        assert_eq!(result.update_positions[0].take_profit, Some(expected_tp));
-        assert!(result.update_positions[0].stop_loss.is_none());
+        assert_eq!(
+            result.as_ref().unwrap().update_positions[0].take_profit,
+            Some(expected_tp)
+        );
+        assert!(result.as_ref().unwrap().update_positions[0]
+            .stop_loss
+            .is_none());
     }
 
     #[test]
@@ -1647,8 +1753,8 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.close_positions.len(), 1);
-        assert!(result.update_positions.is_empty());
+        assert_eq!(result.as_ref().unwrap().close_positions.len(), 1);
+        assert!(result.as_ref().unwrap().update_positions.is_empty());
     }
 
     #[test]
@@ -1710,7 +1816,7 @@ mod tests {
             &decision(MarketState::Short),
         );
 
-        assert!(result.close_positions.is_empty());
+        assert!(result.as_ref().unwrap().close_positions.is_empty());
     }
 
     #[test]
@@ -1767,7 +1873,7 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Short),
         );
-        assert!(result.open_positions.is_empty());
+        assert!(result.as_ref().unwrap().open_positions.is_empty());
     }
 
     #[test]
@@ -1782,8 +1888,8 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        let open = &result.open_positions[0];
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        let open = &result.as_ref().unwrap().open_positions[0];
         assert_eq!(open.order_type, ModuleOrderType::Limit);
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
@@ -1802,8 +1908,8 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Short),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        let open = &result.open_positions[0];
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        let open = &result.as_ref().unwrap().open_positions[0];
         assert_eq!(open.order_type, ModuleOrderType::Limit);
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
@@ -1848,10 +1954,16 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].order_type, ModuleOrderType::Market);
-        assert_eq!(result.open_positions[0].enter_price, Some(inp.price));
-        assert_eq!(result.tp_orders.len(), 2);
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().open_positions[0].order_type,
+            ModuleOrderType::Market
+        );
+        assert_eq!(
+            result.as_ref().unwrap().open_positions[0].enter_price,
+            Some(inp.price)
+        );
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 2);
     }
 
     #[test]
@@ -1866,8 +1978,11 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &movement_decision(MarketState::Long, 99.5),
         );
-        assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].enter_price, Some(99.5));
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().open_positions[0].enter_price,
+            Some(99.5)
+        );
     }
 
     #[test]
@@ -1890,8 +2005,11 @@ mod tests {
                 },
             },
         );
-        assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].enter_price, Some(99.5));
+        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().open_positions[0].enter_price,
+            Some(99.5)
+        );
     }
 
     #[test]
@@ -1939,6 +2057,6 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.tp_orders.len(), 1);
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
     }
 }
