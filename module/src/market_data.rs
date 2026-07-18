@@ -145,18 +145,14 @@ fn build_timeframe(
     history: &IndicatorHistory,
     raw: &RawIndicators,
     timeframe: TimeframeSec,
-    live_price: Option<f64>,
 ) -> Result<TimeframeSnapshot, String> {
-    let close = match live_price {
-        Some(price) => price,
-        None => read_float(
-            history,
-            timeframe,
-            IndicatorKey::Candle,
-            IndicatorField::Close,
-            0,
-        )?,
-    };
+    let close = read_float(
+        history,
+        timeframe,
+        IndicatorKey::Candle,
+        IndicatorField::Close,
+        0,
+    )?;
     let candle = Candle {
         open: read_float(
             history,
@@ -283,13 +279,12 @@ fn build_timeframe(
 pub fn build_indicator_snapshot(
     history: &IndicatorHistory,
     raw: &RawIndicators,
-    live_price: f64,
 ) -> Result<IndicatorSnapshot, String> {
     Ok(IndicatorSnapshot {
-        tf1m: build_timeframe(history, raw, TF_1M, Some(live_price))?,
-        tf5m: build_timeframe(history, raw, TF_5M, None)?,
-        tf15m: build_timeframe(history, raw, TF_15M, None)?,
-        tf1h: build_timeframe(history, raw, TF_1H, None)?,
+        tf1m: build_timeframe(history, raw, TF_1M)?,
+        tf5m: build_timeframe(history, raw, TF_5M)?,
+        tf15m: build_timeframe(history, raw, TF_15M)?,
+        tf1h: build_timeframe(history, raw, TF_1H)?,
         ..Default::default()
     })
 }
@@ -298,7 +293,6 @@ pub fn merge_indicator_snapshot(
     base: Option<&IndicatorSnapshot>,
     history: &IndicatorHistory,
     raw: &RawIndicators,
-    live_price: f64,
     timeframes: &[i64],
 ) -> Result<IndicatorSnapshot, String> {
     let mut snapshot = base.copied().unwrap_or_default();
@@ -309,12 +303,7 @@ pub fn merge_indicator_snapshot(
     for timeframe in timeframes {
         let tf = timeframe_from_secs(*timeframe)
             .ok_or_else(|| format!("unsupported-timeframe tf={}", timeframe))?;
-        let tf_snapshot = build_timeframe(
-            history,
-            raw,
-            tf,
-            if tf == TF_1M { Some(live_price) } else { None },
-        )?;
+        let tf_snapshot = build_timeframe(history, raw, tf)?;
         match tf {
             TF_1M => snapshot.tf1m = tf_snapshot,
             TF_5M => snapshot.tf5m = tf_snapshot,
@@ -478,7 +467,7 @@ mod tests {
     fn missing_fields_degrade_to_neutral() {
         let history = IndicatorHistory::default();
         let raw = BTreeMap::new();
-        match build_indicator_snapshot(&history, &raw, 101.0) {
+        match build_indicator_snapshot(&history, &raw) {
             Ok(_) => panic!("expected missing raw indicator error"),
             Err(err) => assert!(err.contains("missing-raw")),
         }
@@ -487,7 +476,7 @@ mod tests {
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+        let snap = build_indicator_snapshot(&history, &raw)
             .expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
@@ -498,7 +487,7 @@ mod tests {
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+        let snap = build_indicator_snapshot(&history, &raw)
             .expect("indicator snapshot should build");
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
@@ -555,7 +544,7 @@ mod tests {
         assert!(sug_snap.fast_candle.is_some());
         assert!(matches!(sug_snap.fast_candle, Some(ref fc) if fc.active));
         assert_eq!(sug_snap.signal.ntps, 77);
-        let snap = build_indicator_snapshot(&history, &raw, 106.0)
+        let snap = build_indicator_snapshot(&history, &raw)
             .expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.volume_gain, 12.5);
         assert_eq!(snap.tf1m.volume_gain_min, 1.0);

@@ -192,9 +192,7 @@ fn handle_new_position(
     let side = dir_to_position(direction);
     state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
     let strategy = builder::ensure_runtime_builder(state);
-    let snapshot =
-        match market_data::build_indicator_snapshot(&state.history, &input.indicators, input.price)
-        {
+    let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let error =
@@ -519,7 +517,6 @@ fn refresh_indicators(
         state.last_snapshot.as_ref(),
         &state.history,
         &input.indicators,
-        input.price,
         timeframes,
     ) {
         Ok(snapshot) => snapshot,
