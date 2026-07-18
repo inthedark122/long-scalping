@@ -279,7 +279,7 @@ fn created_position_update(
         .filter(|price| *price > 0.0)
         .unwrap_or(input.price);
     state.position.entry_price = desired_price;
-    Some(update_position(direction, Some(desired_price), None, None))
+    Some(update_position(direction, Some(desired_price)))
 }
 
 fn initialize_exit_plan(
@@ -365,7 +365,6 @@ fn ensure_active_exit_order(
     }
 
     let mut notes = Vec::new();
-    let mut update_positions = Vec::new();
     let qty = position_qty(input, side);
     if qty <= 0.0 {
         return (Vec::new(), Vec::new());
@@ -398,7 +397,6 @@ fn ensure_active_exit_order(
                     let previous_tp = state.position.take_profit;
                     state.position.take_profit = desired_tp;
                     notes.push(format!("tp-advance={:.4}", desired_tp));
-                    update_positions.push(update_position(direction, None, Some(desired_tp), None));
                     record_tp_reprice(
                         state,
                         input,
@@ -413,7 +411,15 @@ fn ensure_active_exit_order(
                             state.position.tp_mark, input.price, state.position.stop_loss, tick
                         ),
                     );
-                    return (Vec::new(), update_positions);
+                    let note = tp_reprice_order_note(state, tick, "tp:martingale|reprice");
+                    let order = tp_limit_order(
+                        direction,
+                        qty,
+                        desired_tp,
+                        &state.position.tp_mark,
+                        Some(&note),
+                    );
+                    return (vec![order], Vec::new());
                 }
             }
             return (Vec::new(), Vec::new());
@@ -647,7 +653,7 @@ pub fn evaluate_with_cascade(
                 PositionState::Flat => Direction::Both,
             };
             return Some(ExecutionResult {
-                update_positions: vec![update_position(direction, Some(entry_price), None, None)],
+                update_positions: vec![update_position(direction, Some(entry_price))],
                 ..Default::default()
             });
         }
@@ -1702,24 +1708,19 @@ mod tests {
             &decision(MarketState::Long),
         );
 
-        assert!(result.as_ref().unwrap().tp_orders.is_empty());
-        assert_eq!(result.as_ref().unwrap().update_positions.len(), 1);
-        assert_eq!(
-            result.as_ref().unwrap().update_positions[0].direction,
-            Direction::Long
-        );
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert!(result.as_ref().unwrap().update_positions.is_empty());
         let expected_tp = stop_loss::martingale_recovery_take_profit(
             inp.price,
             PositionState::Long,
             tick_size(&inp),
         );
         assert_eq!(
-            result.as_ref().unwrap().update_positions[0].take_profit,
-            Some(expected_tp)
+            result.as_ref().unwrap().tp_orders[0].enter_price,
+            expected_tp
         );
-        assert!(result.as_ref().unwrap().update_positions[0]
-            .stop_loss
-            .is_none());
+        assert_eq!(result.as_ref().unwrap().tp_orders[0].qty, Some(0.1));
+        assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
     }
 
     #[test]

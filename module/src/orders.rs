@@ -116,13 +116,11 @@ pub(crate) fn tp_limit_order(
 pub(crate) fn update_position(
     direction: Direction,
     enter_price: Option<f64>,
-    take_profit: Option<f64>,
-    stop_loss: Option<f64>,
 ) -> ModuleUpdatePosition {
     ModuleUpdatePosition {
         direction,
         enter_price,
-        take_profit,
-        stop_loss,
+        take_profit: None,
+        stop_loss: None,
     }
 }
