@@ -333,9 +333,7 @@ mod tests {
             &state,
             &snapshot(100.0, 8.0),
             MarketState::Long,
-            Some(&EntryReason::SugInfoScalp {
-                price: 100.0,
-            }),
+            Some(&EntryReason::SugInfoScalp { price: 100.0 }),
             30.0,
         )
         .unwrap();
@@ -360,9 +358,7 @@ mod tests {
             &snapshot(100.0, 8.0),
             PositionState::Long,
             100.0,
-            Some(&EntryReason::SugInfoScalp {
-                price: 100.0,
-            }),
+            Some(&EntryReason::SugInfoScalp { price: 100.0 }),
             None,
         )
         .unwrap();

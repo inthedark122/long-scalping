@@ -1,8 +1,8 @@
 use crate::builder::BuiltStrategy;
-use crate::observer::{DirectionChangeHistory, TpRepriceHistory};
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
+use crate::observer::{DirectionChangeHistory, TpRepriceHistory};
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 

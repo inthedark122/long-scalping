@@ -21,12 +21,12 @@ mod martingale;
 mod model;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
+#[path = "../observer/mod.rs"]
+mod observer;
 #[path = "../orders.rs"]
 mod orders;
 #[path = "../prediction.rs"]
 mod prediction_impl;
-#[path = "../observer/mod.rs"]
-mod observer;
 #[path = "../detection/regime.rs"]
 mod regime_impl;
 #[path = "../detection/sideways.rs"]

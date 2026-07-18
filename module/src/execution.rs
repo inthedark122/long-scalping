@@ -1,7 +1,7 @@
 use crate::builder::{ensure_runtime_builder, BuiltStrategy};
 use crate::detection::cascade::CascadeSignal;
-use crate::format::{fmt_price_tick, fmt_qty};
 use crate::exit;
+use crate::format::{fmt_price_tick, fmt_qty};
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
@@ -52,16 +52,11 @@ fn open_note(
         EntryGate::Open { reason, .. } => reason
             .as_entry_reason()
             .map(|reason| match reason {
-                EntryReason::SugInfoScalp {
-                    price,
+                EntryReason::SugInfoScalp { price }
+                | EntryReason::SugInfoMovement { price }
+                | EntryReason::SidewayScalp { price, .. } => {
+                    format!("{} price={:.4}", reason.label(), price)
                 }
-                | EntryReason::SugInfoMovement {
-                    price,
-                }
-                | EntryReason::SidewayScalp {
-                    price,
-                    ..
-                } => format!("{} price={:.4}", reason.label(), price),
                 EntryReason::Structural { price } => {
                     format!("{} price={:.4}", reason.label(), price)
                 }
@@ -166,7 +161,10 @@ fn tick_size(input: &ModuleInput) -> f64 {
 }
 
 fn reprice_timestamp_ms(input: &ModuleInput) -> Option<u64> {
-    input.sug_info.as_ref().map(|sug_info| sug_info.system_time as u64)
+    input
+        .sug_info
+        .as_ref()
+        .map(|sug_info| sug_info.system_time as u64)
 }
 
 fn record_tp_reprice(
@@ -352,10 +350,7 @@ fn ensure_active_exit_order(
                         true,
                         format!(
                             "mode=martingale|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
-                            state.position.tp_mark,
-                            input.price,
-                            state.position.stop_loss,
-                            tick
+                            state.position.tp_mark, input.price, state.position.stop_loss, tick
                         ),
                     );
                     return (Vec::new(), update_positions);
@@ -635,35 +630,35 @@ pub fn evaluate_with_cascade(
         .unwrap_or(input.price);
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
-                open_positions: vec![limit_open(
+            open_positions: vec![limit_open(
+                Direction::Long,
+                amount,
+                entry_price,
+                &open_note(
                     Direction::Long,
                     amount,
                     entry_price,
-                    &open_note(
-                        Direction::Long,
-                        amount,
-                        entry_price,
-                        tick_size(input),
-                        decision,
-                        state,
-                    ),
-                )],
+                    tick_size(input),
+                    decision,
+                    state,
+                ),
+            )],
             ..Default::default()
         }),
         MarketState::Short => Some(ExecutionResult {
-                open_positions: vec![limit_open(
+            open_positions: vec![limit_open(
+                Direction::Short,
+                amount,
+                entry_price,
+                &open_note(
                     Direction::Short,
                     amount,
                     entry_price,
-                    &open_note(
-                        Direction::Short,
-                        amount,
-                        entry_price,
-                        tick_size(input),
-                        decision,
-                        state,
-                    ),
-                )],
+                    tick_size(input),
+                    decision,
+                    state,
+                ),
+            )],
             ..Default::default()
         }),
         _ => None,
@@ -719,9 +714,7 @@ mod tests {
             entry: crate::model::EntryGate::Open {
                 notes: vec![],
                 reason: crate::model::EntryOpenReason::Entry(
-                    crate::model::EntryReason::SugInfoScalp {
-                        price: 100.0,
-                    },
+                    crate::model::EntryReason::SugInfoScalp { price: 100.0 },
                 ),
             },
         }
@@ -745,9 +738,7 @@ mod tests {
             entry: crate::model::EntryGate::Open {
                 notes: vec![],
                 reason: crate::model::EntryOpenReason::Entry(
-                    crate::model::EntryReason::SugInfoMovement {
-                        price,
-                    },
+                    crate::model::EntryReason::SugInfoMovement { price },
                 ),
             },
         }
@@ -1619,9 +1610,7 @@ mod tests {
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-short".to_string(),
-            entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
-                price: 99.2,
-            }),
+            entry_reason: Some(crate::model::EntryReason::SugInfoMovement { price: 99.2 }),
             martingale: None,
         };
         let mut inp = input();
@@ -1657,9 +1646,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
-            entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
-                price: 100.0,
-            }),
+            entry_reason: Some(crate::model::EntryReason::SugInfoScalp { price: 100.0 }),
             martingale: None,
         };
         let mut inp = input();
@@ -1879,9 +1866,7 @@ mod tests {
                 entry: crate::model::EntryGate::Open {
                     notes: vec![],
                     reason: crate::model::EntryOpenReason::Entry(
-                        crate::model::EntryReason::SugInfoScalp {
-                            price: 99.5,
-                        },
+                        crate::model::EntryReason::SugInfoScalp { price: 99.5 },
                     ),
                 },
             },

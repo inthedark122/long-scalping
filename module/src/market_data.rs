@@ -429,24 +429,33 @@ mod tests {
             );
             candle.insert(
                 "dpsignal".to_string(),
-                HashMap::from([(
-                    "Direction".to_string(),
-                    ModuleIndicatorValue::Direction(Direction::Long),
-                )]),
+                HashMap::from([
+                    (
+                        "Direction".to_string(),
+                        ModuleIndicatorValue::Direction(Direction::Long),
+                    ),
+                    ("Zee".to_string(), ModuleIndicatorValue::Float(99.0)),
+                    ("Zee1".to_string(), ModuleIndicatorValue::Float(98.0)),
+                ]),
             );
             candle.insert(
                 "zigzagtrend".to_string(),
-                HashMap::from([(
-                    "Direction".to_string(),
-                    ModuleIndicatorValue::Direction(Direction::Short),
-                )]),
+                HashMap::from([
+                    (
+                        "Direction".to_string(),
+                        ModuleIndicatorValue::Direction(Direction::Short),
+                    ),
+                    ("BuyPrice".to_string(), ModuleIndicatorValue::Float(99.0)),
+                    ("SellPrice".to_string(), ModuleIndicatorValue::Float(101.0)),
+                    ("BreakPrice".to_string(), ModuleIndicatorValue::Float(100.0)),
+                ]),
             );
             candle.insert(
                 "volume_50".to_string(),
                 HashMap::from([
                     ("Gain".to_string(), ModuleIndicatorValue::Float(12.5)),
-                    ("Min".to_string(), ModuleIndicatorValue::Float(1.0)),
-                    ("Max".to_string(), ModuleIndicatorValue::Float(20.0)),
+                    ("GainMin".to_string(), ModuleIndicatorValue::Float(1.0)),
+                    ("GainMax".to_string(), ModuleIndicatorValue::Float(20.0)),
                 ]),
             );
             snapshot.insert(tf, vec![candle.clone(), candle]);
@@ -462,15 +471,15 @@ mod tests {
         let raw = BTreeMap::new();
         match build_indicator_snapshot(&history, &raw) {
             Ok(_) => panic!("expected missing raw indicator error"),
-            Err(err) => assert!(err.contains("missing-raw")),
+            Err(err) => assert!(err.contains("missing-value")),
         }
     }
 
     #[test]
     fn dp_and_zz_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw)
-            .expect("indicator snapshot should build");
+        let snap =
+            build_indicator_snapshot(&history, &raw).expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.dp_dir, 1);
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
@@ -480,8 +489,8 @@ mod tests {
     #[test]
     fn mrc_band_order_and_slope_are_preserved() {
         let (history, raw) = mk_history();
-        let snap = build_indicator_snapshot(&history, &raw)
-            .expect("indicator snapshot should build");
+        let snap =
+            build_indicator_snapshot(&history, &raw).expect("indicator snapshot should build");
         assert!(snap.tf5m.mrc.ordered());
         assert!(snap.tf5m.mrc.mean_line_slope.abs() < 1e-9);
         assert_eq!(snap.tf5m.mrc.down_big, 80.0);
@@ -537,8 +546,8 @@ mod tests {
         assert!(sug_snap.fast_candle.is_some());
         assert!(matches!(sug_snap.fast_candle, Some(ref fc) if fc.active));
         assert_eq!(sug_snap.signal.ntps, 77);
-        let snap = build_indicator_snapshot(&history, &raw)
-            .expect("indicator snapshot should build");
+        let snap =
+            build_indicator_snapshot(&history, &raw).expect("indicator snapshot should build");
         assert_eq!(snap.tf1m.volume_gain, 12.5);
         assert_eq!(snap.tf1m.volume_gain_min, 1.0);
         assert_eq!(snap.tf1m.volume_gain_max, 20.0);

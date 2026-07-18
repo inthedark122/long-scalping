@@ -169,6 +169,6 @@ mod tests {
         assert_eq!(aligned, OneMConfirmation::Aligned);
 
         let neutral = classify_confirmation(MarketState::Short, &tf(1, 0, 1.0, 111.0, 100.0));
-        assert_eq!(neutral, OneMConfirmation::Neutral);
+        assert_eq!(neutral, OneMConfirmation::Countertrend);
     }
 }

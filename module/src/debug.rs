@@ -42,7 +42,10 @@ pub fn render(
     let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
     let mut parts = vec![
         format!("t={}", state.ticks),
-        format!("p={}", fmt_price_tick(snapshot.tf1m.candle.close, tick_size)),
+        format!(
+            "p={}",
+            fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
+        ),
         format!("mode={}", state.cfg.trade_mode.as_str()),
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
@@ -79,7 +82,26 @@ pub fn render(
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
     ];
     if state.position.side == PositionState::Flat {
-        parts.push(format!("exec={}", format_execution_text(decision, tick_size)));
+        parts.push(format!(
+            "exec={}",
+            format_execution_text(decision, tick_size)
+        ));
+    }
+    if let EntryGate::Wait(wait) = &decision.entry {
+        let mut text = format!("wait:{}", wait.reason);
+        if !wait.solutions.is_empty() {
+            let solutions = wait
+                .solutions
+                .iter()
+                .map(format_entry_wait_solution)
+                .collect::<Vec<_>>()
+                .join(";");
+            text.push_str(&format!(" sol=[{}]", solutions));
+        }
+        if !wait.notes.is_empty() {
+            text.push_str(&format!(" notes={}", wait.notes.join("|")));
+        }
+        parts.push(format!("gate={text}"));
     }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));
@@ -192,7 +214,10 @@ fn format_cascade(cascade: &CascadeSignal, price: f64, tick_size: f64) -> String
     )
 }
 
-fn format_tp_reprice(history: &crate::observer::TpRepriceHistory, tick_size: f64) -> Option<String> {
+fn format_tp_reprice(
+    history: &crate::observer::TpRepriceHistory,
+    tick_size: f64,
+) -> Option<String> {
     history.summary(tick_size)
 }
 
@@ -237,9 +262,7 @@ mod tests {
             market_state: MarketState::Long,
             entry: EntryGate::Open {
                 notes: vec!["5m-primary".to_string()],
-                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
-                    price: 100.0,
-                }),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: 100.0 }),
             },
         }
     }
@@ -272,9 +295,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
-            entry_reason: Some(EntryReason::SugInfoScalp {
-                price: 100.0,
-            }),
+            entry_reason: Some(EntryReason::SugInfoScalp { price: 100.0 }),
             martingale: None,
         };
         let debug = render(
@@ -324,7 +345,9 @@ mod tests {
         assert!(debug.contains(
             "gate=wait:sug-info-pullback-wait sol=[reclaim:mrc-window:99[98..100]] notes=forced-pullback"
         ));
-        assert!(debug.contains("exec=entry-wait reason=sug-info-pullback-wait expect=reclaim:mrc-window:99[98..100]"));
+        assert!(debug.contains(
+            "exec=entry-wait reason=sug-info-pullback-wait expect=reclaim:mrc-window:99[98..100]"
+        ));
     }
 
     #[test]
@@ -352,9 +375,7 @@ mod tests {
         let mut decision = decision();
         decision.entry = EntryGate::Open {
             notes: vec!["5m-primary".to_string()],
-            reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
-                price: 101.25,
-            }),
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: 101.25 }),
         };
         let debug = render(
             &state,

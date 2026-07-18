@@ -605,6 +605,9 @@ pub fn sug_entry_plan(
         format!("cascade_dir={}", cascade.dir),
         format!("cascade_samples={}", cascade.samples),
     ];
+    if force_pullback {
+        notes.push("forced-pullback".to_string());
+    }
     if near_entry {
         notes.push("1m-confirmed".to_string());
         Some(SugEntryPlan {
@@ -703,9 +706,7 @@ fn sug_entry_gate(
                 ),
                 "1m-confirmed".to_string(),
             ],
-            reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
-                price: entry,
-            }),
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: entry }),
         })
     } else if state.cfg.pullback_ratio() > 0.0 {
         Some(EntryGate::Wait(EntryWait {
@@ -772,9 +773,7 @@ pub fn entry_gate(
         if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, state, cascade, side, true) {
             return EntryGate::Open {
                 notes: plan.notes,
-                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
-                    price: plan.entry,
-                }),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: plan.entry }),
             };
         }
     }
@@ -790,7 +789,9 @@ pub fn entry_gate(
     if let Some(reason) = fast_candle_entry_block(snapshot, sug_snapshot) {
         let candle = signal_candle(snapshot, sug_snapshot);
         let fc = sug_snapshot.fast_candle;
-        let fc_phase = fc.map(|fc| fc.phase(candle)).unwrap_or(FastCandlePhase::Absent);
+        let fc_phase = fc
+            .map(|fc| fc.phase(candle))
+            .unwrap_or(FastCandlePhase::Absent);
         return EntryGate::Wait(EntryWait {
             reason: reason.clone(),
             solutions: vec![EntryWaitSolution::FastCandle {
@@ -920,21 +921,19 @@ pub fn entry_gate(
         return gate;
     }
 
-        if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
-            if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
-                state.movement_entry_pending = None;
-                return wait;
-            }
-            if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
-                return wait;
-            }
-            return EntryGate::Open {
-                notes: plan.notes,
-                reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
-                    price: plan.price,
-                }),
-            };
+    if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
+        if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
+            state.movement_entry_pending = None;
+            return wait;
         }
+        if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
+            return wait;
+        }
+        return EntryGate::Open {
+            notes: plan.notes,
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
+        };
+    }
 
     state.movement_entry_pending = None;
 
@@ -1113,10 +1112,10 @@ mod tests {
     fn sug_snapshot() -> SugInfoSnapshot {
         SugInfoSnapshot {
             sug_candle: Some(Candle {
-                open: 100.0,
-                high: 100.2,
-                low: 99.8,
-                close: 100.03,
+                open: 96.2,
+                high: 96.4,
+                low: 96.0,
+                close: 96.2,
             }),
             ..Default::default()
         }

@@ -14,18 +14,18 @@ use serde_json::Value;
 mod builder;
 #[path = "../detection/cascade.rs"]
 mod cascade_impl;
+#[path = "../format.rs"]
+mod format;
 #[path = "../martingale.rs"]
 mod martingale;
 #[path = "../model.rs"]
 mod model;
-#[path = "../format.rs"]
-mod format;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
-#[path = "../orders.rs"]
-mod orders;
 #[path = "../observer/mod.rs"]
 mod observer;
+#[path = "../orders.rs"]
+mod orders;
 #[path = "../state.rs"]
 mod state;
 mod detection {

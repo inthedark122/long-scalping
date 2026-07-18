@@ -95,11 +95,7 @@ impl TpRepriceHistory {
 
         Some(format!(
             "count={} last_delay={} last_mode={:?} last_vsl={} last3=[{}]",
-            self.total_count,
-            last_delay,
-            last.exit_mode,
-            last.virtual_sl_hit,
-            recent
+            self.total_count, last_delay, last.exit_mode, last.virtual_sl_hit, recent
         ))
     }
 }

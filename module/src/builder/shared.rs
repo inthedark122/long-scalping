@@ -48,8 +48,13 @@ pub(super) fn refine_common(
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. })
-        && sideway.active
+    if matches!(
+        decision.entry,
+        EntryGate::Open {
+            reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
+            ..
+        }
+    ) && sideway.active
     {
         if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
             decision.market_state = plan.market_state;
@@ -65,7 +70,13 @@ pub(super) fn refine_common(
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. }) {
+    if matches!(
+        decision.entry,
+        EntryGate::Open {
+            reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
+            ..
+        }
+    ) {
         let entry_side = match decision.market_state {
             MarketState::Long => crate::model::PositionState::Long,
             MarketState::Short => crate::model::PositionState::Short,
@@ -83,23 +94,24 @@ pub(super) fn refine_common(
             decision.market_state = plan.market_state;
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
-                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
-                    price: plan.entry,
-                }),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: plan.entry }),
             };
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. })
-        && sug_snapshot.sug_candle.is_none()
+    if matches!(
+        decision.entry,
+        EntryGate::Open {
+            reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
+            ..
+        }
+    ) && sug_snapshot.sug_candle.is_none()
     {
         if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade_sug) {
             decision.market_state = plan.market_state;
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
-                reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
-                    price: plan.price,
-                }),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
             };
         }
     }
@@ -109,9 +121,9 @@ pub(super) fn refine_common(
         && mrc1.bullish_structure
         && cascade_tf.dir > 0
     {
-            decision = TradeDecision {
-                market_state: MarketState::Long,
-                entry: match decision.entry {
+        decision = TradeDecision {
+            market_state: MarketState::Long,
+            entry: match decision.entry {
                 EntryGate::Open { mut notes, reason } => {
                     notes.push("1m-recovery".to_string());
                     EntryGate::Open { notes, reason }

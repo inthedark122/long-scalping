@@ -6,9 +6,9 @@ use crate::exit;
 use crate::market_data;
 use crate::martingale;
 use crate::model::{ExitMode, TradeMode};
-use crate::prediction;
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
+use crate::prediction;
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{
@@ -193,17 +193,16 @@ fn handle_new_position(
     state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
     let strategy = builder::ensure_runtime_builder(state);
     let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let error =
-                    snapshot_error("Init", "tfs=[60,300,900,3600]", &input.indicators, error);
-                state.last_error = Some(error.clone());
-                return ModuleOutput {
-                    debug: error,
-                    ..Default::default()
-                };
-            }
-        };
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let error = snapshot_error("Init", "tfs=[60,300,900,3600]", &input.indicators, error);
+            state.last_error = Some(error.clone());
+            return ModuleOutput {
+                debug: error,
+                ..Default::default()
+            };
+        }
+    };
     direction_lock::refresh(
         &mut state.direction_lock,
         &snapshot.tf1m,
@@ -640,9 +639,11 @@ fn process_realtime(
             entry: entry_gate,
         },
     );
-    state
-        .direction_history
-        .observe(decision.market_state, input.price, sug_info.system_time as u64);
+    state.direction_history.observe(
+        decision.market_state,
+        input.price,
+        sug_info.system_time as u64,
+    );
 
     let execution = execution::evaluate_with_cascade(
         input,
@@ -659,7 +660,9 @@ fn process_realtime(
         &cas_tf,
         &cas_sug,
         &decision,
-        execution.as_ref().and_then(|result| result.constraint.as_deref()),
+        execution
+            .as_ref()
+            .and_then(|result| result.constraint.as_deref()),
         input.symbol_info.price_tick_size,
     );
     let execution = execution.unwrap_or_default();
