@@ -196,6 +196,10 @@ pub fn sync_position_state(
     short: Option<(f64, f64)>,
     price: f64,
 ) {
+    if long.is_none() && short.is_none() {
+        state.tp_reprice_history.reset();
+    }
+
     match (long, short) {
         (Some((entry, _)), None) => {
             if state.position.side != PositionState::Long

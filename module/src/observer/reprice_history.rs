@@ -24,6 +24,10 @@ pub struct TpRepriceHistory {
 impl TpRepriceHistory {
     const MAX_RECORDS: usize = 32;
 
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     pub fn observe(
         &mut self,
         detected_at_ms: u64,
@@ -149,5 +153,26 @@ mod tests {
         assert!(summary.contains("tp-reprice"));
         assert!(summary.contains("tp-advance"));
         assert!(summary.contains("last3=["));
+    }
+
+    #[test]
+    fn reset_clears_completed_position_history() {
+        let mut history = TpRepriceHistory::default();
+        history.observe(
+            1_000,
+            100.0,
+            99.0,
+            100.5,
+            "tp-reprice",
+            "structural",
+            ExitMode::Structural,
+            false,
+            "source=mean",
+        );
+
+        history.reset();
+
+        assert_eq!(history.total_count, 0);
+        assert!(history.summary(0.1).is_none());
     }
 }

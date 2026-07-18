@@ -194,6 +194,17 @@ fn record_tp_reprice(
     );
 }
 
+fn tp_reprice_order_note(state: &EngineState, tick_size: f64, prefix: &str) -> String {
+    format!(
+        "{}|tp_reprice={}",
+        prefix,
+        state
+            .tp_reprice_history
+            .summary(tick_size)
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
 fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
     matches!(
         (position_side, decision_state),
@@ -374,14 +385,6 @@ fn ensure_active_exit_order(
                 state.position.take_profit = plan.take_profit;
                 notes.push(format!("tp-reprice={:.4}", plan.take_profit));
                 notes.push(format!("source={}", plan.source.as_str()));
-                let note = Some(format!("tp:reprice|{}", plan.source.as_str()));
-                let order = tp_limit_order(
-                    direction,
-                    qty,
-                    plan.take_profit,
-                    &state.position.tp_mark,
-                    note.as_deref(),
-                );
                 record_tp_reprice(
                     state,
                     input,
@@ -400,6 +403,18 @@ fn ensure_active_exit_order(
                         state.position.tp_mark,
                         tick
                     ),
+                );
+                let note = tp_reprice_order_note(
+                    state,
+                    tick,
+                    &format!("tp:reprice|{}", plan.source.as_str()),
+                );
+                let order = tp_limit_order(
+                    direction,
+                    qty,
+                    plan.take_profit,
+                    &state.position.tp_mark,
+                    Some(&note),
                 );
                 return (vec![order], Vec::new());
             }
@@ -1525,6 +1540,10 @@ mod tests {
 
         assert_eq!(result.tp_orders.len(), 1);
         assert_eq!(result.tp_orders[0].enter_price, 99.5);
+        assert!(result.tp_orders[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("tp_reprice=")));
         assert!(result.update_positions.is_empty());
     }
 
