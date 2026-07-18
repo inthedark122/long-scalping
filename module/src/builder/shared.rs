@@ -13,27 +13,8 @@ pub(super) fn should_close_on_direction_change_impl(
     input: &lte_strategy_bridge::abi::ModuleInput,
     state: &EngineState,
 ) -> bool {
-    if !policy.direction_change_close {
-        return false;
-    }
-
-    if policy.direction_change_grace_ms == 0 {
-        return true;
-    }
-
-    let current_ms = input
-        .sug_info
-        .as_ref()
-        .map(|sug_info| sug_info.system_time as u64)
-        .unwrap_or(0);
-    let started_at_ms = state
-        .position
-        .entry_reason
-        .as_ref()
-        .map(|reason| reason.started_at_ms())
-        .unwrap_or(0);
-
-    current_ms.saturating_sub(started_at_ms) >= policy.direction_change_grace_ms
+    let _ = (input, state);
+    policy.direction_change_close
 }
 
 pub(super) fn refine_common(
