@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.46
+
+MRC window release.
+
+- Reworked pullback entries to use real MRC line windows instead of a full-band percentage fallback.
+- Classified price into 1-line and 2-line MRC zones so pullback windows follow adjacent structural lines.
+- Removed the synthetic price-based fallback from the pullback wait path.
+
 # 1.0.45
 
 Init snapshot fix release.

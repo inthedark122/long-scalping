@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.45",
+      "module_version": "1.0.46",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.45"
+          "module_version": "1.0.46"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-          "description": "Start the 1.0.45 init snapshot fix release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now builds init snapshots from indicators only and no longer depends on live price for timeframe close values.",
+          "description": "Start the 1.0.46 MRC window release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now classifies pullback entries by real MRC line windows instead of a full-band fallback.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.45",
+    "version": "1.0.46",
     "defaults": {}
   }
 }
