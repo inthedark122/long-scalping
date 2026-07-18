@@ -631,6 +631,9 @@ fn process_realtime(
         sug_info,
         decision::decide(regime),
     );
+    state
+        .direction_history
+        .observe(decision.market_state, input.price, sug_info.system_time as u64);
 
     let execution = execution::evaluate_with_cascade(
         input,

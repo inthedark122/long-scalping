@@ -7,6 +7,7 @@ mod execution;
 mod exit;
 mod market_data;
 mod martingale;
+mod observer;
 mod model;
 mod order_manager;
 mod orders;

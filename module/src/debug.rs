@@ -67,7 +67,7 @@ pub fn render(
         })
         .unwrap_or_else(|| "na".to_string());
     let base = format!(
-        "t={} p={:.4} mode={} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} casTf={} casSug={} pos={:?} entry={} entry_reason={} mem={} mode_ctx={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
+        "t={} p={:.4} mode={} 5m={:?} 15m={:?} 15m_fb={} 1h={:?} dir_lock={} pending={} sideway={} dir_hist=[{}] casTf={} casSug={} pos={:?} entry={} entry_reason={} mem={} mode_ctx={} tp_mark={} tp={:.4} sl={:.4} vml={}/{} gain_1m={:.4} gain_zone={:?} gain_prog={:.2} gain_building={} gain_late={} exec={}",
         state.ticks,
         snapshot.tf1m.candle.close,
         state.cfg.trade_mode.as_str(),
@@ -89,6 +89,7 @@ pub fn render(
         } else {
             format!("off:{:?} {}", sideway.source, sideway.reason)
         },
+        state.direction_history.summary(),
         cascade_tf_text,
         cascade_sug_text,
         state.position.side,
