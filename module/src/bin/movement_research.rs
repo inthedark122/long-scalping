@@ -22,6 +22,8 @@ mod model;
 mod mrc_impl;
 #[path = "../orders.rs"]
 mod orders;
+#[path = "../observer/mod.rs"]
+mod observer;
 #[path = "../state.rs"]
 mod state;
 mod detection {

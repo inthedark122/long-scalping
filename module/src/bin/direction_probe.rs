@@ -23,6 +23,8 @@ mod mrc_impl;
 mod orders;
 #[path = "../prediction.rs"]
 mod prediction_impl;
+#[path = "../observer/mod.rs"]
+mod observer;
 #[path = "../detection/regime.rs"]
 mod regime_impl;
 #[path = "../detection/sideways.rs"]
