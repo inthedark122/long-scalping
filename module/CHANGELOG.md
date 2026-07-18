@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.48
+
+Debug formatting release.
+
+- Centralized formatting helpers so prices, quantities, and durations render consistently across debug output.
+- Removed duplicated position fields from the main debug line and kept only structured wait-gate tracking when the engine is blocked.
+- Trimmed timeout noise and kept the direction history summary readable while preserving the underlying execution behavior.
+
 # 1.0.47
 
 Direction history observer release.

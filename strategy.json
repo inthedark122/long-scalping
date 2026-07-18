@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.47",
+      "module_version": "1.0.48",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.47"
+          "module_version": "1.0.48"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.47 direction history observer release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now keeps direction-change tracking in a dedicated observer module and surfaces the history summary in debug output.",
+      "description": "Start the 1.0.48 debug formatting release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module now keeps the main debug line compact, omits duplicated position noise, and still surfaces wait-gate and direction history summaries.",
       "params": [
         {
           "code": "cap_init",
@@ -77,7 +77,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.47",
+    "version": "1.0.48",
     "defaults": {}
   }
 }
