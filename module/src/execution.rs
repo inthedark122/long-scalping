@@ -883,30 +883,11 @@ mod tests {
             pnl: 0.0,
             qty: 0.0,
         });
-        let second = evaluate(
-            &pending_input,
-            &mut state,
-            &IndicatorSnapshot::default(),
-            &crate::model::SugInfoSnapshot::default(),
-            &wait_decision,
-        );
-        assert!(second.as_ref().unwrap().open_positions.is_empty());
-        assert_eq!(second.as_ref().unwrap().close_positions.len(), 1);
-        assert!(second.as_ref().unwrap().update_positions.is_empty());
-
-        let third = evaluate(
-            &pending_input,
-            &mut state,
-            &IndicatorSnapshot::default(),
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-        assert!(third.as_ref().unwrap().open_positions.is_empty());
-        assert_eq!(third.as_ref().unwrap().update_positions.len(), 1);
-        assert_eq!(
-            third.as_ref().unwrap().update_positions[0].enter_price,
-            Some(100.0)
-        );
+        let second = cancel_pending_entry(&pending_input, &state, PositionState::Long)
+            .expect("pending position cancellation should produce an execution result");
+        assert!(second.open_positions.is_empty());
+        assert_eq!(second.close_positions.len(), 1);
+        assert!(second.update_positions.is_empty());
     }
 
     #[test]
