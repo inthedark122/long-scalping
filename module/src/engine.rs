@@ -1,12 +1,12 @@
 use crate::builder;
 use crate::debug;
-use crate::decision;
 use crate::detection::{cascade, direction_lock, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
 use crate::martingale;
 use crate::model::{ExitMode, TradeMode};
+use crate::prediction;
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::risk;
@@ -620,6 +620,12 @@ fn process_realtime(
     let sideway = sideways::analyze(state, &snapshot.tf1m);
 
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
+    let entry_side = match regime.confirmed {
+        crate::model::MarketState::Long => crate::model::PositionState::Long,
+        crate::model::MarketState::Short => crate::model::PositionState::Short,
+        crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
+    };
+    let entry_gate = prediction::entry_gate(&snapshot, &sug_snapshot, &cas_sug, state, entry_side);
     let decision = strategy.refine_realtime_decision(
         state,
         &snapshot,
@@ -629,7 +635,10 @@ fn process_realtime(
         &cas_tf,
         &cas_sug,
         sug_info,
-        decision::decide(regime),
+        crate::model::TradeDecision {
+            market_state: regime.confirmed,
+            entry: entry_gate,
+        },
     );
     state
         .direction_history

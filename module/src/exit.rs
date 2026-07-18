@@ -433,7 +433,6 @@ mod tests {
             price: 99.0,
             block_low: 98.0,
             block_high: 102.0,
-            started_at_ms: 1,
             source: "OrderBlock".to_string(),
         };
         let plan = plan(

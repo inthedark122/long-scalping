@@ -1,11 +1,13 @@
 use crate::builder::{ensure_runtime_builder, BuiltStrategy};
 use crate::detection::cascade::CascadeSignal;
-use crate::format::{fmt_duration_ms, fmt_price_tick, fmt_qty};
+use crate::format::{fmt_price_tick, fmt_qty};
 use crate::exit;
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::model::{
+    EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TradeDecision,
+};
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::prediction;
 use crate::risk::entry_budget;
@@ -43,33 +45,30 @@ fn open_note(
         _ => "both",
     };
     let entry_note = match &decision.entry {
-        EntryGate::Open { notes } => notes.join("|"),
+        EntryGate::Open { notes, .. } => notes.join("|"),
         EntryGate::Wait(wait) => format!("wait:{}|{}", wait.reason, wait.notes.join("|")),
     };
-    let reason_note = decision
-        .entry_reason
-        .as_ref()
-        .map(|reason| match reason {
-            EntryReason::SugInfoScalp {
-                price,
-                started_at_ms,
-            }
-            | EntryReason::SugInfoMovement {
-                price,
-                started_at_ms,
-            }
-            | EntryReason::SidewayScalp {
-                price,
-                started_at_ms,
-                ..
-            } => format!(
-                "{} price={:.4} started_at_ms={}",
-                reason.label(),
-                price,
-                started_at_ms
-            ),
-        })
-        .unwrap_or_else(|| "none".to_string());
+    let reason_note = match &decision.entry {
+        EntryGate::Open { reason, .. } => reason
+            .as_entry_reason()
+            .map(|reason| match reason {
+                EntryReason::SugInfoScalp {
+                    price,
+                }
+                | EntryReason::SugInfoMovement {
+                    price,
+                }
+                | EntryReason::SidewayScalp {
+                    price,
+                    ..
+                } => format!("{} price={:.4}", reason.label(), price),
+                EntryReason::Structural { price } => {
+                    format!("{} price={:.4}", reason.label(), price)
+                }
+            })
+            .unwrap_or_else(|| "none".to_string()),
+        EntryGate::Wait(_) => "none".to_string(),
+    };
     format!(
         "open {} because {} reason={} price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
@@ -97,10 +96,19 @@ fn close_reason(reason: &str, state: &EngineState, price: f64, tick_size: f64) -
 fn is_forced_pullback_open(decision: &TradeDecision) -> bool {
     matches!(
         &decision.entry,
-        EntryGate::Open { notes }
+        EntryGate::Open {
+            notes,
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { .. })
+        }
             if notes.iter().any(|note| note == "forced-pullback")
-                && matches!(decision.entry_reason, Some(EntryReason::SugInfoScalp { .. }))
     )
+}
+
+fn entry_reason(decision: &TradeDecision) -> Option<&EntryReason> {
+    match &decision.entry {
+        EntryGate::Open { reason, .. } => reason.as_entry_reason(),
+        EntryGate::Wait(_) => None,
+    }
 }
 
 fn position_snapshot(
@@ -115,7 +123,7 @@ fn position_snapshot(
     let pnl = position.map(|position| position.pnl).unwrap_or(0.0);
     let abs_qty = position_qty(input, side);
     format!(
-        "pos={:?} raw_qty={} abs_qty={} notional={} pnl={} entry_price={} tp={} sl={} exit_mode={} started_at_ms={}",
+        "pos={:?} raw_qty={} abs_qty={} notional={} pnl={} entry_price={} tp={} sl={} exit_mode={}",
         side,
         fmt_qty(raw_qty),
         fmt_qty(abs_qty),
@@ -125,10 +133,6 @@ fn position_snapshot(
         fmt_price_tick(state.position.take_profit, tick_size),
         fmt_price_tick(state.position.stop_loss, tick_size),
         state.position.exit_mode.as_str(),
-        match state.position.entry_reason.as_ref() {
-            Some(reason) => fmt_duration_ms(reason.started_at_ms()),
-            None => "na".to_string(),
-        }
     )
 }
 
@@ -565,7 +569,13 @@ pub fn evaluate_with_cascade(
             return None;
         }
 
-        if decision.entry_reason.is_none() {
+        if matches!(
+            decision.entry,
+            EntryGate::Open {
+                reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
+                ..
+            }
+        ) {
             return None;
         }
     }
@@ -590,13 +600,13 @@ pub fn evaluate_with_cascade(
         }
     }
 
-    state.position.entry_reason = decision.entry_reason.clone();
+    state.position.entry_reason = entry_reason(decision).cloned();
     if builder.is_martingale() {
         if let Some(plan) = martingale::entry_plan(
             state,
             snapshot,
             decision.market_state,
-            decision.entry_reason.as_ref(),
+            entry_reason(decision),
             amount,
         ) {
             state.position.martingale = Some(MartingaleRuntime {
@@ -620,9 +630,7 @@ pub fn evaluate_with_cascade(
         });
     }
 
-    let entry_price = decision
-        .entry_reason
-        .as_ref()
+    let entry_price = entry_reason(decision)
         .map(|reason| reason.price())
         .unwrap_or(input.price);
     match decision.market_state {
@@ -708,30 +716,40 @@ mod tests {
     fn decision(market_state: MarketState) -> TradeDecision {
         TradeDecision {
             market_state,
-            entry: crate::model::EntryGate::Open { notes: vec![] },
-            entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
-                price: 100.0,
-                started_at_ms: 1_000,
-            }),
+            entry: crate::model::EntryGate::Open {
+                notes: vec![],
+                reason: crate::model::EntryOpenReason::Entry(
+                    crate::model::EntryReason::SugInfoScalp {
+                        price: 100.0,
+                    },
+                ),
+            },
         }
     }
 
     fn reasonless_decision(market_state: MarketState) -> TradeDecision {
         TradeDecision {
             market_state,
-            entry: crate::model::EntryGate::Open { notes: vec![] },
-            entry_reason: None,
+            entry: crate::model::EntryGate::Open {
+                notes: vec![],
+                reason: crate::model::EntryOpenReason::Entry(
+                    crate::model::EntryReason::Structural { price: 100.0 },
+                ),
+            },
         }
     }
 
     fn movement_decision(market_state: MarketState, price: f64) -> TradeDecision {
         TradeDecision {
             market_state,
-            entry: crate::model::EntryGate::Open { notes: vec![] },
-            entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
-                price,
-                started_at_ms: 1_000,
-            }),
+            entry: crate::model::EntryGate::Open {
+                notes: vec![],
+                reason: crate::model::EntryOpenReason::Entry(
+                    crate::model::EntryReason::SugInfoMovement {
+                        price,
+                    },
+                ),
+            },
         }
     }
 
@@ -1603,7 +1621,6 @@ mod tests {
             tp_mark: "tp-short".to_string(),
             entry_reason: Some(crate::model::EntryReason::SugInfoMovement {
                 price: 99.2,
-                started_at_ms: 1_000,
             }),
             martingale: None,
         };
@@ -1642,7 +1659,6 @@ mod tests {
             tp_mark: "tp-long".to_string(),
             entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
                 price: 100.0,
-                started_at_ms: 1_000,
             }),
             martingale: None,
         };
@@ -1860,11 +1876,14 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &TradeDecision {
                 market_state: MarketState::Long,
-                entry: crate::model::EntryGate::Open { notes: vec![] },
-                entry_reason: Some(crate::model::EntryReason::SugInfoScalp {
-                    price: 99.5,
-                    started_at_ms: 1_000,
-                }),
+                entry: crate::model::EntryGate::Open {
+                    notes: vec![],
+                    reason: crate::model::EntryOpenReason::Entry(
+                        crate::model::EntryReason::SugInfoScalp {
+                            price: 99.5,
+                        },
+                    ),
+                },
             },
         );
         assert_eq!(result.open_positions.len(), 1);

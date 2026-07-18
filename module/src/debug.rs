@@ -1,6 +1,8 @@
 use crate::detection::{cascade::CascadeSignal, sideways};
 use crate::format::{fmt_metric, fmt_price_tick};
-use crate::model::{IndicatorSnapshot, RegimeSnapshot, TradeDecision};
+use crate::model::{
+    EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, RegimeSnapshot, TradeDecision,
+};
 use crate::state::EngineState;
 
 pub fn render(
@@ -75,59 +77,40 @@ pub fn render(
         format!("gain_prog={}", gain_prog),
         format!("gain_building={}", snapshot.tf1m.gain_is_building()),
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
-        format!("exec={}", format_execution_text(decision)),
     ];
+    if state.position.side == PositionState::Flat {
+        parts.push(format!("exec={}", format_execution_text(decision, tick_size)));
+    }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));
-    }
-    if let Some(gate) = format_entry_gate(&decision.entry) {
-        parts.push(format!("gate={gate}"));
     }
     if let Some(tp_reprice) = tp_reprice {
         parts.push(format!("tp_reprice={tp_reprice}"));
     }
-    let base = parts.join(" ");
-
-    match state.last_error.as_ref() {
-        Some(error) => format!("{base} error={error}"),
-        None => base,
+    if let Some(error) = state.last_error.as_deref() {
+        parts.push(format!("error={error}"));
     }
+    parts.join(" ")
 }
 
-fn format_entry_gate(entry: &crate::model::EntryGate) -> Option<String> {
-    match entry {
-        crate::model::EntryGate::Wait(wait) => {
-            let mut text = format!("wait:{}", wait.reason);
-            if !wait.solutions.is_empty() {
-                let solutions = wait
-                    .solutions
-                    .iter()
-                    .map(format_entry_wait_solution)
-                    .collect::<Vec<_>>()
-                    .join(";");
-                text.push_str(&format!(" sol=[{}]", solutions));
-            }
-            if !wait.notes.is_empty() {
-                text.push_str(&format!(" notes={}", wait.notes.join("|")));
-            }
-            Some(text)
-        }
-        crate::model::EntryGate::Open { .. } => None,
-    }
-}
-
-fn format_execution_text(decision: &TradeDecision) -> String {
-    if let crate::model::EntryGate::Wait(wait) = &decision.entry {
-        return format!(
+fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
+    match &decision.entry {
+        EntryGate::Wait(wait) => format!(
             "entry-wait reason={} expect={}",
             wait.reason,
             wait.solutions
                 .first()
                 .map(format_entry_wait_solution)
                 .unwrap_or_else(|| "wait".to_string())
-        );
+        ),
+        EntryGate::Open { reason, .. } => match reason {
+            EntryOpenReason::Entry(reason) => format!(
+                "open:{} price={}",
+                reason.label(),
+                fmt_price_tick(reason.price(), tick_size)
+            ),
+        },
     }
-    "na".to_string()
 }
 
 fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> String {
@@ -254,11 +237,10 @@ mod tests {
             market_state: MarketState::Long,
             entry: EntryGate::Open {
                 notes: vec!["5m-primary".to_string()],
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
+                    price: 100.0,
+                }),
             },
-            entry_reason: Some(EntryReason::SugInfoScalp {
-                price: 100.0,
-                started_at_ms: 1,
-            }),
         }
     }
 
@@ -292,7 +274,6 @@ mod tests {
             tp_mark: "tp-long".to_string(),
             entry_reason: Some(EntryReason::SugInfoScalp {
                 price: 100.0,
-                started_at_ms: 1,
             }),
             martingale: None,
         };
@@ -308,7 +289,6 @@ mod tests {
         );
 
         assert!(debug.contains("mode=single"));
-        assert!(debug.contains("mode_ctx=single exit_src=structural"));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
         assert!(!debug.contains("pullback_amount="));
@@ -344,6 +324,81 @@ mod tests {
         assert!(debug.contains(
             "gate=wait:sug-info-pullback-wait sol=[reclaim:mrc-window:99[98..100]] notes=forced-pullback"
         ));
+        assert!(debug.contains("exec=entry-wait reason=sug-info-pullback-wait expect=reclaim:mrc-window:99[98..100]"));
+    }
+
+    #[test]
+    fn open_debug_renders_entry_reason() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Single;
+        let debug = render(
+            &state,
+            &snapshot(),
+            &regime(),
+            &cascade(1),
+            &cascade(1),
+            &decision(),
+            None,
+            0.01,
+        );
+
+        assert!(debug.contains("exec=open:sug-info-scalp price=100"));
+    }
+
+    #[test]
+    fn open_debug_renders_different_entry_reason() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Single;
+        let mut decision = decision();
+        decision.entry = EntryGate::Open {
+            notes: vec!["5m-primary".to_string()],
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
+                price: 101.25,
+            }),
+        };
+        let debug = render(
+            &state,
+            &snapshot(),
+            &regime(),
+            &cascade(1),
+            &cascade(1),
+            &decision,
+            None,
+            0.01,
+        );
+
+        assert!(debug.contains("exec=open:sug-info-movement price=101.25"));
+    }
+
+    #[test]
+    fn exec_is_omitted_when_position_exists() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Single;
+        state.position = PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 101.0,
+            trough_price: 99.0,
+            take_profit: 101.0,
+            stop_loss: 99.0,
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            tp_mark: "tp-long".to_string(),
+            entry_reason: None,
+            martingale: None,
+        };
+        let debug = render(
+            &state,
+            &snapshot(),
+            &regime(),
+            &cascade(1),
+            &cascade(1),
+            &decision(),
+            None,
+            0.01,
+        );
+
+        assert!(!debug.contains("exec="));
     }
 
     #[test]
@@ -360,10 +415,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             tp_mark: "tp-long".to_string(),
-            entry_reason: Some(EntryReason::SugInfoScalp {
-                price: 100.0,
-                started_at_ms: 1,
-            }),
+            entry_reason: None,
             martingale: Some(crate::state::MartingaleRuntime {
                 profile: crate::martingale::LadderProfile {
                     levels: 9,
@@ -388,8 +440,7 @@ mod tests {
         );
 
         assert!(debug.contains("mode=martingale"));
-        assert!(debug.contains("mode_ctx=martingale exit_src=martingale"));
-        assert!(debug.contains("mg_levels=9"));
+        assert!(!debug.contains("exec="));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
         assert!(!debug.contains("pullback_amount="));

@@ -69,8 +69,8 @@ mod stop_loss {
 use detection::cascade::{self, CascadeSignal};
 use detection::{mrc, regime, sideways};
 use model::{
-    Candle, EntryGate, EntryWaitSolution, IndicatorSnapshot, MarketState, PositionState,
-    SugInfoSnapshot, TimeframeSnapshot,
+    Candle, EntryGate, EntryOpenReason, EntryWaitSolution, IndicatorSnapshot, MarketState,
+    PositionState, SugInfoSnapshot, TimeframeSnapshot,
 };
 use state::{CascadeState, EngineState};
 
@@ -304,11 +304,11 @@ fn cascade_signal_from_history(history: &[LiveFrame]) -> (CascadeState, CascadeS
 
 fn gate_summary(gate: &EntryGate) -> String {
     match gate {
-        EntryGate::Open { notes } => {
+        EntryGate::Open { notes, reason } => {
             if notes.is_empty() {
-                "open".to_string()
+                format!("open:{}", reason.label())
             } else {
-                format!("open:{}", notes.join("|"))
+                format!("open:{}|{}", reason.label(), notes.join("|"))
             }
         }
         EntryGate::Wait(wait) => {
@@ -472,7 +472,9 @@ fn near_price(a: f64, b: f64) -> bool {
 
 fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
     match gate {
-        EntryGate::Open { notes } => note_value(notes, "entry")
+        EntryGate::Open { notes, reason } => reason
+            .price()
+            .or_else(|| note_value(notes, "entry"))
             .or_else(|| note_value(notes, "pullback_entry"))
             .or_else(|| note_value(notes, "price"))
             .unwrap_or(fallback),

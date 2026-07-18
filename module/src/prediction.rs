@@ -2,8 +2,8 @@ use crate::detection::cascade::CascadeSignal;
 use crate::detection::{levels, sideways};
 use crate::exit;
 use crate::model::{
-    EntryGate, EntryReason, EntryWait, EntryWaitSolution, ExitKind, FastCandlePhase,
-    IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot,
+    EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, ExitKind,
+    FastCandlePhase, IndicatorSnapshot, MarketState, PositionState, SugInfoSnapshot,
 };
 use crate::state::EngineState;
 
@@ -531,7 +531,15 @@ fn sideway_entry_gate(
         return None;
     }
 
-    Some(EntryGate::Open { notes: plan.notes })
+    Some(EntryGate::Open {
+        notes: plan.notes,
+        reason: EntryOpenReason::Entry(EntryReason::SidewayScalp {
+            price: plan.price,
+            block_low: signal.block_low,
+            block_high: signal.block_high,
+            source: format!("{:?}", signal.source),
+        }),
+    })
 }
 
 pub fn sug_entry_plan(
@@ -695,6 +703,9 @@ fn sug_entry_gate(
                 ),
                 "1m-confirmed".to_string(),
             ],
+            reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
+                price: entry,
+            }),
         })
     } else if state.cfg.pullback_ratio() > 0.0 {
         Some(EntryGate::Wait(EntryWait {
@@ -759,7 +770,12 @@ pub fn entry_gate(
 ) -> EntryGate {
     if state.cfg.pullback_ratio() > 0.0 && sug_snapshot.sug_candle.is_some() {
         if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, state, cascade, side, true) {
-            return EntryGate::Open { notes: plan.notes };
+            return EntryGate::Open {
+                notes: plan.notes,
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
+                    price: plan.entry,
+                }),
+            };
         }
     }
 
@@ -904,16 +920,21 @@ pub fn entry_gate(
         return gate;
     }
 
-    if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
-        if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
-            state.movement_entry_pending = None;
-            return wait;
+        if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
+            if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
+                state.movement_entry_pending = None;
+                return wait;
+            }
+            if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
+                return wait;
+            }
+            return EntryGate::Open {
+                notes: plan.notes,
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
+                    price: plan.price,
+                }),
+            };
         }
-        if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
-            return wait;
-        }
-        return EntryGate::Open { notes: plan.notes };
-    }
 
     state.movement_entry_pending = None;
 
@@ -930,6 +951,9 @@ pub fn entry_gate(
     } else {
         return EntryGate::Open {
             notes: vec!["no-exit-plan".to_string()],
+            reason: EntryOpenReason::Entry(EntryReason::Structural {
+                price: current_price,
+            }),
         };
     };
     let candle = signal_candle(snapshot, sug_snapshot);
@@ -1018,6 +1042,9 @@ pub fn entry_gate(
             "tp={:.4} sl={:.4} tp_reliable={}",
             plan.take_profit, plan.stop_loss, plan.tp_reliable
         )],
+        reason: EntryOpenReason::Entry(EntryReason::Structural {
+            price: current_price,
+        }),
     }
 }
 
@@ -1179,7 +1206,7 @@ mod tests {
         );
 
         match gate {
-            EntryGate::Open { notes } => {
+            EntryGate::Open { notes, .. } => {
                 assert!(notes.iter().any(|note| note == "mrc-two-line-eligible"));
             }
             EntryGate::Wait(wait) => panic!("unexpected wait: {}", wait.reason),

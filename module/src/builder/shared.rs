@@ -1,8 +1,8 @@
 use super::policy::StrategyPolicy;
 use crate::detection::{cascade::CascadeSignal, mrc, sideways};
 use crate::model::{
-    EntryGate, EntryReason, EntryWait, EntryWaitSolution, ExitKind, MarketState, RegimeSnapshot,
-    TradeDecision,
+    EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, ExitKind, MarketState,
+    RegimeSnapshot, TradeDecision,
 };
 use crate::prediction;
 use crate::state::EngineState;
@@ -25,7 +25,7 @@ pub(super) fn refine_common(
     regime: RegimeSnapshot,
     cascade_tf: &CascadeSignal,
     cascade_sug: &CascadeSignal,
-    sug_info: &SuggestionInfo,
+    _sug_info: &SuggestionInfo,
     mut decision: TradeDecision,
     apply_direction_lock: bool,
 ) -> TradeDecision {
@@ -37,38 +37,35 @@ pub(super) fn refine_common(
                 decision.market_state = plan.market_state;
                 decision.entry = EntryGate::Open {
                     notes: plan.notes.clone(),
+                    reason: EntryOpenReason::Entry(EntryReason::SidewayScalp {
+                        price: plan.price,
+                        block_low: sideway.block_low,
+                        block_high: sideway.block_high,
+                        source: format!("{:?}", sideway.source),
+                    }),
                 };
-                decision.entry_reason = Some(EntryReason::SidewayScalp {
-                    price: plan.price,
-                    block_low: sideway.block_low,
-                    block_high: sideway.block_high,
-                    started_at_ms: sug_info.system_time as u64,
-                    source: format!("{:?}", sideway.source),
-                });
             }
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { .. })
-        && decision.entry_reason.is_none()
+    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. })
         && sideway.active
     {
         if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
             decision.market_state = plan.market_state;
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
+                reason: EntryOpenReason::Entry(EntryReason::SidewayScalp {
+                    price: plan.price,
+                    block_low: sideway.block_low,
+                    block_high: sideway.block_high,
+                    source: format!("{:?}", sideway.source),
+                }),
             };
-            decision.entry_reason = Some(EntryReason::SidewayScalp {
-                price: plan.price,
-                block_low: sideway.block_low,
-                block_high: sideway.block_high,
-                started_at_ms: sug_info.system_time as u64,
-                source: format!("{:?}", sideway.source),
-            });
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { .. }) && decision.entry_reason.is_none() {
+    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. }) {
         let entry_side = match decision.market_state {
             MarketState::Long => crate::model::PositionState::Long,
             MarketState::Short => crate::model::PositionState::Short,
@@ -86,27 +83,24 @@ pub(super) fn refine_common(
             decision.market_state = plan.market_state;
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp {
+                    price: plan.entry,
+                }),
             };
-            decision.entry_reason = Some(EntryReason::SugInfoScalp {
-                price: plan.entry,
-                started_at_ms: sug_info.system_time as u64,
-            });
         }
     }
 
-    if matches!(decision.entry, EntryGate::Open { .. })
-        && decision.entry_reason.is_none()
+    if matches!(decision.entry, EntryGate::Open { reason: EntryOpenReason::Entry(EntryReason::Structural { .. }), .. })
         && sug_snapshot.sug_candle.is_none()
     {
         if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade_sug) {
             decision.market_state = plan.market_state;
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
+                reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement {
+                    price: plan.price,
+                }),
             };
-            decision.entry_reason = Some(EntryReason::SugInfoMovement {
-                price: plan.price,
-                started_at_ms: sug_info.system_time as u64,
-            });
         }
     }
 
@@ -115,19 +109,18 @@ pub(super) fn refine_common(
         && mrc1.bullish_structure
         && cascade_tf.dir > 0
     {
-        decision = TradeDecision {
-            market_state: MarketState::Long,
-            entry: match decision.entry {
-                EntryGate::Open { mut notes } => {
+            decision = TradeDecision {
+                market_state: MarketState::Long,
+                entry: match decision.entry {
+                EntryGate::Open { mut notes, reason } => {
                     notes.push("1m-recovery".to_string());
-                    EntryGate::Open { notes }
+                    EntryGate::Open { notes, reason }
                 }
                 EntryGate::Wait(mut wait) => {
                     wait.notes.push("1m-recovery".to_string());
                     EntryGate::Wait(wait)
                 }
             },
-            entry_reason: decision.entry_reason.clone(),
         };
     }
 
@@ -149,7 +142,6 @@ pub(super) fn refine_common(
                         "same-side-only".to_string(),
                     ],
                 }),
-                entry_reason: None,
             };
         }
     }

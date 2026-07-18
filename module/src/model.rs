@@ -215,18 +215,18 @@ pub struct SugInfoSnapshot {
 pub enum EntryReason {
     SugInfoScalp {
         price: f64,
-        started_at_ms: u64,
     },
     SugInfoMovement {
         price: f64,
-        started_at_ms: u64,
     },
     SidewayScalp {
         price: f64,
         block_low: f64,
         block_high: f64,
-        started_at_ms: u64,
         source: String,
+    },
+    Structural {
+        price: f64,
     },
 }
 
@@ -236,14 +236,7 @@ impl EntryReason {
             Self::SugInfoScalp { price, .. } => *price,
             Self::SugInfoMovement { price, .. } => *price,
             Self::SidewayScalp { price, .. } => *price,
-        }
-    }
-
-    pub fn started_at_ms(&self) -> u64 {
-        match self {
-            Self::SugInfoScalp { started_at_ms, .. } => *started_at_ms,
-            Self::SugInfoMovement { started_at_ms, .. } => *started_at_ms,
-            Self::SidewayScalp { started_at_ms, .. } => *started_at_ms,
+            Self::Structural { price } => *price,
         }
     }
 
@@ -252,6 +245,7 @@ impl EntryReason {
             Self::SugInfoScalp { .. } => "sug-info-scalp",
             Self::SugInfoMovement { .. } => "sug-info-movement",
             Self::SidewayScalp { .. } => "sideway-scalp",
+            Self::Structural { .. } => "structural",
         }
     }
 }
@@ -499,20 +493,40 @@ pub struct EntryWait {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryGate {
-    Open { notes: Vec<String> },
+    Open {
+        notes: Vec<String>,
+        reason: EntryOpenReason,
+    },
     Wait(EntryWait),
 }
 
-impl Default for EntryGate {
-    fn default() -> Self {
-        Self::Open { notes: Vec::new() }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EntryOpenReason {
+    Entry(EntryReason),
+}
+
+impl EntryOpenReason {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Entry(reason) => reason.label(),
+        }
+    }
+
+    pub fn price(&self) -> Option<f64> {
+        match self {
+            Self::Entry(reason) => Some(reason.price()),
+        }
+    }
+
+    pub fn as_entry_reason(&self) -> Option<&EntryReason> {
+        match self {
+            Self::Entry(reason) => Some(reason),
+        }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeDecision {
     pub market_state: MarketState,
     pub entry: EntryGate,
-    #[serde(default)]
-    pub entry_reason: Option<EntryReason>,
 }

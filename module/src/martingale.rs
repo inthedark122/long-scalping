@@ -335,7 +335,6 @@ mod tests {
             MarketState::Long,
             Some(&EntryReason::SugInfoScalp {
                 price: 100.0,
-                started_at_ms: 1,
             }),
             30.0,
         )
@@ -363,7 +362,6 @@ mod tests {
             100.0,
             Some(&EntryReason::SugInfoScalp {
                 price: 100.0,
-                started_at_ms: 1,
             }),
             None,
         )
@@ -383,7 +381,6 @@ mod tests {
                 price: 100.0,
                 block_low: 99.2,
                 block_high: 100.8,
-                started_at_ms: 1,
                 source: "LineCross".to_string(),
             }),
             None,
