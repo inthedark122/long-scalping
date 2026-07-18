@@ -1,5 +1,11 @@
 # Changelog
 
+# 1.0.54
+
+Test coverage release.
+
+- Fixed pending-position cancellation test coverage without changing production evaluation logic.
+
 # 1.0.53
 
 Typed take-profit release.
