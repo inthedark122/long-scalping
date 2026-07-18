@@ -1,5 +1,11 @@
 # Changelog
 
+# 1.0.55
+
+Short-position close fix release.
+
+- Use the absolute raw position quantity when creating close orders so short positions are fully closed.
+
 # 1.0.54
 
 Test coverage release.
