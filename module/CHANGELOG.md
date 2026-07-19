@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.63
+
+Deduplicated MRC crossing diagnostics release.
+
+- Ignore repeated touches of the current MRC line in the crossing sequence.
+- Correctly identify pullback sequences such as A -> B -> A.
+- Compact and bracket MRC crossing debug output.
+
 # 1.0.62
 
 Realtime MRC crossing diagnostics release.
