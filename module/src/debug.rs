@@ -1,4 +1,4 @@
-use crate::detection::{cascade, cascade::CascadeSignal, sideways};
+use crate::detection::{cascade, cascade::CascadeSignal, levels, sideways};
 use crate::format::{fmt_metric, fmt_price_tick};
 use crate::model::{
     EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, RegimeSnapshot, TradeDecision,
@@ -95,6 +95,12 @@ pub fn render(
         parts.push(format!(
             "exec={}",
             format_execution_text(decision, tick_size)
+        ));
+    }
+    if state.position.side != PositionState::Flat {
+        parts.push(format!(
+            "tp={}",
+            format_take_profit(state, snapshot, tick_size)
         ));
     }
     if state.position.side != PositionState::Flat
@@ -221,6 +227,41 @@ fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64
         fmt_price_tick(lock.break_price, tick_size),
         lock.reason
     )
+}
+
+fn format_take_profit(state: &EngineState, snapshot: &IndicatorSnapshot, tick_size: f64) -> String {
+    let price = state.position.take_profit;
+    if !price.is_finite() || price <= 0.0 {
+        return "none".to_string();
+    }
+
+    let source = match state.position.side {
+        PositionState::Long => levels::structural_levels(snapshot)
+            .above
+            .iter()
+            .find(|level| (level.value - price).abs() <= tick_size.max(f64::EPSILON) * 0.5)
+            .map(|level| level.label()),
+        PositionState::Short => levels::structural_levels(snapshot)
+            .below
+            .iter()
+            .find(|level| (level.value - price).abs() <= tick_size.max(f64::EPSILON) * 0.5)
+            .map(|level| level.label()),
+        PositionState::Flat => None,
+    }
+    .unwrap_or_else(|| {
+        if state.position.martingale.is_some() {
+            "martingale".to_string()
+        } else if matches!(
+            state.position.entry_reason.as_ref(),
+            Some(crate::model::EntryReason::SidewayScalp { .. })
+        ) {
+            "sideway".to_string()
+        } else {
+            "derived".to_string()
+        }
+    });
+
+    format!("{}:{}", fmt_price_tick(price, tick_size), source)
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
