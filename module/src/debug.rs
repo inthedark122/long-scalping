@@ -40,6 +40,11 @@ pub fn render(
         format!("{}/{}", vt.long_side.count, vt.short_side.count)
     };
     let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
+    let mrc_risk = state
+        .mrc_risk
+        .latest()
+        .map(|risk| risk.summary())
+        .unwrap_or_else(|| "na".to_string());
     // Direction debug: base/final are the regime and final refined direction;
     // src identifies the actual decision stage that supplied the final value.
     // For the base regime, why=5m[...]|15m[...] uses L/S for Long/Short and
@@ -88,6 +93,7 @@ pub fn render(
         format!("gain_prog={}", gain_prog),
         format!("gain_building={}", snapshot.tf1m.gain_is_building()),
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
+        format!("mrc_risk={mrc_risk}"),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(

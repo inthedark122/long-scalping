@@ -3,6 +3,7 @@ use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
 use crate::observer::{DirectionChangeHistory, TpRepriceHistory};
+use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
 
@@ -135,6 +136,7 @@ pub struct EngineState {
     pub direction_source: String,
     pub direction_reason: String,
     pub tp_reprice_history: TpRepriceHistory,
+    pub mrc_risk: MrcRiskManager,
     pub movement_entry_pending: Option<PendingEntryState>,
     pub cascade_tf: CascadeState,
     pub cascade_sug: CascadeState,
@@ -160,6 +162,7 @@ impl Default for EngineState {
             direction_source: "regime".to_string(),
             direction_reason: "na".to_string(),
             tp_reprice_history: TpRepriceHistory::default(),
+            mrc_risk: MrcRiskManager::default(),
             movement_entry_pending: None,
             cascade_tf: CascadeState::default(),
             cascade_sug: CascadeState::default(),

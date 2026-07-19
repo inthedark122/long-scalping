@@ -13,6 +13,7 @@ mod order_manager;
 mod orders;
 mod prediction;
 mod risk;
+mod risk_control;
 mod state;
 mod stop_loss;
 

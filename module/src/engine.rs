@@ -622,6 +622,12 @@ fn process_realtime(
     let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
     let cas_sug = cascade::update_from_candle(&mut state.cascade_sug, &candle);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
+    state.mrc_risk.observe(
+        &snapshot,
+        &sug_snapshot,
+        input.price,
+        sug_info.system_time as u64,
+    );
 
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     state.direction_source = "regime".to_string();
