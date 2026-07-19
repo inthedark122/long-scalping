@@ -54,7 +54,6 @@ pub fn render(
             "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
         ),
-        format!("mode={}", state.cfg.trade_mode.as_str()),
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
         format!("15m_fb={}", regime.fallback_used),
@@ -330,7 +329,7 @@ mod tests {
             0.01,
         );
 
-        assert!(debug.contains("mode=single"));
+        assert!(!debug.contains("mode=single"));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
         assert!(!debug.contains("pullback_amount="));
@@ -475,7 +474,7 @@ mod tests {
             0.01,
         );
 
-        assert!(debug.contains("mode=martingale"));
+        assert!(!debug.contains("mode=martingale"));
         assert!(!debug.contains("exec="));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
