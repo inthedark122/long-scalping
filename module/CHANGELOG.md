@@ -1,5 +1,15 @@
 # Changelog
 
+# 1.0.59
+
+Movement-history entry pricing release.
+
+- Removed Sug cascade tracking and kept a single timeframe cascade.
+- Limited cascade direction use to explicit movement-plan direction selection.
+- Added bounded completed-movement history for movement-based entry pricing.
+- Used previous movement ranges and current movement delta without fallback prices.
+- Renamed the MRC pullback wait reason to `mrc-pullback-wait`.
+
 # 1.0.58
 
 Configurable TP-control release.
