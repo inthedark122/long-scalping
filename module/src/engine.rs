@@ -654,7 +654,6 @@ fn process_realtime(
         &sug_snapshot,
         &sideway,
         regime,
-        &cas_tf,
         &cas_sug,
         sug_info,
         crate::model::TradeDecision {

@@ -1,5 +1,5 @@
 use super::policy::StrategyPolicy;
-use crate::detection::{cascade::CascadeSignal, mrc, sideways};
+use crate::detection::{cascade::CascadeSignal, sideways};
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, ExitKind, MarketState,
     RegimeSnapshot, TradeDecision,
@@ -23,7 +23,6 @@ pub(super) fn refine_common(
     sug_snapshot: &crate::model::SugInfoSnapshot,
     sideway: &sideways::SidewaySignal,
     regime: RegimeSnapshot,
-    cascade_tf: &CascadeSignal,
     cascade_sug: &CascadeSignal,
     _sug_info: &SuggestionInfo,
     mut decision: TradeDecision,
@@ -128,31 +127,6 @@ pub(super) fn refine_common(
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
             };
         }
-    }
-
-    let mrc1 = mrc::analyze(&snapshot.tf1m.mrc, snapshot.tf1m.candle.close);
-    if decision.market_state == MarketState::Sideways
-        && mrc1.bullish_structure
-        && cascade_tf.dir > 0
-    {
-        state.direction_source = "1m-recovery".to_string();
-        state.direction_reason = format!(
-            "1m-recovery:mrc1_bull={}:casTf_dir={}",
-            mrc1.bullish_structure, cascade_tf.dir
-        );
-        decision = TradeDecision {
-            market_state: MarketState::Long,
-            entry: match decision.entry {
-                EntryGate::Open { mut notes, reason } => {
-                    notes.push("1m-recovery".to_string());
-                    EntryGate::Open { notes, reason }
-                }
-                EntryGate::Wait(mut wait) => {
-                    wait.notes.push("1m-recovery".to_string());
-                    EntryGate::Wait(wait)
-                }
-            },
-        };
     }
 
     if apply_direction_lock {
