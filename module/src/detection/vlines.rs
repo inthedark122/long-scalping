@@ -15,13 +15,21 @@ fn record_cross(
     direction: i8,
     tick: u64,
 ) {
+    // Ignore repeated touches of the current line. A line becomes a new
+    // sequence event only after another line has been crossed, which keeps
+    // A -> B -> A meaningful.
+    if crossing.last_line == Some(line_idx as u8) {
+        return;
+    }
+
     let tracker = &mut vlines[line_idx];
     tracker.last_cross_tick = tick;
     tracker.last_cross_dir = direction;
     tracker.cross_count = tracker.cross_count.saturating_add(1);
     tracker.last_cross_price = line;
 
-    let pulled_back = crossing.last_line == Some(line_idx as u8);
+    let pulled_back = crossing.sequence_len >= 2
+        && crossing.sequence[crossing.sequence_len - 2] == line_idx as u8;
     if pulled_back {
         crossing.reverted_line = crossing.last_line;
         crossing.no_pullback_count = 0;
@@ -160,11 +168,11 @@ mod tests {
         update(&mut vlines, &mut crossing, lines(), 101.0, 2);
         update(&mut vlines, &mut crossing, lines(), 99.5, 3);
 
-        assert_eq!(vlines[4].last_cross_dir, -1);
-        assert_eq!(vlines[4].cross_count, 2);
-        assert_eq!(crossing.sequence_len, 2);
-        assert_eq!(&crossing.sequence[..2], &[4, 4]);
-        assert_eq!(crossing.last_direction, -1);
+        assert_eq!(vlines[4].last_cross_dir, 1);
+        assert_eq!(vlines[4].cross_count, 1);
+        assert_eq!(crossing.sequence_len, 1);
+        assert_eq!(&crossing.sequence[..1], &[4]);
+        assert_eq!(crossing.last_direction, 1);
     }
 
     #[test]
@@ -188,11 +196,26 @@ mod tests {
 
         update(&mut vlines, &mut crossing, lines(), 99.0, 1);
         update(&mut vlines, &mut crossing, lines(), 105.0, 2);
-        update(&mut vlines, &mut crossing, lines(), 103.0, 3);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 3);
 
         assert_eq!(crossing.reverted_line, Some(5));
         assert_eq!(crossing.no_pullback_count, 0);
         assert_eq!(crossing.movement_direction, -1);
+        assert_eq!(&crossing.sequence[..3], &[4, 5, 4]);
+    }
+
+    #[test]
+    fn repeated_touch_of_current_line_is_not_a_new_sequence_event() {
+        let mut vlines = [VLineState::default(); 9];
+        let mut crossing = MrcCrossingState::default();
+
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
+        update(&mut vlines, &mut crossing, lines(), 101.0, 2);
+        update(&mut vlines, &mut crossing, lines(), 99.5, 3);
+        update(&mut vlines, &mut crossing, lines(), 100.5, 4);
+
+        assert_eq!(&crossing.sequence[..1], &[4]);
+        assert_eq!(vlines[4].cross_count, 1);
     }
 
     #[test]

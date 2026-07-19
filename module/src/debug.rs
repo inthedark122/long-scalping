@@ -273,15 +273,15 @@ fn format_take_profit(state: &EngineState, snapshot: &IndicatorSnapshot, tick_si
 
 fn mrc_line_label(index: u8) -> &'static str {
     match index {
-        0 => "down_big",
-        1 => "down_outer",
-        2 => "down_small",
-        3 => "down_inner",
+        0 => "db",
+        1 => "do",
+        2 => "ds",
+        3 => "di",
         4 => "mean",
-        5 => "up_inner",
-        6 => "up_small",
-        7 => "up_outer",
-        8 => "up_big",
+        5 => "ai",
+        6 => "us",
+        7 => "uo",
+        8 => "ub",
         _ => "na",
     }
 }
@@ -323,7 +323,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         })
         .unwrap_or("na");
     format!(
-        "line={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={}",
+        "[last={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={}]",
         latest,
         direction,
         count,
