@@ -11,6 +11,7 @@ fn record_cross(
     crossing: &mut MrcCrossingState,
     line_idx: usize,
     line: f64,
+    next_line: Option<f64>,
     price: f64,
     direction: i8,
     tick: u64,
@@ -57,6 +58,7 @@ fn record_cross(
             .map_or(line_idx as u8, |value| value.min(line_idx as u8)),
     );
     crossing.movement_start = line;
+    crossing.movement_target = next_line.unwrap_or(0.0);
     crossing.movement_extreme = price;
     crossing.movement_direction = direction;
 }
@@ -115,7 +117,23 @@ pub fn update(
 
     for (line_idx, line) in crossed {
         let direction = if upward { 1 } else { -1 };
-        record_cross(vlines, crossing, line_idx, line, price, direction, tick);
+        let next_line = if direction > 0 {
+            lines.get(line_idx + 1).copied()
+        } else {
+            line_idx
+                .checked_sub(1)
+                .and_then(|idx| lines.get(idx).copied())
+        };
+        record_cross(
+            vlines,
+            crossing,
+            line_idx,
+            line,
+            next_line.filter(|value| value.is_finite() && *value > 0.0),
+            price,
+            direction,
+            tick,
+        );
     }
 
     if crossing.movement_direction > 0 {
@@ -227,6 +245,7 @@ mod tests {
         update(&mut vlines, &mut crossing, lines(), 101.0, 2);
         update(&mut vlines, &mut crossing, lines(), 102.0, 3);
         assert_eq!(crossing.movement_start, 100.0);
+        assert_eq!(crossing.movement_target, 104.0);
         assert_eq!(crossing.movement_extreme, 102.0);
 
         update(&mut vlines, &mut crossing, lines(), 105.0, 4);

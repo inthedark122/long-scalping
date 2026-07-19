@@ -62,6 +62,7 @@ pub struct MrcCrossingState {
     pub lowest_line: Option<u8>,
     pub reverted_line: Option<u8>,
     pub movement_start: f64,
+    pub movement_target: f64,
     pub movement_extreme: f64,
     pub movement_direction: i8,
 }
@@ -79,6 +80,7 @@ impl Default for MrcCrossingState {
             lowest_line: None,
             reverted_line: None,
             movement_start: 0.0,
+            movement_target: 0.0,
             movement_extreme: 0.0,
             movement_direction: 0,
         }

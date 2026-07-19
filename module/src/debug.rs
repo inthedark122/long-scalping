@@ -311,6 +311,30 @@ fn format_mrc_crossing(state: &EngineState) -> String {
     } else {
         "na".to_string()
     };
+    let next_progress = if crossing.movement_start > 0.0
+        && crossing.movement_target > 0.0
+        && crossing.last_price.is_some()
+        && crossing.movement_direction != 0
+    {
+        let current = crossing.last_price.unwrap_or(crossing.movement_start);
+        let distance = if crossing.movement_direction > 0 {
+            crossing.movement_target - crossing.movement_start
+        } else {
+            crossing.movement_start - crossing.movement_target
+        };
+        if distance > 0.0 {
+            let progress = if crossing.movement_direction > 0 {
+                (current - crossing.movement_start) / distance * 100.0
+            } else {
+                (crossing.movement_start - current) / distance * 100.0
+            };
+            format!("{:.2}%", progress.clamp(0.0, 100.0))
+        } else {
+            "na".to_string()
+        }
+    } else {
+        "na".to_string()
+    };
     let count = state
         .vlines
         .get(crossing.last_line.unwrap_or(255) as usize)
@@ -323,7 +347,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         })
         .unwrap_or("na");
     format!(
-        "[last={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={}]",
+        "[last={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={} next={}]",
         latest,
         direction,
         count,
@@ -332,7 +356,8 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         crossing.highest_line.map(mrc_line_label).unwrap_or("na"),
         crossing.lowest_line.map(mrc_line_label).unwrap_or("na"),
         crossing.reverted_line.map(mrc_line_label).unwrap_or("na"),
-        movement
+        movement,
+        next_progress
     )
 }
 
