@@ -26,7 +26,6 @@ pub struct PositionRuntime {
     pub stop_loss_reason: String,
     pub exit_tp_reliable: bool,
     pub exit_mode: ExitMode,
-    pub tp_mark: String,
     pub entry_reason: Option<EntryReason>,
     pub martingale: Option<MartingaleRuntime>,
 }
@@ -223,7 +222,6 @@ pub fn sync_position_state(
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
-                    tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
                     martingale: state.position.martingale.clone(),
                 };
@@ -246,7 +244,6 @@ pub fn sync_position_state(
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
-                    tp_mark: String::new(),
                     entry_reason: state.position.entry_reason.clone(),
                     martingale: state.position.martingale.clone(),
                 };

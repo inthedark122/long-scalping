@@ -5,7 +5,8 @@ use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
 use crate::model::{
-    EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TradeDecision,
+    EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TpControl,
+    TradeDecision,
 };
 use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
 use crate::risk::entry_budget;
@@ -285,6 +286,38 @@ fn created_position_update(
     Some(update_position(direction, Some(desired_price)))
 }
 
+fn position_exit_plan(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    reference_price: f64,
+    side: PositionState,
+    builder: &BuiltStrategy,
+) -> Option<exit::ExitPlan> {
+    if builder.is_martingale() {
+        martingale::exit_plan(
+            snapshot,
+            side,
+            reference_price,
+            state.position.entry_reason.as_ref(),
+            state
+                .position
+                .martingale
+                .as_ref()
+                .map(|martingale| martingale.profile),
+        )
+    } else {
+        exit::plan(
+            snapshot,
+            sug_snapshot,
+            &state.cascade_sug,
+            reference_price,
+            side,
+            state.position.entry_reason.as_ref(),
+        )
+    }
+}
+
 fn initialize_exit_plan(
     input: &ModuleInput,
     state: &mut EngineState,
@@ -303,36 +336,20 @@ fn initialize_exit_plan(
     } else {
         input.price
     };
-    let plan = if builder.is_martingale() {
-        martingale::exit_plan(
-            snapshot,
-            side,
-            reference_price,
-            state.position.entry_reason.as_ref(),
-            state
-                .position
-                .martingale
-                .as_ref()
-                .map(|martingale| martingale.profile),
-        )?
-    } else {
-        exit::plan(
-            snapshot,
-            sug_snapshot,
-            &state.cascade_sug,
-            reference_price,
-            side,
-            state.position.entry_reason.as_ref(),
-        )?
-    };
+    let plan = position_exit_plan(
+        state,
+        snapshot,
+        sug_snapshot,
+        reference_price,
+        side,
+        builder,
+    )?;
     state.position.take_profit = plan.take_profit.price();
     state.position.stop_loss = plan.stop_loss.price();
     state.position.stop_loss_reason = plan.stop_loss.reason();
     state.position.exit_tp_reliable = plan.tp_reliable;
     state.position.exit_mode = ExitMode::Structural;
-    if state.position.tp_mark.is_empty() {
-        state.position.tp_mark = tp_mark(direction);
-    }
+    let order_mark = tp_mark(direction);
     let qty = position_qty(input, side);
     if qty <= 0.0 {
         return None;
@@ -342,9 +359,117 @@ fn initialize_exit_plan(
         direction,
         qty,
         plan.take_profit.price(),
-        &state.position.tp_mark,
+        &order_mark,
         order_note.as_deref(),
     ))
+}
+
+fn ensure_trailing_exit_order(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    side: PositionState,
+    builder: &BuiltStrategy,
+) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => Direction::Both,
+    };
+    let order_mark = tp_mark(direction);
+
+    let qty = position_qty(input, side);
+    if qty <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    if state.position.stop_loss <= 0.0 {
+        let reference_price = if state.position.entry_price > 0.0 {
+            state.position.entry_price
+        } else {
+            input.price
+        };
+        if let Some(plan) = position_exit_plan(
+            state,
+            snapshot,
+            sug_snapshot,
+            reference_price,
+            side,
+            builder,
+        ) {
+            state.position.stop_loss = plan.stop_loss.price();
+            state.position.stop_loss_reason = plan.stop_loss.reason();
+            state.position.exit_tp_reliable = plan.tp_reliable;
+        } else {
+            return (Vec::new(), Vec::new());
+        }
+    }
+
+    let previous_stop_loss = state.position.stop_loss;
+    let virtual_sl_hit = stop_loss::virtual_stop_loss_hit(side, input.price, previous_stop_loss);
+    let tick = tick_size(input);
+
+    if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
+        if !virtual_sl_hit {
+            state.position.take_profit = 0.0;
+            state.position.exit_mode = ExitMode::Structural;
+            return (Vec::new(), Vec::new());
+        }
+        return (Vec::new(), Vec::new());
+    }
+
+    if virtual_sl_hit {
+        let Some(recovery_tp) = stop_loss::trailing_recovery_take_profit(input.price, side, tick)
+        else {
+            return (Vec::new(), Vec::new());
+        };
+        state.position.take_profit = recovery_tp;
+        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
+        record_tp_reprice(
+            state,
+            input,
+            side,
+            0.0,
+            recovery_tp,
+            "trailing-sl-cross",
+            "trailing-virtual-sl",
+            true,
+            format!(
+                "mode=trailing-stop|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
+                order_mark, input.price, previous_stop_loss, tick
+            ),
+        );
+        let note = tp_reprice_order_note(state, tick, "tp:trailing-stop|sl-cross");
+        return (
+            vec![tp_limit_order(
+                direction,
+                qty,
+                recovery_tp,
+                &order_mark,
+                Some(&note),
+            )],
+            Vec::new(),
+        );
+    }
+
+    if let Some(plan) =
+        position_exit_plan(state, snapshot, sug_snapshot, input.price, side, builder)
+    {
+        let candidate_stop_loss = plan.stop_loss.price();
+        let favorable = match side {
+            PositionState::Long => candidate_stop_loss > previous_stop_loss,
+            PositionState::Short => candidate_stop_loss < previous_stop_loss,
+            PositionState::Flat => false,
+        };
+        if favorable {
+            state.position.stop_loss = candidate_stop_loss;
+            state.position.stop_loss_reason = plan.stop_loss.reason();
+            state.position.exit_tp_reliable = plan.tp_reliable;
+        }
+    }
+
+    (Vec::new(), Vec::new())
 }
 
 fn ensure_active_exit_order(
@@ -359,14 +484,16 @@ fn ensure_active_exit_order(
         return (Vec::new(), Vec::new());
     }
 
+    if state.cfg.tp_control == TpControl::TrailingStop {
+        return ensure_trailing_exit_order(input, state, snapshot, sug_snapshot, side, builder);
+    }
+
     let direction = match side {
         PositionState::Long => Direction::Long,
         PositionState::Short => Direction::Short,
         PositionState::Flat => Direction::Both,
     };
-    if state.position.tp_mark.is_empty() {
-        state.position.tp_mark = tp_mark(direction);
-    }
+    let order_mark = tp_mark(direction);
 
     let mut notes = Vec::new();
     let qty = position_qty(input, side);
@@ -412,17 +539,12 @@ fn ensure_active_exit_order(
                         true,
                         format!(
                             "mode=martingale|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
-                            state.position.tp_mark, input.price, state.position.stop_loss, tick
+                            order_mark, input.price, state.position.stop_loss, tick
                         ),
                     );
                     let note = tp_reprice_order_note(state, tick, "tp:martingale|reprice");
-                    let order = tp_limit_order(
-                        direction,
-                        qty,
-                        desired_tp,
-                        &state.position.tp_mark,
-                        Some(&note),
-                    );
+                    let order =
+                        tp_limit_order(direction, qty, desired_tp, &order_mark, Some(&note));
                     return (vec![order], Vec::new());
                 }
             }
@@ -459,7 +581,7 @@ fn ensure_active_exit_order(
                         state.position.exit_mode.as_str(),
                         input.price,
                         state.position.stop_loss,
-                        state.position.tp_mark,
+                        order_mark,
                         tick
                     ),
                 );
@@ -472,7 +594,7 @@ fn ensure_active_exit_order(
                     direction,
                     qty,
                     plan.take_profit.price(),
-                    &state.position.tp_mark,
+                    &order_mark,
                     Some(&note),
                 );
                 return (vec![order], Vec::new());
@@ -706,9 +828,14 @@ pub fn evaluate_with_cascade(
             state.position.stop_loss = plan.stop_loss.price();
             state.position.stop_loss_reason = plan.stop_loss.reason();
             state.position.exit_mode = ExitMode::Structural;
+            let tp_orders = if state.cfg.tp_control == TpControl::TrailingStop {
+                Vec::new()
+            } else {
+                plan.orders
+            };
             return Some(ExecutionResult {
                 open_positions: vec![plan.open_position],
-                tp_orders: plan.orders,
+                tp_orders,
                 ..Default::default()
             });
         }
@@ -1527,7 +1654,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: None,
         };
@@ -1588,7 +1714,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-short".to_string(),
             entry_reason: None,
             martingale: None,
         };
@@ -1646,11 +1771,10 @@ mod tests {
             peak_price: 101.0,
             trough_price: 99.0,
             take_profit: 100.2,
-            stop_loss: 99.5,
+            stop_loss: 90.0,
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::TrailAfterVirtualSl,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: None,
         };
@@ -1704,6 +1828,304 @@ mod tests {
     }
 
     #[test]
+    fn trailing_stop_does_not_place_initial_tp() {
+        let mut state = EngineState::default();
+        state.cfg.tp_control = TpControl::TrailingStop;
+        state.position = crate::state::PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 99.5,
+            stop_loss_reason: "structural:1m:below:mean".to_string(),
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            entry_reason: None,
+            martingale: None,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.1,
+            qty: 0.1,
+        });
+        inp.price = 100.0;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+
+        assert!(result.as_ref().unwrap().tp_orders.is_empty());
+        assert!(result.as_ref().unwrap().cancel_orders.is_empty());
+        assert_eq!(state.position.take_profit, 0.0);
+        assert_eq!(state.position.exit_mode, ExitMode::Structural);
+    }
+
+    #[test]
+    fn trailing_stop_moves_virtual_sl_only_in_favorable_direction() {
+        let mut state = EngineState::default();
+        state.cfg.tp_control = TpControl::TrailingStop;
+        state.position = crate::state::PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 90.0,
+            stop_loss_reason: String::new(),
+            exit_tp_reliable: false,
+            exit_mode: ExitMode::Structural,
+            entry_reason: None,
+            martingale: None,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.2,
+            qty: 0.1,
+        });
+        inp.price = 102.0;
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 1.0,
+        };
+        snapshot.tf1m.candle.close = inp.price;
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+        let first = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert!(first.as_ref().unwrap().tp_orders.is_empty());
+        assert!(state.position.stop_loss > 90.0);
+        let trailed_stop = state.position.stop_loss;
+
+        inp.price = 101.0;
+        let second = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert!(second.as_ref().unwrap().tp_orders.is_empty());
+        assert_eq!(state.position.stop_loss, trailed_stop);
+    }
+
+    #[test]
+    fn trailing_stop_places_fixed_two_tick_tp_after_long_cross() {
+        let mut state = EngineState::default();
+        state.cfg.tp_control = TpControl::TrailingStop;
+        state.position = crate::state::PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 99.5,
+            stop_loss_reason: "structural:1m:below:mean".to_string(),
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            entry_reason: None,
+            martingale: None,
+        };
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.8,
+            qty: 0.1,
+        });
+        inp.price = 99.0;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        let expected_tp = inp.price + 2.0 * tick_size(&inp);
+
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().tp_orders[0].enter_price,
+            expected_tp
+        );
+        assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
+        assert_eq!(state.position.take_profit, expected_tp);
+        assert_eq!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl);
+    }
+
+    #[test]
+    fn trailing_stop_places_two_tick_tp_in_profitable_direction_for_short() {
+        let mut state = EngineState::default();
+        state.cfg.tp_control = TpControl::TrailingStop;
+        state.position = crate::state::PositionRuntime {
+            side: PositionState::Short,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 100.5,
+            stop_loss_reason: String::new(),
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            entry_reason: None,
+            martingale: None,
+        };
+        let mut inp = input();
+        inp.positions.short = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.8,
+            qty: 0.1,
+        });
+        inp.price = 101.0;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Short),
+        );
+        let expected_tp = inp.price - 2.0 * tick_size(&inp);
+
+        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
+        assert_eq!(
+            result.as_ref().unwrap().tp_orders[0].enter_price,
+            expected_tp
+        );
+        assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
+    }
+
+    #[test]
+    fn trailing_stop_suppresses_martingale_entry_tp_orders() {
+        let mut state = EngineState::default();
+        state.cfg.trade_mode = TradeMode::Martingale;
+        state.cfg.tp_control = TpControl::TrailingStop;
+        let mut inp = input();
+        inp.sug_info = Some(sug_info(1_000));
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.candle = crate::model::Candle {
+            open: 100.0,
+            high: 100.5,
+            low: 99.5,
+            close: 100.0,
+        };
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 105.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
+        snapshot.tf1h = snapshot.tf1m;
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &snapshot,
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+
+        assert!(result.as_ref().unwrap().open_positions.len() <= 1);
+        assert!(result.as_ref().unwrap().tp_orders.is_empty());
+    }
+
+    #[test]
+    fn trailing_stop_rearms_only_after_returning_across_sl() {
+        let mut state = EngineState::default();
+        state.cfg.tp_control = TpControl::TrailingStop;
+        state.position = crate::state::PositionRuntime {
+            side: PositionState::Long,
+            entry_price: 100.0,
+            peak_price: 100.0,
+            trough_price: 100.0,
+            take_profit: 0.0,
+            stop_loss: 99.5,
+            stop_loss_reason: String::new(),
+            exit_tp_reliable: true,
+            exit_mode: ExitMode::Structural,
+            entry_reason: None,
+            martingale: None,
+        };
+
+        let mut crossed_input = input();
+        crossed_input.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: -0.8,
+            qty: 0.1,
+        });
+        crossed_input.price = 99.0;
+        let first = evaluate(
+            &crossed_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert_eq!(first.as_ref().unwrap().tp_orders.len(), 1);
+
+        let mut recovered_input = crossed_input;
+        recovered_input.price = 100.0;
+        let recovered = evaluate(
+            &recovered_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert!(recovered.as_ref().unwrap().tp_orders.is_empty());
+        assert!(recovered.as_ref().unwrap().cancel_orders.is_empty());
+        assert_eq!(state.position.take_profit, 0.0);
+        assert_eq!(state.position.exit_mode, ExitMode::Structural);
+
+        let mut second_cross_input = recovered_input;
+        second_cross_input.price = 99.0;
+        let second = evaluate(
+            &second_cross_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        );
+        assert_eq!(second.as_ref().unwrap().tp_orders.len(), 1);
+    }
+
+    #[test]
     fn martingale_trail_after_virtual_sl_advances_take_profit() {
         let mut state = EngineState::default();
         state.cfg.trade_mode = TradeMode::Martingale;
@@ -1717,7 +2139,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::TrailAfterVirtualSl,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: Some(martingale_runtime()),
         };
@@ -1789,7 +2210,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-short".to_string(),
             entry_reason: Some(crate::model::EntryReason::SugInfoMovement { price: 99.2 }),
             martingale: None,
         };
@@ -1826,7 +2246,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: Some(crate::model::EntryReason::SugInfoScalp { price: 100.0 }),
             martingale: None,
         };

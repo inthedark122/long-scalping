@@ -42,6 +42,26 @@ pub fn martingale_recovery_take_profit(
     }
 }
 
+pub fn trailing_recovery_take_profit(
+    current_price: f64,
+    side: PositionState,
+    tick_size: f64,
+) -> Option<f64> {
+    if !current_price.is_finite() || current_price <= 0.0 {
+        return None;
+    }
+    if !tick_size.is_finite() || tick_size <= 0.0 {
+        return None;
+    }
+
+    let price = match side {
+        PositionState::Long => current_price + 2.0 * tick_size,
+        PositionState::Short => current_price - 2.0 * tick_size,
+        PositionState::Flat => return None,
+    };
+    (price.is_finite() && price > 0.0).then_some(price)
+}
+
 pub fn fast_candle_phase(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,

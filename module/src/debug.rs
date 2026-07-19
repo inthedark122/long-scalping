@@ -320,7 +320,6 @@ mod tests {
             stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: Some(EntryReason::SugInfoScalp { price: 100.0 }),
             martingale: None,
         };
@@ -429,7 +428,6 @@ mod tests {
             stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: None,
         };
@@ -462,7 +460,6 @@ mod tests {
             stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: Some(crate::state::MartingaleRuntime {
                 profile: crate::martingale::LadderProfile {

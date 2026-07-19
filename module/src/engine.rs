@@ -5,7 +5,7 @@ use crate::execution;
 use crate::exit;
 use crate::market_data;
 use crate::martingale;
-use crate::model::{ExitMode, TradeMode};
+use crate::model::{ExitMode, TpControl, TradeMode};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
@@ -138,15 +138,23 @@ fn handle_signal(
                 TradeMode::Single
             };
         }
+        if let Some(tp_control) = values.get("tp_control").and_then(|v| v.as_f64()) {
+            state.cfg.tp_control = if tp_control >= 1.0 {
+                TpControl::TrailingStop
+            } else {
+                TpControl::Normal
+            };
+        }
         state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% trade_mode={}",
+                "start cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% trade_mode={} tp_control={}",
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.pullback_amount,
-                state.cfg.trade_mode.as_str()
+                state.cfg.trade_mode.as_str(),
+                state.cfg.tp_control.as_str()
             ),
             ..Default::default()
         }
@@ -185,7 +193,6 @@ fn handle_new_position(
         stop_loss_reason: String::new(),
         exit_tp_reliable: false,
         exit_mode: ExitMode::Structural,
-        tp_mark: tp_mark(direction),
         entry_reason: state.position.entry_reason.clone(),
         martingale: state.position.martingale.clone(),
     };
@@ -236,8 +243,14 @@ fn handle_new_position(
         })
     };
     let mut tp_orders = Vec::new();
+    let order_mark = tp_mark(direction);
     if let Some(plan) = plan {
-        state.position.take_profit = plan.take_profit.price();
+        let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop;
+        state.position.take_profit = if trailing_stop {
+            0.0
+        } else {
+            plan.take_profit.price()
+        };
         state.position.stop_loss = plan.stop_loss.price();
         state.position.stop_loss_reason = plan.stop_loss.reason();
         let qty = input
@@ -247,13 +260,13 @@ fn handle_new_position(
             .map(|p| p.qty)
             .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
             .unwrap_or(0.0);
-        if qty > 0.0 {
+        if qty > 0.0 && !trailing_stop {
             let note = Some(plan.take_profit.order_note());
             tp_orders.push(tp_limit_order(
                 direction,
                 qty,
                 plan.take_profit.price(),
-                &state.position.tp_mark,
+                &order_mark,
                 note.as_deref(),
             ));
         }
@@ -370,7 +383,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: Some(martingale_runtime()),
         };
@@ -418,7 +430,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: Some(martingale_runtime()),
         };
@@ -461,7 +472,6 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            tp_mark: "tp-long".to_string(),
             entry_reason: None,
             martingale: Some(martingale_runtime()),
         };

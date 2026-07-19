@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.57 typed-stop-loss release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode overrides. The module reports informative stop-loss sources and active-position SL debug details, records the actual direction decision source and reason, uses raw absolute position quantities for full close orders, includes structural level names in TP notes, disables the SugInfo exit pattern, and tracks TP repricing per position.",
+      "description": "Start the 1.0.57 typed-stop-loss release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode/tp_control overrides. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
       "params": [
         {
           "code": "cap_init",
@@ -68,6 +68,23 @@
             },
             {
               "label": "Martingale",
+              "value": 1.0
+            }
+          ]
+        },
+        {
+          "code": "tp_control",
+          "name": "TP control",
+          "description": "Normal keeps the current TP behavior. Trailing stop uses only a favorable-only virtual SL and places a recovery TP two ticks beyond price after the SL is crossed.",
+          "default": 0,
+          "variant": "Select",
+          "options": [
+            {
+              "label": "Normal",
+              "value": 0.0
+            },
+            {
+              "label": "Trailing stop",
               "value": 1.0
             }
           ]

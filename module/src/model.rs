@@ -45,6 +45,22 @@ impl TradeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TpControl {
+    #[default]
+    Normal,
+    TrailingStop,
+}
+
+impl TpControl {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::TrailingStop => "trailing-stop",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_cap_init")]
@@ -55,6 +71,8 @@ pub struct Config {
     pub pullback_amount: f64,
     #[serde(default)]
     pub trade_mode: TradeMode,
+    #[serde(default)]
+    pub tp_control: TpControl,
 }
 
 fn default_cap_init() -> f64 {
@@ -76,6 +94,7 @@ impl Default for Config {
             trading_amount: default_trading_amount(),
             pullback_amount: default_pullback_amount(),
             trade_mode: TradeMode::default(),
+            tp_control: TpControl::default(),
         }
     }
 }
