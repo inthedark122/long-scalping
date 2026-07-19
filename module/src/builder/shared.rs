@@ -116,8 +116,7 @@ pub(super) fn refine_common(
             reason: EntryOpenReason::Entry(EntryReason::Structural { .. }),
             ..
         }
-    ) && sug_snapshot.sug_candle.is_none()
-    {
+    ) {
         if let Some(plan) = prediction::movement_entry_plan(
             snapshot,
             sug_snapshot,

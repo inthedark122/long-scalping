@@ -205,6 +205,10 @@ pub fn movement_entry_plan(
     let movement_direction = cascade.dir;
     let entry_state = match market_state {
         MarketState::Long | MarketState::Short => market_state,
+        // This is intentionally counter-directional: the movement has already
+        // happened, so the entry tries to catch a pullback from its prior
+        // high/low rather than chase continuation. It is a candidate, not a
+        // guarantee that every completed movement will reverse.
         MarketState::Sideways => match movement_direction {
             1 => MarketState::Short,
             -1 => MarketState::Long,
@@ -1182,6 +1186,36 @@ mod tests {
             false
         )
         .is_none());
+    }
+
+    #[test]
+    fn movement_entry_uses_movement_direction_when_regime_is_sideways() {
+        let mut history = crate::state::CascadeState::default();
+        history.movement_history[0] = crate::state::CascadeMovement {
+            high: 100.2,
+            low: 99.2,
+        };
+        history.movement_history_len = 1;
+
+        let cascade = CascadeSignal {
+            dir: 1,
+            completed_size: 1.0,
+            average_size: 1.0,
+            samples: 3,
+            strength: 1.0,
+            ..Default::default()
+        };
+        let plan = movement_entry_plan(
+            &snapshot(),
+            &SugInfoSnapshot::default(),
+            &cascade,
+            &history,
+            MarketState::Sideways,
+        )
+        .expect("movement should provide a directional plan");
+
+        assert_eq!(plan.market_state, MarketState::Short);
+        assert_eq!(plan.movement_direction, 1);
     }
 
     #[test]

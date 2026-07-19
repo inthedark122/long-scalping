@@ -126,6 +126,11 @@ pub fn render(
 }
 
 fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
+    let direction = match decision.market_state {
+        crate::model::MarketState::Long => "long",
+        crate::model::MarketState::Short => "short",
+        crate::model::MarketState::Sideways => "both",
+    };
     match &decision.entry {
         EntryGate::Wait(wait) => format!(
             "entry-wait reason={} expect={}",
@@ -137,8 +142,9 @@ fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
         ),
         EntryGate::Open { reason, .. } => match reason {
             EntryOpenReason::Entry(reason) => format!(
-                "open:{} price={}",
+                "open:{} dir={} price={}",
                 reason.label(),
+                direction,
                 fmt_price_tick(reason.price(), tick_size)
             ),
         },
@@ -424,7 +430,7 @@ mod tests {
             0.01,
         );
 
-        assert!(debug.contains("exec=open:sug-info-scalp price=100"));
+        assert!(debug.contains("exec=open:sug-info-scalp dir=long price=100"));
     }
 
     #[test]
@@ -446,7 +452,7 @@ mod tests {
             0.01,
         );
 
-        assert!(debug.contains("exec=open:sug-info-movement price=101.25"));
+        assert!(debug.contains("exec=open:sug-info-movement dir=long price=101.25"));
     }
 
     #[test]
