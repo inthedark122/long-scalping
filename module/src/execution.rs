@@ -310,7 +310,7 @@ fn position_exit_plan(
         exit::plan(
             snapshot,
             sug_snapshot,
-            &state.cascade_sug,
+            &state.cascade_tf,
             reference_price,
             side,
             state.position.entry_reason.as_ref(),
@@ -554,7 +554,7 @@ fn ensure_active_exit_order(
         let trail_plan = exit::plan(
             snapshot,
             sug_snapshot,
-            &state.cascade_sug,
+            &state.cascade_tf,
             input.price,
             side,
             state.position.entry_reason.as_ref(),

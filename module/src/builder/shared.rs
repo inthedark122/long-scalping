@@ -23,7 +23,7 @@ pub(super) fn refine_common(
     sug_snapshot: &crate::model::SugInfoSnapshot,
     sideway: &sideways::SidewaySignal,
     regime: RegimeSnapshot,
-    cascade_sug: &CascadeSignal,
+    cascade: &CascadeSignal,
     _sug_info: &SuggestionInfo,
     mut decision: TradeDecision,
     apply_direction_lock: bool,
@@ -31,7 +31,7 @@ pub(super) fn refine_common(
     if state.position.side == crate::model::PositionState::Flat
         && state.exit_memory.kind == Some(ExitKind::StopLoss)
     {
-        if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
+        if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade) {
             if sideway.active {
                 decision.market_state = plan.market_state;
                 state.direction_source = "sideway-plan".to_string();
@@ -60,7 +60,7 @@ pub(super) fn refine_common(
         }
     ) && sideway.active
     {
-        if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade_sug) {
+        if let Some(plan) = prediction::sideway_entry_plan(snapshot, sideway, cascade) {
             decision.market_state = plan.market_state;
             state.direction_source = "sideway-plan".to_string();
             state.direction_reason = format!(
@@ -95,7 +95,7 @@ pub(super) fn refine_common(
             snapshot,
             sug_snapshot,
             state,
-            cascade_sug,
+            cascade,
             entry_side,
             state.cfg.pullback_ratio() > 0.0,
         ) {
@@ -118,7 +118,7 @@ pub(super) fn refine_common(
         }
     ) && sug_snapshot.sug_candle.is_none()
     {
-        if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade_sug) {
+        if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade) {
             decision.market_state = plan.market_state;
             state.direction_source = "movement-plan".to_string();
             state.direction_reason = format!("movement-plan:market={:?}", plan.market_state);

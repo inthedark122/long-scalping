@@ -235,7 +235,7 @@ fn handle_new_position(
             exit::plan(
                 &snapshot,
                 &sug_snapshot,
-                &state.cascade_sug,
+                &state.cascade_tf,
                 entry_price,
                 side,
                 state.position.entry_reason.as_ref(),
@@ -630,7 +630,6 @@ fn process_realtime(
         close: sug_info.candle.exit,
     };
     let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
-    let cas_sug = cascade::update_from_candle(&mut state.cascade_sug, &candle);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     state.mrc_risk.observe(
         &snapshot,
@@ -647,14 +646,14 @@ fn process_realtime(
         crate::model::MarketState::Short => crate::model::PositionState::Short,
         crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
     };
-    let entry_gate = prediction::entry_gate(&snapshot, &sug_snapshot, &cas_sug, state, entry_side);
+    let entry_gate = prediction::entry_gate(&snapshot, &sug_snapshot, &cas_tf, state, entry_side);
     let decision = strategy.refine_realtime_decision(
         state,
         &snapshot,
         &sug_snapshot,
         &sideway,
         regime,
-        &cas_sug,
+        &cas_tf,
         sug_info,
         crate::model::TradeDecision {
             market_state: regime.confirmed,
@@ -674,7 +673,6 @@ fn process_realtime(
         &snapshot,
         &regime,
         &cas_tf,
-        &cas_sug,
         &decision,
         execution
             .as_ref()

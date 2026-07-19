@@ -941,7 +941,7 @@ pub fn entry_gate(
     let plan = if let Some(plan) = candidate_exit_plan(
         snapshot,
         sug_snapshot,
-        &state.cascade_sug,
+        &state.cascade_tf,
         current_price,
         side,
         state.position.entry_reason.as_ref(),

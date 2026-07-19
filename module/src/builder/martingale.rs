@@ -30,7 +30,7 @@ impl MartingaleDynamicBuilder {
         sug_snapshot: &SugInfoSnapshot,
         sideway: &SidewaySignal,
         regime: RegimeSnapshot,
-        cascade_sug: &CascadeSignal,
+        cascade: &CascadeSignal,
         sug_info: &SuggestionInfo,
         decision: TradeDecision,
     ) -> TradeDecision {
@@ -40,7 +40,7 @@ impl MartingaleDynamicBuilder {
             sug_snapshot,
             sideway,
             regime,
-            cascade_sug,
+            cascade,
             sug_info,
             decision,
             false,

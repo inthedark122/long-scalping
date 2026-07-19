@@ -10,14 +10,12 @@ pub fn render(
     snapshot: &IndicatorSnapshot,
     regime: &RegimeSnapshot,
     cascade_tf: &CascadeSignal,
-    cascade_sug: &CascadeSignal,
     decision: &TradeDecision,
     constraint: Option<&str>,
     tick_size: f64,
 ) -> String {
     let vt = &state.vlines[4];
     let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
-    let cascade_sug_text = format_cascade(cascade_sug, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let pending_entry = state
         .movement_entry_pending
@@ -86,7 +84,6 @@ pub fn render(
         ),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf={}", cascade_tf_text),
-        format!("casSug={}", cascade_sug_text),
         format!("vml={}", vml),
         format!("gain_1m={}", gain_1m),
         format!("gain_zone={:?}", snapshot.tf1m.gain_zone()),
@@ -328,7 +325,6 @@ mod tests {
             &snapshot(),
             &regime(),
             &cascade(1),
-            &cascade(1),
             &decision(),
             None,
             0.01,
@@ -361,7 +357,6 @@ mod tests {
             &snapshot(),
             &regime(),
             &cascade(1),
-            &cascade(1),
             &decision,
             None,
             1.0,
@@ -381,7 +376,6 @@ mod tests {
             &state,
             &snapshot(),
             &regime(),
-            &cascade(1),
             &cascade(1),
             &decision(),
             None,
@@ -404,7 +398,6 @@ mod tests {
             &state,
             &snapshot(),
             &regime(),
-            &cascade(1),
             &cascade(1),
             &decision,
             None,
@@ -435,7 +428,6 @@ mod tests {
             &state,
             &snapshot(),
             &regime(),
-            &cascade(1),
             &cascade(1),
             &decision(),
             None,
@@ -478,7 +470,6 @@ mod tests {
             &snapshot(),
             &regime(),
             &cascade(1),
-            &cascade(1),
             &decision(),
             None,
             0.01,
@@ -498,7 +489,6 @@ mod tests {
             &state,
             &snapshot(),
             &regime(),
-            &cascade(1),
             &cascade(1),
             &decision(),
             Some("budget-too-small"),
