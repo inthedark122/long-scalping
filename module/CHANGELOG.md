@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.58
+
+Configurable TP-control release.
+
+- Added Normal and Trailing stop TP-control settings.
+- Added favorable-only virtual stop trailing with a fixed two-tick recovery TP after an SL cross.
+- Removed runtime TP-mark state and use deterministic direction-based TP marks.
+
 # 1.0.57
 
 Informative stop-loss release.
