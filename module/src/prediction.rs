@@ -1,4 +1,4 @@
-use crate::detection::cascade::CascadeSignal;
+use crate::detection::cascade::{self, CascadeSignal};
 use crate::detection::{levels, sideways};
 use crate::exit;
 use crate::model::{
@@ -47,14 +47,9 @@ fn mrc_window_band(window: &levels::MrcPriceWindow) -> f64 {
     (window.width * factor).max(f64::EPSILON)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MovementEntryKind {
-    ReverseReady,
-    SafeContinuation,
-}
-
 #[derive(Debug, Clone)]
 pub struct MovementEntryPlan {
+    pub movement_direction: i8,
     pub market_state: MarketState,
     pub price: f64,
     pub notes: Vec<String>,
@@ -77,15 +72,25 @@ pub struct SugEntryPlan {
 }
 
 fn movement_fill_price(
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
+    cascade: &CascadeSignal,
+    history: &crate::state::CascadeState,
     market_state: MarketState,
-) -> f64 {
-    let candle = signal_candle(snapshot, sug_snapshot);
+) -> Option<f64> {
+    let offset = (cascade.completed_size * 0.20).min(cascade.average_size * 0.20);
+    if !offset.is_finite() || offset <= 0.0 {
+        return None;
+    }
+    let previous = cascade::movement_history(history).into_iter().last()?;
     match market_state {
-        MarketState::Long => candle.low.max(f64::EPSILON),
-        MarketState::Short => candle.high.max(f64::EPSILON),
-        MarketState::Sideways => candle.close.max(f64::EPSILON),
+        MarketState::Long if previous.low > 0.0 => {
+            let price = previous.low + offset;
+            price.is_finite().then_some(price)
+        }
+        MarketState::Short if previous.high > 0.0 => {
+            let price = previous.high - offset;
+            (price.is_finite() && price > 0.0).then_some(price)
+        }
+        MarketState::Sideways | MarketState::Long | MarketState::Short => None,
     }
 }
 
@@ -182,71 +187,43 @@ pub fn movement_entry_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeSignal,
+    history: &crate::state::CascadeState,
+    market_state: MarketState,
 ) -> Option<MovementEntryPlan> {
-    if cascade.samples < 3 || cascade.average_size <= 0.0 || cascade.dir == 0 {
+    if cascade.samples < 3 || cascade.average_size <= 0.0 || cascade.stretched {
         return None;
     }
 
-    let stable = cascade.samples >= 3;
-    let kind = if stable && cascade.strength >= 1.3 {
-        Some(MovementEntryKind::ReverseReady)
-    } else if stable && cascade.strength <= 0.8 {
-        Some(MovementEntryKind::SafeContinuation)
-    } else {
-        None
-    }?;
-
-    let market_state = match kind {
-        MovementEntryKind::ReverseReady => match cascade.prev_dir {
-            1 => return None,
+    let movement_direction = cascade.dir;
+    let entry_state = match market_state {
+        MarketState::Long | MarketState::Short => market_state,
+        MarketState::Sideways => match movement_direction {
+            1 => MarketState::Short,
             -1 => MarketState::Long,
             _ => return None,
         },
-        MovementEntryKind::SafeContinuation => match cascade.dir {
-            1 => MarketState::Long,
-            -1 => return None,
-            _ => return None,
-        },
     };
-
-    let price = movement_fill_price(snapshot, sug_snapshot, market_state);
-    if matches!(kind, MovementEntryKind::SafeContinuation) {
-        let current_price = signal_candle(snapshot, sug_snapshot).close;
-        let band = movement_continuation_band(snapshot, sug_snapshot, cascade);
-        let distance = (current_price - price).abs();
-        if distance > band {
-            return None;
-        }
+    let price = movement_fill_price(cascade, history, entry_state)?;
+    let current_price = signal_candle(snapshot, sug_snapshot).close;
+    let band = movement_continuation_band(snapshot, sug_snapshot, cascade);
+    let distance = (current_price - price).abs();
+    if distance > band {
+        return None;
     }
 
-    let mut notes = vec![
+    let notes = vec![
         "movement-research".to_string(),
-        format!(
-            "kind={}",
-            match kind {
-                MovementEntryKind::ReverseReady => "reverse-ready",
-                MovementEntryKind::SafeContinuation => "safe-continuation",
-            }
-        ),
-        format!("dir={}", cascade.dir),
-        format!("prev_dir={}", cascade.prev_dir),
+        format!("movement_dir={}", movement_direction),
+        format!("market={:?}", entry_state),
         format!("strength={:.2}", cascade.strength),
         format!("avg={:.4}", cascade.average_size),
         format!("entry={:.4}", price),
+        format!("pullback-band={:.4}", band),
     ];
-    if matches!(kind, MovementEntryKind::ReverseReady) {
-        notes.push("reverse-entry".to_string());
-        notes.push("fill=aggressive".to_string());
-    } else {
-        notes.push("continuation-entry".to_string());
-        notes.push(format!(
-            "pullback-band={:.4}",
-            movement_continuation_band(snapshot, sug_snapshot, cascade)
-        ));
-    }
 
     Some(MovementEntryPlan {
-        market_state,
+        movement_direction,
+        market_state: entry_state,
         price,
         notes,
     })
@@ -551,11 +528,9 @@ pub fn sug_entry_plan(
     force_pullback: bool,
 ) -> Option<SugEntryPlan> {
     let sug = sug_snapshot.sug_candle?;
-    let side_dir = match side {
-        PositionState::Long => 1,
-        PositionState::Short => -1,
-        PositionState::Flat => return None,
-    };
+    if matches!(side, PositionState::Flat) || cascade.samples < 3 || cascade.stretched {
+        return None;
+    }
 
     if !force_pullback
         && direction_lock_gate(
@@ -569,10 +544,6 @@ pub fn sug_entry_plan(
         )
         .is_some()
     {
-        return None;
-    }
-
-    if !force_pullback && (cascade.samples < 3 || cascade.dir != side_dir) {
         return None;
     }
 
@@ -602,7 +573,6 @@ pub fn sug_entry_plan(
             "mrc_window={:.4}-{:.4} dist={:?}",
             window.lower, window.upper, window.distance
         ),
-        format!("cascade_dir={}", cascade.dir),
         format!("cascade_samples={}", cascade.samples),
     ];
     if force_pullback {
@@ -630,12 +600,6 @@ fn sug_entry_gate(
     side: PositionState,
 ) -> Option<EntryGate> {
     let sug = sug_snapshot.sug_candle?;
-    let side_dir = match side {
-        PositionState::Long => 1,
-        PositionState::Short => -1,
-        PositionState::Flat => return None,
-    };
-
     if state.cfg.pullback_ratio() <= 0.0 {
         if let Some(wait) = direction_lock_gate(
             state,
@@ -650,7 +614,7 @@ fn sug_entry_gate(
         }
     }
 
-    if state.cfg.pullback_ratio() <= 0.0 && (cascade.samples < 3 || cascade.dir != side_dir) {
+    if cascade.samples < 3 {
         return Some(EntryGate::Wait(EntryWait {
             reason: "sug-info-1m-confirm-wait".to_string(),
             solutions: vec![EntryWaitSolution::WaitForConfirmation {
@@ -665,13 +629,31 @@ fn sug_entry_gate(
             }],
             notes: vec![
                 "sug-info default scalping path".to_string(),
-                format!("cascade_dir={}", cascade.dir),
                 format!("cascade_samples={}", cascade.samples),
             ],
         }));
     }
 
     let price = sug.close;
+    if cascade.stretched {
+        return Some(EntryGate::Wait(EntryWait {
+            reason: "cascade-stretched-wait".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForConfirmation {
+                source: "cascade-risk".to_string(),
+                direction: match side {
+                    PositionState::Long => MarketState::Long,
+                    PositionState::Short => MarketState::Short,
+                    PositionState::Flat => MarketState::Sideways,
+                },
+                armed_tick: state.ticks,
+                price,
+            }],
+            notes: vec![
+                format!("cascade_strength={:.2}", cascade.strength),
+                format!("cascade_samples={}", cascade.samples),
+            ],
+        }));
+    }
     let Some(window) = mrc_window(snapshot, price) else {
         return Some(EntryGate::Wait(EntryWait {
             reason: "mrc-window-unavailable".to_string(),
@@ -755,7 +737,6 @@ fn sug_entry_gate(
                     "mrc_window={:.4}-{:.4} dist={:?}",
                     window.lower, window.upper, window.distance
                 ),
-                format!("cascade_dir={}", cascade.dir),
                 format!("cascade_samples={}", cascade.samples),
             ],
         }))
@@ -769,7 +750,8 @@ pub fn entry_gate(
     state: &mut EngineState,
     side: PositionState,
 ) -> EntryGate {
-    if state.cfg.pullback_ratio() > 0.0 && sug_snapshot.sug_candle.is_some() {
+    if state.cfg.pullback_ratio() > 0.0 && sug_snapshot.sug_candle.is_some() && cascade.samples >= 3
+    {
         if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, state, cascade, side, true) {
             return EntryGate::Open {
                 notes: plan.notes,
@@ -780,6 +762,34 @@ pub fn entry_gate(
 
     if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
         return wait;
+    }
+
+    if state.position.side == PositionState::Flat && cascade.samples < 3 {
+        return EntryGate::Wait(EntryWait {
+            reason: "movement-warmup".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForSamples {
+                required: 3,
+                current: cascade.samples,
+            }],
+            notes: vec![format!("cascade-samples={}", cascade.samples)],
+        });
+    }
+
+    if cascade.stretched {
+        return EntryGate::Wait(EntryWait {
+            reason: "cascade-stretched-wait".to_string(),
+            solutions: vec![EntryWaitSolution::WaitForConfirmation {
+                source: "cascade-risk".to_string(),
+                direction: match side {
+                    PositionState::Long => MarketState::Long,
+                    PositionState::Short => MarketState::Short,
+                    PositionState::Flat => MarketState::Sideways,
+                },
+                armed_tick: state.ticks,
+                price: signal_candle(snapshot, sug_snapshot).close,
+            }],
+            notes: vec![format!("cascade_strength={:.2}", cascade.strength)],
+        });
     }
 
     if let Some(gate) = sideway_entry_gate(snapshot, state, cascade, side) {
@@ -802,20 +812,6 @@ pub fn entry_gate(
                 gain_progress_pct: snapshot.tf1m.gain_progress_pct(),
             }],
             notes: vec![reason],
-        });
-    }
-
-    if state.position.side == PositionState::Flat
-        && cascade.samples < 3
-        && sug_snapshot.sug_candle.is_some()
-    {
-        return EntryGate::Wait(EntryWait {
-            reason: "movement-warmup".to_string(),
-            solutions: vec![EntryWaitSolution::WaitForSamples {
-                required: 3,
-                current: cascade.samples,
-            }],
-            notes: vec![format!("cascade-samples={}", cascade.samples)],
         });
     }
 
@@ -921,7 +917,18 @@ pub fn entry_gate(
         return gate;
     }
 
-    if let Some(plan) = movement_entry_plan(snapshot, sug_snapshot, cascade) {
+    let market_state = match side {
+        PositionState::Long => MarketState::Long,
+        PositionState::Short => MarketState::Short,
+        PositionState::Flat => MarketState::Sideways,
+    };
+    if let Some(plan) = movement_entry_plan(
+        snapshot,
+        sug_snapshot,
+        cascade,
+        &state.cascade_tf,
+        market_state,
+    ) {
         if let Some(wait) = direction_lock_gate(state, snapshot, plan.market_state) {
             state.movement_entry_pending = None;
             return wait;
@@ -1125,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn sug_entry_plan_requires_1m_confirmation() {
+    fn sug_entry_plan_uses_cascade_samples_as_confirmation() {
         let mut state = EngineState::default();
         let mut cascade = CascadeSignal {
             dir: 1,
@@ -1151,7 +1158,7 @@ mod tests {
             PositionState::Long,
             false
         )
-        .is_none());
+        .is_some());
 
         state.direction_lock.direction = MarketState::Short;
         assert!(sug_entry_plan(

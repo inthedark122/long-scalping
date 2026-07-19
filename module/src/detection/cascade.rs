@@ -1,5 +1,5 @@
 use crate::model::{Candle, TimeframeSnapshot};
-use crate::state::CascadeState;
+use crate::state::{CascadeMovement, CascadeState};
 
 const CASCADE_SAMPLE_WINDOW: usize = 30;
 const CASCADE_TP_PERCENTILE: f64 = 0.90;
@@ -90,6 +90,16 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
     } else {
         let cas_size = (memory.cas_high - memory.cas_low).abs();
         if cas_size > 0.0 {
+            memory.movement_history[memory.movement_history_pos] = CascadeMovement {
+                high: memory.cas_high,
+                low: memory.cas_low,
+            };
+            memory.movement_history_pos =
+                (memory.movement_history_pos + 1) % memory.movement_history.len();
+            memory.movement_history_len = memory
+                .movement_history_len
+                .saturating_add(1)
+                .min(memory.movement_history.len());
             memory.sizes[memory.sizes_pos] = cas_size;
             memory.sizes_pos = (memory.sizes_pos + 1) % memory.sizes.len();
             if memory.sizes_len < memory.sizes.len() {
@@ -253,6 +263,24 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
     }
 }
 
+pub fn movement_history(memory: &CascadeState) -> Vec<CascadeMovement> {
+    let len = memory
+        .movement_history_len
+        .min(memory.movement_history.len());
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let start = if memory.movement_history_len < memory.movement_history.len() {
+        0
+    } else {
+        memory.movement_history_pos
+    };
+    (0..len)
+        .map(|offset| memory.movement_history[(start + offset) % memory.movement_history.len()])
+        .collect()
+}
+
 pub fn preview_from_candle(memory: &CascadeState, candle: &Candle) -> CascadeSignal {
     let mut preview = *memory;
     update_from_candle(&mut preview, candle)
@@ -298,6 +326,11 @@ mod tests {
         let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8));
         assert_eq!(reversal.phase, MovementPhase::Reversal);
         assert!(reversal.completed_size > 0.0);
+
+        let history = movement_history(&state);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].high, 103.0);
+        assert_eq!(history[0].low, 99.5);
     }
 
     #[test]

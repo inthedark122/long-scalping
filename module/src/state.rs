@@ -49,6 +49,12 @@ pub struct VLineState {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct CascadeMovement {
+    pub high: f64,
+    pub low: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CascadeState {
     pub last_close: f64,
     pub dir: i8,
@@ -66,6 +72,9 @@ pub struct CascadeState {
     pub sizes_len: usize,
     pub breaks: [f64; 5],
     pub break_n: usize,
+    pub movement_history: [CascadeMovement; 30],
+    pub movement_history_pos: usize,
+    pub movement_history_len: usize,
 }
 
 #[derive(Debug, Clone)]

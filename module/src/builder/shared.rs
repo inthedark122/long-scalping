@@ -118,10 +118,19 @@ pub(super) fn refine_common(
         }
     ) && sug_snapshot.sug_candle.is_none()
     {
-        if let Some(plan) = prediction::movement_entry_plan(snapshot, sug_snapshot, cascade) {
+        if let Some(plan) = prediction::movement_entry_plan(
+            snapshot,
+            sug_snapshot,
+            cascade,
+            &state.cascade_tf,
+            decision.market_state,
+        ) {
             decision.market_state = plan.market_state;
             state.direction_source = "movement-plan".to_string();
-            state.direction_reason = format!("movement-plan:market={:?}", plan.market_state);
+            state.direction_reason = format!(
+                "movement-plan:move_dir={}:market={:?}",
+                plan.movement_direction, plan.market_state
+            );
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
