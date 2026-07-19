@@ -217,6 +217,7 @@ fn handle_new_position(
         input.price,
         state.ticks,
     );
+    let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop;
     let plan = if strategy.is_martingale() {
         martingale::exit_plan(
             &snapshot,
@@ -232,20 +233,20 @@ fn handle_new_position(
     } else {
         input.sug_info.as_ref().and_then(|sug_info| {
             let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-            exit::plan(
+            exit::compute(
                 &snapshot,
                 &sug_snapshot,
                 &state.cascade_tf,
                 entry_price,
                 side,
                 state.position.entry_reason.as_ref(),
+                !trailing_stop,
             )
         })
     };
     let mut tp_orders = Vec::new();
     let order_mark = tp_mark(direction);
     if let Some(plan) = plan {
-        let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop;
         state.position.take_profit = if trailing_stop {
             0.0
         } else {

@@ -33,6 +33,15 @@ pub struct CascadeSignal {
     pub break_price: f64,
 }
 
+pub fn average_size_percent(average_size: f64, price: f64) -> Option<f64> {
+    if !average_size.is_finite() || average_size <= 0.0 || !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+
+    let percent = average_size / price * 100.0;
+    (percent.is_finite() && percent > 0.0).then_some(percent)
+}
+
 fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: f64) -> bool {
     if memory.cas_dir == 0 {
         memory.cas_dir = dir;

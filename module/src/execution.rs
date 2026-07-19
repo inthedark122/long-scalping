@@ -293,6 +293,7 @@ fn position_exit_plan(
     reference_price: f64,
     side: PositionState,
     builder: &BuiltStrategy,
+    enforce_cascade_minimum: bool,
 ) -> Option<exit::ExitPlan> {
     if builder.is_martingale() {
         martingale::exit_plan(
@@ -307,13 +308,14 @@ fn position_exit_plan(
                 .map(|martingale| martingale.profile),
         )
     } else {
-        exit::plan(
+        exit::compute(
             snapshot,
             sug_snapshot,
             &state.cascade_tf,
             reference_price,
             side,
             state.position.entry_reason.as_ref(),
+            enforce_cascade_minimum,
         )
     }
 }
@@ -343,6 +345,7 @@ fn initialize_exit_plan(
         reference_price,
         side,
         builder,
+        true,
     )?;
     state.position.take_profit = plan.take_profit.price();
     state.position.stop_loss = plan.stop_loss.price();
@@ -397,6 +400,7 @@ fn ensure_trailing_exit_order(
             reference_price,
             side,
             builder,
+            false,
         ) {
             state.position.stop_loss = plan.stop_loss.price();
             state.position.stop_loss_reason = plan.stop_loss.reason();
@@ -453,9 +457,15 @@ fn ensure_trailing_exit_order(
         );
     }
 
-    if let Some(plan) =
-        position_exit_plan(state, snapshot, sug_snapshot, input.price, side, builder)
-    {
+    if let Some(plan) = position_exit_plan(
+        state,
+        snapshot,
+        sug_snapshot,
+        input.price,
+        side,
+        builder,
+        false,
+    ) {
         let candidate_stop_loss = plan.stop_loss.price();
         let favorable = match side {
             PositionState::Long => candidate_stop_loss > previous_stop_loss,
@@ -551,13 +561,14 @@ fn ensure_active_exit_order(
             return (Vec::new(), Vec::new());
         }
 
-        let trail_plan = exit::plan(
+        let trail_plan = exit::compute(
             snapshot,
             sug_snapshot,
             &state.cascade_tf,
             input.price,
             side,
             state.position.entry_reason.as_ref(),
+            false,
         );
         if let Some(plan) = trail_plan {
             state.position.exit_tp_reliable = plan.tp_reliable;

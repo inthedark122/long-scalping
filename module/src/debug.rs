@@ -1,4 +1,4 @@
-use crate::detection::{cascade::CascadeSignal, sideways};
+use crate::detection::{cascade, cascade::CascadeSignal, sideways};
 use crate::format::{fmt_metric, fmt_price_tick};
 use crate::model::{
     EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, RegimeSnapshot, TradeDecision,
@@ -224,11 +224,7 @@ fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
-    let cascade_avg_pct = if price > 0.0 {
-        cascade.average_size / price * 100.0
-    } else {
-        0.0
-    };
+    let cascade_avg_pct = cascade::average_size_percent(cascade.average_size, price).unwrap_or(0.0);
     format!(
         "{:?}:{}:avg={:.2}%",
         cascade.phase, cascade.dir, cascade_avg_pct,

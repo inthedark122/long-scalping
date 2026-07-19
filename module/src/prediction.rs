@@ -22,7 +22,15 @@ fn candidate_exit_plan(
     side: PositionState,
     entry_reason: Option<&EntryReason>,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::plan(snapshot, sug_snapshot, cascade, price, side, entry_reason)
+    exit::compute(
+        snapshot,
+        sug_snapshot,
+        cascade,
+        price,
+        side,
+        entry_reason,
+        false,
+    )
 }
 
 fn signal_candle<'a>(

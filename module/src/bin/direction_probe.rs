@@ -771,13 +771,14 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
     let entry_price = gate_entry_price(&recommendation.gate, snapshot.tf1m.candle.close);
     let level_book = detection::levels::structural_levels(&snapshot);
     let level_gaps = level_book.gap_summary(snapshot.tf1m.candle.close);
-    let exit_plan = exit::plan(
+    let exit_plan = exit::compute(
         &snapshot,
         &SugInfoSnapshot::default(),
         &cascade_state,
         entry_price,
         recommendation_side,
         None,
+        false,
     );
 
     println!("=== {} ===", symbol_key);
