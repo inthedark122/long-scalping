@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.62
+
+Realtime MRC crossing diagnostics release.
+
+- Track realtime MRC crossing direction, repeat counts, sequences, pullback-free crossings, and reverted lines.
+- Track favorable movement percentage from each crossed line and expose the metrics in debug output.
+
 # 1.0.61
 
 Cascade debug release.
