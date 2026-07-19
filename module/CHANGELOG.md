@@ -1,5 +1,11 @@
 # Changelog
 
+# 1.0.61
+
+Cascade debug release.
+
+- Expose the active cascade movement percentage and current position within that movement in debug output.
+
 # 1.0.60
 
 Cascade-minimum TP release.
