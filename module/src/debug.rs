@@ -224,10 +224,15 @@ fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
+    let movement_pct = cascade::average_size_percent(cascade.completed_size, price).unwrap_or(0.0);
     let cascade_avg_pct = cascade::average_size_percent(cascade.average_size, price).unwrap_or(0.0);
     format!(
-        "{:?}:{}:avg={:.2}%",
-        cascade.phase, cascade.dir, cascade_avg_pct,
+        "{:?}:{}:move={:.2}%/{:.0}%:avg={:.2}%",
+        cascade.phase,
+        cascade.dir,
+        movement_pct,
+        cascade.movement_position * 100.0,
+        cascade_avg_pct,
     )
 }
 
@@ -292,6 +297,7 @@ mod tests {
             stretched: false,
             phase: crate::detection::cascade::MovementPhase::Building,
             completed_size: 1.0,
+            movement_position: 0.5,
             average_size: 1.0,
             samples: 10,
             break_price: 0.0,

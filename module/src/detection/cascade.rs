@@ -28,6 +28,9 @@ pub struct CascadeSignal {
     pub stretched: bool,
     pub phase: MovementPhase,
     pub completed_size: f64,
+    /// Current close position inside the active movement, as a ratio.
+    /// Bearish movement is measured from the high downwards.
+    pub movement_position: f64,
     pub average_size: f64,
     pub samples: u32,
     pub break_price: f64,
@@ -235,6 +238,16 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
     memory.run_size = (memory.cas_high - memory.cas_low).abs();
 
     let active_size = (memory.cas_high - memory.cas_low).abs();
+    let movement_position = if active_size > 0.0 {
+        let raw_position = if memory.dir >= 0 {
+            (close - memory.cas_low) / active_size
+        } else {
+            (memory.cas_high - close) / active_size
+        };
+        raw_position.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let average_size = memory.avg_size;
     let strength = if average_size > 0.0 {
         active_size / average_size
@@ -263,6 +276,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         stretched,
         phase,
         completed_size: active_size,
+        movement_position,
         average_size,
         samples: memory.samples,
         break_price: memory.breaks[memory
@@ -382,5 +396,14 @@ mod tests {
         assert!(state.cas_high <= 105.8 + f64::EPSILON);
         assert!(state.cas_low >= 104.8 - f64::EPSILON);
         assert!((state.cas_high - state.cas_low).abs() <= 1.1);
+    }
+
+    #[test]
+    fn movement_position_uses_realtime_close_inside_active_range() {
+        let mut state = CascadeState::default();
+        let signal = update_from_candle(&mut state, &candle(100.0, 104.0, 100.0, 100.8));
+
+        assert!((signal.completed_size - 4.0).abs() < 1e-9);
+        assert!((signal.movement_position - 0.20).abs() < 1e-9);
     }
 }
