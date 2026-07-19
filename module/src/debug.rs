@@ -346,7 +346,7 @@ mod tests {
         state.cfg.trade_mode = TradeMode::Single;
         let mut decision = decision();
         decision.entry = EntryGate::Wait(crate::model::EntryWait {
-            reason: "sug-info-pullback-wait".to_string(),
+            reason: "mrc-pullback-wait".to_string(),
             solutions: vec![crate::model::EntryWaitSolution::ReclaimLevel {
                 source: "mrc-window".to_string(),
                 level: 99.0,
@@ -369,7 +369,7 @@ mod tests {
 
         assert!(!debug.contains("gate="));
         assert!(debug.contains(
-            "exec=entry-wait reason=sug-info-pullback-wait expect=reclaim:mrc-window:99[98..100]"
+            "exec=entry-wait reason=mrc-pullback-wait expect=reclaim:mrc-window:99[98..100]"
         ));
     }
 

@@ -1013,7 +1013,7 @@ mod tests {
         let wait_decision = TradeDecision {
             market_state: MarketState::Long,
             entry: EntryGate::Wait(crate::model::EntryWait {
-                reason: "sug-info-pullback-wait".to_string(),
+                reason: "mrc-pullback-wait".to_string(),
                 solutions: vec![crate::model::EntryWaitSolution::ReclaimLevel {
                     source: "mrc-window".to_string(),
                     level: 99.0,

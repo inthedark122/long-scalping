@@ -710,7 +710,7 @@ fn sug_entry_gate(
         })
     } else if state.cfg.pullback_ratio() > 0.0 {
         Some(EntryGate::Wait(EntryWait {
-            reason: "sug-info-pullback-wait".to_string(),
+            reason: "mrc-pullback-wait".to_string(),
             solutions: vec![EntryWaitSolution::ReclaimLevel {
                 source: "mrc-window".to_string(),
                 level: entry,
@@ -739,7 +739,7 @@ fn sug_entry_gate(
         }))
     } else {
         Some(EntryGate::Wait(EntryWait {
-            reason: "sug-info-pullback-wait".to_string(),
+            reason: "mrc-pullback-wait".to_string(),
             solutions: vec![EntryWaitSolution::ReclaimLevel {
                 source: "mrc-window".to_string(),
                 level: entry,
