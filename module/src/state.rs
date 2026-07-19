@@ -46,6 +46,43 @@ pub struct VLineState {
     pub short_side: VSideState,
     pub last_cross_tick: u64,
     pub last_cross_dir: i8,
+    pub cross_count: u32,
+    pub last_cross_price: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MrcCrossingState {
+    pub last_price: Option<f64>,
+    pub sequence: [u8; 8],
+    pub sequence_len: usize,
+    pub no_pullback_count: u32,
+    pub last_line: Option<u8>,
+    pub last_direction: i8,
+    pub highest_line: Option<u8>,
+    pub lowest_line: Option<u8>,
+    pub reverted_line: Option<u8>,
+    pub movement_start: f64,
+    pub movement_extreme: f64,
+    pub movement_direction: i8,
+}
+
+impl Default for MrcCrossingState {
+    fn default() -> Self {
+        Self {
+            last_price: None,
+            sequence: [0; 8],
+            sequence_len: 0,
+            no_pullback_count: 0,
+            last_line: None,
+            last_direction: 0,
+            highest_line: None,
+            lowest_line: None,
+            reverted_line: None,
+            movement_start: 0.0,
+            movement_extreme: 0.0,
+            movement_direction: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -139,6 +176,7 @@ pub struct EngineState {
     pub position: PositionRuntime,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
+    pub mrc_crossing: MrcCrossingState,
     pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
     pub direction_source: String,
@@ -164,6 +202,7 @@ impl Default for EngineState {
             position: PositionRuntime::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
+            mrc_crossing: MrcCrossingState::default(),
             direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
             direction_source: "regime".to_string(),

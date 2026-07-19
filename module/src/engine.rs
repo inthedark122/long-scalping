@@ -570,6 +570,7 @@ fn refresh_indicators(
     }
     vlines::update(
         &mut state.vlines,
+        &mut state.mrc_crossing,
         snapshot.tf1m.mrc.lines(),
         input.price,
         state.ticks,
@@ -620,6 +621,13 @@ fn process_realtime(
     direction_lock::refresh(
         &mut state.direction_lock,
         &snapshot.tf1m,
+        input.price,
+        state.ticks,
+    );
+    vlines::update(
+        &mut state.vlines,
+        &mut state.mrc_crossing,
+        snapshot.tf1m.mrc.lines(),
         input.price,
         state.ticks,
     );

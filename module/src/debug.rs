@@ -90,6 +90,7 @@ pub fn render(
         format!("gain_building={}", snapshot.tf1m.gain_is_building()),
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
         format!("mrc_risk={mrc_risk}"),
+        format!("mrc_cross={}", format_mrc_crossing(state)),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(
@@ -268,6 +269,71 @@ fn format_take_profit(state: &EngineState, snapshot: &IndicatorSnapshot, tick_si
     });
 
     format!("{}:{}", fmt_price_tick(price, tick_size), source)
+}
+
+fn mrc_line_label(index: u8) -> &'static str {
+    match index {
+        0 => "down_big",
+        1 => "down_outer",
+        2 => "down_small",
+        3 => "down_inner",
+        4 => "mean",
+        5 => "up_inner",
+        6 => "up_small",
+        7 => "up_outer",
+        8 => "up_big",
+        _ => "na",
+    }
+}
+
+fn format_mrc_crossing(state: &EngineState) -> String {
+    let crossing = &state.mrc_crossing;
+    let latest = crossing.last_line.map(mrc_line_label).unwrap_or("na");
+    let direction = match crossing.last_direction {
+        1 => "long",
+        -1 => "short",
+        _ => "na",
+    };
+    let sequence = (0..crossing.sequence_len)
+        .map(|index| mrc_line_label(crossing.sequence[index]))
+        .collect::<Vec<_>>()
+        .join(">");
+    let movement = if crossing.movement_start > 0.0
+        && crossing.movement_extreme > 0.0
+        && crossing.movement_direction != 0
+    {
+        let pct = if crossing.movement_direction > 0 {
+            (crossing.movement_extreme - crossing.movement_start) / crossing.movement_start * 100.0
+        } else {
+            (crossing.movement_start - crossing.movement_extreme) / crossing.movement_start * 100.0
+        };
+        format!("{}:{:.2}%", direction, pct.max(0.0))
+    } else {
+        "na".to_string()
+    };
+    let count = state
+        .vlines
+        .get(crossing.last_line.unwrap_or(255) as usize)
+        .map(|line| {
+            if line.cross_count <= 1 {
+                "first"
+            } else {
+                "repeat"
+            }
+        })
+        .unwrap_or("na");
+    format!(
+        "line={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={}",
+        latest,
+        direction,
+        count,
+        if sequence.is_empty() { "na" } else { &sequence },
+        crossing.no_pullback_count,
+        crossing.highest_line.map(mrc_line_label).unwrap_or("na"),
+        crossing.lowest_line.map(mrc_line_label).unwrap_or("na"),
+        crossing.reverted_line.map(mrc_line_label).unwrap_or("na"),
+        movement
+    )
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
