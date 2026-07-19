@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.60
+
+Cascade-minimum TP release.
+
+- Select the next structural TP level only when it reaches the 1-minute cascade average percentage.
+- Keep cascade percentage calculation shared between TP selection and debug output.
+- Preserve existing TP behavior after the virtual-SL transition.
+
 # 1.0.59
 
 Movement-history entry pricing release.

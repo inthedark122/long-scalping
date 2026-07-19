@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.59",
+      "module_version": "1.0.60",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.59"
+          "module_version": "1.0.60"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.59 movement-history release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode/tp_control overrides. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
+      "description": "Start the 1.0.60 cascade-minimum TP release using compiled defaults or cap_init/trading_amount/pullback_amount/trade_mode/tp_control overrides. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
       "params": [
         {
           "code": "cap_init",
@@ -94,7 +94,7 @@
   ],
   "_module": {
     "id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-    "version": "1.0.59",
+    "version": "1.0.60",
     "defaults": {}
   }
 }
