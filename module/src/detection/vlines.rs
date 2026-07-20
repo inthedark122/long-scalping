@@ -62,6 +62,8 @@ fn record_cross(
     );
     crossing.movement_start = line;
     crossing.movement_target = next_line.unwrap_or(0.0);
+    crossing.movement_high = price;
+    crossing.movement_low = price;
     crossing.movement_extreme = price;
     crossing.movement_direction = direction;
 }
@@ -142,8 +144,20 @@ pub fn update(
     }
 
     if crossing.movement_direction > 0 {
+        crossing.movement_high = crossing.movement_high.max(price);
+        crossing.movement_low = crossing.movement_low.min(price);
         crossing.movement_extreme = crossing.movement_extreme.max(price);
     } else if crossing.movement_direction < 0 {
+        crossing.movement_high = if crossing.movement_high <= 0.0 {
+            price
+        } else {
+            crossing.movement_high.max(price)
+        };
+        crossing.movement_low = if crossing.movement_low <= 0.0 {
+            price
+        } else {
+            crossing.movement_low.min(price)
+        };
         crossing.movement_extreme = if crossing.movement_extreme <= 0.0 {
             price
         } else {
@@ -249,11 +263,14 @@ mod tests {
         update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
         update(&mut vlines, &mut crossing, lines(), 101.0, 2, 2_000);
         update(&mut vlines, &mut crossing, lines(), 102.0, 3, 3_000);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 4, 4_000);
         assert_eq!(crossing.movement_start, 100.0);
         assert_eq!(crossing.movement_target, 104.0);
+        assert_eq!(crossing.movement_high, 102.0);
+        assert_eq!(crossing.movement_low, 99.0);
         assert_eq!(crossing.movement_extreme, 102.0);
 
-        update(&mut vlines, &mut crossing, lines(), 105.0, 4, 4_000);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 5, 5_000);
         assert_eq!(crossing.movement_start, 104.0);
         assert_eq!(crossing.movement_extreme, 105.0);
     }

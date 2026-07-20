@@ -90,7 +90,10 @@ pub fn render(
         format!("gain_building={}", snapshot.tf1m.gain_is_building()),
         format!("gain_late={}", snapshot.tf1m.gain_is_late()),
         format!("mrc_risk={mrc_risk}"),
-        format!("mrc_cross={}", format_mrc_crossing(state)),
+        format!(
+            "mrc_cross={}",
+            format_mrc_crossing(state, snapshot, decision, tick_size)
+        ),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(
@@ -286,7 +289,12 @@ fn mrc_line_label(index: u8) -> &'static str {
     }
 }
 
-fn format_mrc_crossing(state: &EngineState) -> String {
+fn format_mrc_crossing(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    decision: &TradeDecision,
+    tick_size: f64,
+) -> String {
     let crossing = &state.mrc_crossing;
     let latest = crossing.last_line.map(mrc_line_label).unwrap_or("na");
     let direction = match crossing.last_direction {
@@ -311,18 +319,33 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         .collect::<Vec<_>>()
         .join(">");
     let movement = if crossing.movement_start > 0.0
-        && crossing.movement_extreme > 0.0
+        && crossing.movement_high > 0.0
+        && crossing.movement_low > 0.0
         && crossing.movement_direction != 0
     {
-        let pct = if crossing.movement_direction > 0 {
-            (crossing.movement_extreme - crossing.movement_start) / crossing.movement_start * 100.0
+        let (following_pct, opposite_pct) = if crossing.movement_direction > 0 {
+            (
+                (crossing.movement_high - crossing.movement_start) / crossing.movement_start
+                    * 100.0,
+                (crossing.movement_low - crossing.movement_start) / crossing.movement_start * 100.0,
+            )
         } else {
-            (crossing.movement_start - crossing.movement_extreme) / crossing.movement_start * 100.0
+            (
+                (crossing.movement_start - crossing.movement_low) / crossing.movement_start * 100.0,
+                (crossing.movement_start - crossing.movement_high) / crossing.movement_start
+                    * 100.0,
+            )
         };
-        format!("{}:{:.2}%", direction, pct.max(0.0))
+        format!(
+            "{}:+{:.2}%:-{:.2}%",
+            direction,
+            following_pct.max(0.0),
+            opposite_pct.min(0.0)
+        )
     } else {
         "na".to_string()
     };
+    let tracked_line = tracked_mrc_line(decision, snapshot, tick_size);
     let next_progress = if crossing.movement_start > 0.0
         && crossing.movement_target > 0.0
         && crossing.last_price.is_some()
@@ -359,10 +382,11 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         })
         .unwrap_or("na");
     format!(
-        "[last={}:{}:{} seq={} no_pullback={} high={} low={} revert={} move={} next={}]",
+        "[last={}:{}:{} track={} seq={} no_pullback={} high={} low={} revert={} move={} next={}]",
         latest,
         direction,
         count,
+        tracked_line,
         if sequence.is_empty() { "na" } else { &sequence },
         crossing.no_pullback_count,
         crossing.highest_line.map(mrc_line_label).unwrap_or("na"),
@@ -371,6 +395,34 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         movement,
         next_progress
     )
+}
+
+fn tracked_mrc_line(
+    decision: &TradeDecision,
+    snapshot: &IndicatorSnapshot,
+    tick_size: f64,
+) -> &'static str {
+    let EntryGate::Wait(wait) = &decision.entry else {
+        return "na";
+    };
+    let Some(crate::model::EntryWaitSolution::ReclaimLevel { source, level, .. }) =
+        wait.solutions.first()
+    else {
+        return "na";
+    };
+    if source != "mrc-window" {
+        return "na";
+    }
+    let tolerance = tick_size.max(f64::EPSILON) * 2.0;
+    snapshot
+        .tf1m
+        .mrc
+        .lines()
+        .iter()
+        .enumerate()
+        .find(|(_, line)| (**line - *level).abs() <= tolerance)
+        .map(|(index, _)| mrc_line_label(index as u8))
+        .unwrap_or("na")
 }
 
 fn format_sequence_duration(duration_ms: u64) -> String {
