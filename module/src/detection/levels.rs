@@ -27,7 +27,6 @@ pub enum LevelSource {
     Tf1m,
     Tf5m,
     Tf15m,
-    Tf1h,
 }
 
 impl LevelSource {
@@ -36,7 +35,6 @@ impl LevelSource {
             Self::Tf1m => "1m",
             Self::Tf5m => "5m",
             Self::Tf15m => "15m",
-            Self::Tf1h => "1h",
         }
     }
 
@@ -45,7 +43,6 @@ impl LevelSource {
             Self::Tf1m => 0,
             Self::Tf5m => 1,
             Self::Tf15m => 2,
-            Self::Tf1h => 3,
         }
     }
 }
@@ -245,7 +242,6 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
         (LevelSource::Tf1m, snapshot.tf1m),
         (LevelSource::Tf5m, snapshot.tf5m),
         (LevelSource::Tf15m, snapshot.tf15m),
-        (LevelSource::Tf1h, snapshot.tf1h),
     ] {
         push_level(
             &mut above,
