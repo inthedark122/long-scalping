@@ -97,6 +97,7 @@ pub fn support_break_level(
     snapshot: &IndicatorSnapshot,
     side: PositionState,
     entry_reason: Option<&EntryReason>,
+    position_price: f64,
 ) -> Option<f64> {
     if let Some(EntryReason::SidewayScalp {
         block_low,
@@ -111,8 +112,11 @@ pub fn support_break_level(
         };
     }
 
+    if !position_price.is_finite() || position_price <= 0.0 {
+        return None;
+    }
     let book = levels::structural_levels(snapshot);
-    let price = snapshot.tf1m.candle.close.max(f64::EPSILON);
+    let price = position_price;
     match side {
         PositionState::Long => book.nearest_below(price),
         PositionState::Short => book.nearest_above(price),

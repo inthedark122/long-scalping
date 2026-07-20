@@ -123,12 +123,8 @@ pub fn entry_plan(
         }
     }
 
-    let support_break = stop_loss::support_break_level(snapshot, to_position(side), entry_reason)
-        .unwrap_or(match side {
-            MarketState::Long => snapshot.tf1m.mrc.down_big,
-            MarketState::Short => snapshot.tf1m.mrc.up_big,
-            MarketState::Sideways => return None,
-        });
+    let support_break =
+        stop_loss::support_break_level(snapshot, to_position(side), entry_reason, base_price)?;
     let ladder_range = step * ladder_orders as f64;
     let range_stop = ladder_range * STOP_BREAK_MULTIPLIER;
     let stop_loss_price = match side {
@@ -251,12 +247,7 @@ pub fn exit_plan(
         )
     })?;
     let tp_distance = entry_price * (profile.take_profit_pct / 100.0);
-    let break_price =
-        stop_loss::support_break_level(snapshot, side, entry_reason).unwrap_or(match side {
-            PositionState::Long => snapshot.tf1m.mrc.down_big,
-            PositionState::Short => snapshot.tf1m.mrc.up_big,
-            PositionState::Flat => return None,
-        });
+    let break_price = stop_loss::support_break_level(snapshot, side, entry_reason, entry_price)?;
     let ladder_range = entry_price * (profile.range_pct / 100.0);
     let stop_distance = ladder_range * STOP_BREAK_MULTIPLIER;
     let (take_profit, stop_loss) = match side {

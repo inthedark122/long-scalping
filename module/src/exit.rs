@@ -223,7 +223,7 @@ fn movement_plan(
 
     let (structural_take_profit_level, structural_stop_loss_level) = structural?;
     let structural_take_profit = structural_take_profit_level.value;
-    let stop_loss = stop_loss::support_break_level(snapshot, side, None)
+    let stop_loss = stop_loss::support_break_level(snapshot, side, None, price)
         .map(|price| StopLoss::SupportBreak {
             price: price.max(f64::EPSILON),
         })
