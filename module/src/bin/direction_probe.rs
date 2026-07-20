@@ -248,6 +248,7 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
         volume_gain: f64_key(volume_50, "Gain")?,
         volume_gain_min: f64_key(volume_50, "GainMin")?,
         volume_gain_max: f64_key(volume_50, "GainMax")?,
+        buy_sell_gain: f64_key(volume_50, "BuySellGain")?,
     };
 
     Some(LiveFrame {

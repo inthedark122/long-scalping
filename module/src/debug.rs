@@ -74,11 +74,11 @@ pub fn render(
             regime.confirmed, decision.market_state, state.direction_source, state.direction_reason
         ),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
-        format!("casTf={}", cascade_tf_text),
-        format!("big_gain={}", state.big_gain.summary()),
-        format!("mrc_risk={mrc_risk}"),
+        format!("casTf=[{}]", cascade_tf_text),
+        format!("volume=[{}]", state.volume_gain.summary()),
+        format!("mrc_risk=[{mrc_risk}]"),
         format!(
-            "mrc_cross={}",
+            "mrc_cross=[{}]",
             format_mrc_crossing(state, snapshot, decision, tick_size)
         ),
     ];

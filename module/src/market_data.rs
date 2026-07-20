@@ -273,6 +273,7 @@ fn build_timeframe(
         volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
         volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
         volume_gain_max: read_raw_float(raw, timeframe, "volume_50", "GainMax")?,
+        buy_sell_gain: read_raw_float(raw, timeframe, "volume_50", "BuySellGain")?,
     })
 }
 
@@ -456,6 +457,7 @@ mod tests {
                     ("Gain".to_string(), ModuleIndicatorValue::Float(12.5)),
                     ("GainMin".to_string(), ModuleIndicatorValue::Float(1.0)),
                     ("GainMax".to_string(), ModuleIndicatorValue::Float(20.0)),
+                    ("BuySellGain".to_string(), ModuleIndicatorValue::Float(-2.5)),
                 ]),
             );
             snapshot.insert(tf, vec![candle.clone(), candle]);

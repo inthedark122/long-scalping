@@ -43,6 +43,7 @@ fn record_cross(
     crossing.sequence_len += 1;
 
     crossing.last_line = Some(line_idx as u8);
+    crossing.candle_cross_mask |= 1u16 << line_idx;
     crossing.last_direction = direction;
     crossing.highest_line = Some(
         crossing

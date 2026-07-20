@@ -571,12 +571,15 @@ fn refresh_indicators(
     );
     if is_init || timeframes.contains(&TF_1M) {
         cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
-        state.big_gain.observe(
+        state.volume_gain.observe(
             state.bar_1m,
             snapshot.tf1m.volume_gain,
             snapshot.tf1m.buy_sell_gain,
             snapshot.tf1m.mrc_signal.zone,
             state.mrc_crossing.candle_cross_mask,
+            snapshot.tf1m.candle.high,
+            snapshot.tf1m.candle.low,
+            snapshot.tf1m.candle.close,
         );
         state.mrc_crossing.candle_cross_mask = 0;
     }

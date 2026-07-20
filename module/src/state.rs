@@ -2,7 +2,7 @@ use crate::builder::BuiltStrategy;
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
-use crate::observer::{BigGainTracker, DirectionChangeHistory, TpRepriceHistory};
+use crate::observer::{DirectionChangeHistory, TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
@@ -177,7 +177,7 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
-    pub big_gain: BigGainTracker,
+    pub volume_gain: VolumeGainTracker,
     pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
     pub direction_source: String,
@@ -204,7 +204,7 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
-            big_gain: BigGainTracker::default(),
+            volume_gain: VolumeGainTracker::default(),
             direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
             direction_source: "regime".to_string(),

@@ -183,6 +183,7 @@ pub struct TimeframeSnapshot {
     pub volume_gain: f64,
     pub volume_gain_min: f64,
     pub volume_gain_max: f64,
+    pub buy_sell_gain: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
