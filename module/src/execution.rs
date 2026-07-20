@@ -162,6 +162,30 @@ fn tick_size(input: &ModuleInput) -> f64 {
     input.symbol_info.price_tick_size.max(f64::EPSILON)
 }
 
+fn virtual_stop_loss_hit_with_activation(
+    state: &mut EngineState,
+    side: PositionState,
+    price: f64,
+) -> bool {
+    let activation_price = state
+        .position
+        .martingale
+        .as_ref()
+        .and_then(|martingale| martingale.sl_activation_price);
+    match activation_price {
+        Some(activation_price) => {
+            if !stop_loss::virtual_stop_loss_hit(side, price, activation_price) {
+                return false;
+            }
+            if let Some(martingale) = state.position.martingale.as_mut() {
+                martingale.sl_activation_price = None;
+            }
+            stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss)
+        }
+        None => stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss),
+    }
+}
+
 fn reprice_timestamp_ms(input: &ModuleInput) -> Option<u64> {
     input
         .sug_info
@@ -413,7 +437,7 @@ fn ensure_trailing_exit_order(
     }
 
     let previous_stop_loss = state.position.stop_loss;
-    let virtual_sl_hit = stop_loss::virtual_stop_loss_hit(side, input.price, previous_stop_loss);
+    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
     let tick = tick_size(input);
 
     if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
@@ -523,8 +547,7 @@ fn ensure_active_exit_order(
     }
 
     let tick = tick_size(input);
-    let virtual_sl_hit =
-        stop_loss::virtual_stop_loss_hit(side, input.price, state.position.stop_loss);
+    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
 
     if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
         state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
@@ -836,6 +859,7 @@ pub fn evaluate_with_cascade(
                 base_price: plan.base_price,
                 base_amount: plan.open_position.amount.unwrap_or(amount),
                 last_filled_mark: None,
+                sl_activation_price: plan.stop_loss.activation_price(),
             });
             state.position.take_profit = 0.0;
             state.position.stop_loss = plan.stop_loss.price();
@@ -935,7 +959,44 @@ mod tests {
             base_price: 0.0,
             base_amount: 0.0,
             last_filled_mark: None,
+            sl_activation_price: None,
         }
+    }
+
+    #[test]
+    fn martingale_activation_price_arms_common_stop_loss() {
+        let mut state = EngineState::default();
+        state.position.side = PositionState::Long;
+        state.position.stop_loss = 99.0;
+        let mut martingale = martingale_runtime();
+        martingale.sl_activation_price = Some(95.0);
+        state.position.martingale = Some(martingale);
+
+        assert!(!virtual_stop_loss_hit_with_activation(
+            &mut state,
+            PositionState::Long,
+            96.0
+        ));
+        assert_eq!(
+            state
+                .position
+                .martingale
+                .as_ref()
+                .and_then(|martingale| martingale.sl_activation_price),
+            Some(95.0)
+        );
+
+        assert!(virtual_stop_loss_hit_with_activation(
+            &mut state,
+            PositionState::Long,
+            94.0
+        ));
+        assert!(state
+            .position
+            .martingale
+            .as_ref()
+            .and_then(|martingale| martingale.sl_activation_price)
+            .is_none());
     }
 
     fn decision(market_state: MarketState) -> TradeDecision {

@@ -120,6 +120,17 @@ pub fn render(
             state.position.stop_loss_reason
         ));
     }
+    if let Some(activation_price) = state
+        .position
+        .martingale
+        .as_ref()
+        .and_then(|martingale| martingale.sl_activation_price)
+    {
+        parts.push(format!(
+            "sl_activate={}",
+            fmt_price_tick(activation_price, tick_size)
+        ));
+    }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));
     }
@@ -683,6 +694,7 @@ mod tests {
                 base_price: 0.0,
                 base_amount: 0.0,
                 last_filled_mark: None,
+                sl_activation_price: None,
             }),
         };
         let debug = render(

@@ -13,6 +13,7 @@ pub struct MartingaleRuntime {
     pub base_price: f64,
     pub base_amount: f64,
     pub last_filled_mark: Option<String>,
+    pub sl_activation_price: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]

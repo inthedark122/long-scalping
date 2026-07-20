@@ -32,9 +32,15 @@ impl StopLoss {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Sideway { price }
-            | Self::SupportBreak { price }
-            | Self::Martingale { price, .. } => price,
+            Self::Sideway { price } | Self::SupportBreak { price } => price,
+            Self::Martingale { break_price, .. } => break_price,
+        }
+    }
+
+    pub fn activation_price(self) -> Option<f64> {
+        match self {
+            Self::Martingale { price, .. } => Some(price),
+            _ => None,
         }
     }
 

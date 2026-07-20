@@ -14,6 +14,9 @@ pub const TP_RATIO: f64 = 0.8;
 pub const MIN_TP_PCT: f64 = 0.35;
 pub const MAX_TP_PCT: f64 = 1.1;
 pub const STOP_BREAK_MULTIPLIER: f64 = 1.25;
+// Reserve one additional full ladder range before the martingale SL activates.
+// The activation distance is therefore 2x the existing stop-break distance.
+pub const SL_RANGE_RESERVATION_MULTIPLIER: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LadderProfile {
@@ -126,7 +129,7 @@ pub fn entry_plan(
     let support_break =
         stop_loss::support_break_level(snapshot, to_position(side), entry_reason, base_price)?;
     let ladder_range = step * ladder_orders as f64;
-    let range_stop = ladder_range * STOP_BREAK_MULTIPLIER;
+    let range_stop = ladder_range * STOP_BREAK_MULTIPLIER * SL_RANGE_RESERVATION_MULTIPLIER;
     let stop_loss_price = match side {
         MarketState::Long => (support_break - range_stop).max(f64::EPSILON),
         MarketState::Short => (support_break + range_stop).max(f64::EPSILON),
@@ -249,7 +252,7 @@ pub fn exit_plan(
     let tp_distance = entry_price * (profile.take_profit_pct / 100.0);
     let break_price = stop_loss::support_break_level(snapshot, side, entry_reason, entry_price)?;
     let ladder_range = entry_price * (profile.range_pct / 100.0);
-    let stop_distance = ladder_range * STOP_BREAK_MULTIPLIER;
+    let stop_distance = ladder_range * STOP_BREAK_MULTIPLIER * SL_RANGE_RESERVATION_MULTIPLIER;
     let (take_profit, stop_loss) = match side {
         PositionState::Long => (
             (entry_price + tp_distance).max(f64::EPSILON),

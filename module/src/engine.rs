@@ -258,6 +258,9 @@ fn handle_new_position(
         };
         state.position.stop_loss = plan.stop_loss.price();
         state.position.stop_loss_reason = plan.stop_loss.reason();
+        if let Some(martingale) = state.position.martingale.as_mut() {
+            martingale.sl_activation_price = plan.stop_loss.activation_price();
+        }
         let qty = input
             .positions
             .long
@@ -346,6 +349,7 @@ mod tests {
             base_price: 100.0,
             base_amount: 1.0,
             last_filled_mark: None,
+            sl_activation_price: None,
         }
     }
     use lte_strategy_bridge::abi::{
