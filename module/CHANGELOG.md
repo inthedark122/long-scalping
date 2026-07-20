@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.65
+
+Directional entry release.
+
+- Follow an active directional lock when selecting the entry side.
+- Expose the selected entry side in debug output.
+
 # 1.0.64
 
 Martingale SL activation release.
