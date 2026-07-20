@@ -568,14 +568,6 @@ fn refresh_indicators(
     if is_init || timeframes.contains(&TF_1M) {
         cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
     }
-    vlines::update(
-        &mut state.vlines,
-        &mut state.mrc_crossing,
-        snapshot.tf1m.mrc.lines(),
-        input.price,
-        state.ticks,
-    );
-
     ModuleOutput {
         debug: String::new(),
         ..Default::default()
@@ -630,6 +622,7 @@ fn process_realtime(
         snapshot.tf1m.mrc.lines(),
         input.price,
         state.ticks,
+        sug_info.system_time as u64,
     );
     let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
     let candle = crate::model::Candle {

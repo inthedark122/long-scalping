@@ -277,8 +277,8 @@ fn mrc_line_label(index: u8) -> &'static str {
         1 => "do",
         2 => "ds",
         3 => "di",
-        4 => "mean",
-        5 => "ai",
+        4 => "m",
+        5 => "ui",
         6 => "us",
         7 => "uo",
         8 => "ub",
@@ -295,7 +295,19 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         _ => "na",
     };
     let sequence = (0..crossing.sequence_len)
-        .map(|index| mrc_line_label(crossing.sequence[index]))
+        .map(|index| {
+            let label = mrc_line_label(crossing.sequence[index]);
+            if index + 1 >= crossing.sequence_len {
+                return label.to_string();
+            }
+            let current_ms = crossing.sequence_times_ms[index];
+            let next_ms = crossing.sequence_times_ms[index + 1];
+            if current_ms == 0 || next_ms <= current_ms {
+                format!("{label}|na")
+            } else {
+                format!("{label}|{}", format_sequence_duration(next_ms - current_ms))
+            }
+        })
         .collect::<Vec<_>>()
         .join(">");
     let movement = if crossing.movement_start > 0.0
@@ -359,6 +371,20 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         movement,
         next_progress
     )
+}
+
+fn format_sequence_duration(duration_ms: u64) -> String {
+    let total_seconds = duration_ms / 1_000;
+    if total_seconds < 60 {
+        return format!("{}s", total_seconds);
+    }
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    if seconds == 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{minutes}m{seconds}s")
+    }
 }
 
 fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {

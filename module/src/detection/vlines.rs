@@ -15,6 +15,7 @@ fn record_cross(
     price: f64,
     direction: i8,
     tick: u64,
+    now_ms: u64,
 ) {
     // Ignore repeated touches of the current line. A line becomes a new
     // sequence event only after another line has been crossed, which keeps
@@ -40,9 +41,11 @@ fn record_cross(
 
     if crossing.sequence_len == crossing.sequence.len() {
         crossing.sequence.copy_within(1.., 0);
+        crossing.sequence_times_ms.copy_within(1.., 0);
         crossing.sequence_len -= 1;
     }
     crossing.sequence[crossing.sequence_len] = line_idx as u8;
+    crossing.sequence_times_ms[crossing.sequence_len] = now_ms;
     crossing.sequence_len += 1;
 
     crossing.last_line = Some(line_idx as u8);
@@ -69,6 +72,7 @@ pub fn update(
     lines: [f64; 9],
     price: f64,
     tick: u64,
+    now_ms: u64,
 ) {
     if !price.is_finite() || price <= 0.0 {
         return;
@@ -133,6 +137,7 @@ pub fn update(
             price,
             direction,
             tick,
+            now_ms,
         );
     }
 
@@ -182,9 +187,9 @@ mod tests {
         let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
-        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
-        update(&mut vlines, &mut crossing, lines(), 101.0, 2);
-        update(&mut vlines, &mut crossing, lines(), 99.5, 3);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 101.0, 2, 2_000);
+        update(&mut vlines, &mut crossing, lines(), 99.5, 3, 3_000);
 
         assert_eq!(vlines[4].last_cross_dir, 1);
         assert_eq!(vlines[4].cross_count, 1);
@@ -198,8 +203,8 @@ mod tests {
         let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
-        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
-        update(&mut vlines, &mut crossing, lines(), 105.0, 2);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 2, 2_000);
 
         assert_eq!(&crossing.sequence[..2], &[4, 5]);
         assert_eq!(crossing.no_pullback_count, 2);
@@ -212,9 +217,9 @@ mod tests {
         let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
-        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
-        update(&mut vlines, &mut crossing, lines(), 105.0, 2);
-        update(&mut vlines, &mut crossing, lines(), 99.0, 3);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 2, 62_000);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 3, 92_000);
 
         assert_eq!(crossing.reverted_line, Some(5));
         assert_eq!(crossing.no_pullback_count, 0);
@@ -227,10 +232,10 @@ mod tests {
         let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
-        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
-        update(&mut vlines, &mut crossing, lines(), 101.0, 2);
-        update(&mut vlines, &mut crossing, lines(), 99.5, 3);
-        update(&mut vlines, &mut crossing, lines(), 100.5, 4);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 101.0, 2, 2_000);
+        update(&mut vlines, &mut crossing, lines(), 99.5, 3, 3_000);
+        update(&mut vlines, &mut crossing, lines(), 100.5, 4, 4_000);
 
         assert_eq!(&crossing.sequence[..1], &[4]);
         assert_eq!(vlines[4].cross_count, 1);
@@ -241,14 +246,14 @@ mod tests {
         let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
-        update(&mut vlines, &mut crossing, lines(), 99.0, 1);
-        update(&mut vlines, &mut crossing, lines(), 101.0, 2);
-        update(&mut vlines, &mut crossing, lines(), 102.0, 3);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 101.0, 2, 2_000);
+        update(&mut vlines, &mut crossing, lines(), 102.0, 3, 3_000);
         assert_eq!(crossing.movement_start, 100.0);
         assert_eq!(crossing.movement_target, 104.0);
         assert_eq!(crossing.movement_extreme, 102.0);
 
-        update(&mut vlines, &mut crossing, lines(), 105.0, 4);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 4, 4_000);
         assert_eq!(crossing.movement_start, 104.0);
         assert_eq!(crossing.movement_extreme, 105.0);
     }

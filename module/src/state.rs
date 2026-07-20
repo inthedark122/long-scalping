@@ -54,6 +54,7 @@ pub struct VLineState {
 pub struct MrcCrossingState {
     pub last_price: Option<f64>,
     pub sequence: [u8; 8],
+    pub sequence_times_ms: [u64; 8],
     pub sequence_len: usize,
     pub no_pullback_count: u32,
     pub last_line: Option<u8>,
@@ -72,6 +73,7 @@ impl Default for MrcCrossingState {
         Self {
             last_price: None,
             sequence: [0; 8],
+            sequence_times_ms: [0; 8],
             sequence_len: 0,
             no_pullback_count: 0,
             last_line: None,
