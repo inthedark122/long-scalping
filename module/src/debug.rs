@@ -75,15 +75,13 @@ pub fn render(
         ),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf={}", cascade_tf_text),
+        format!("big_gain={}", state.big_gain.summary()),
         format!("mrc_risk={mrc_risk}"),
         format!(
             "mrc_cross={}",
             format_mrc_crossing(state, snapshot, decision, tick_size)
         ),
     ];
-    if let Some(reason) = state.last_pending_cancel.as_deref() {
-        parts.push(format!("pending_cancel={reason}"));
-    }
     if state.position.side == PositionState::Flat {
         parts.push(format!(
             "exec={}",

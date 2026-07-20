@@ -122,7 +122,6 @@ fn handle_signal(
         state.trade_budget = 0.0;
         state.direction_lock = Default::default();
         state.movement_entry_pending = None;
-        state.last_pending_cancel = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -184,9 +183,6 @@ fn handle_new_position(
     direction: Direction,
     entry_price: f64,
 ) -> ModuleOutput {
-    // A pending-cancel reason belongs to the previous unfilled entry. Clear it
-    // only when the position-creation event confirms that a new position exists.
-    state.last_pending_cancel = None;
     state.position = PositionRuntime {
         side: dir_to_position(direction),
         entry_price,
@@ -425,23 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn new_position_clears_previous_pending_cancel_reason() {
-        let mut state = EngineState::default();
-        state.last_pending_cancel = Some("mrc-pullback-wait".to_string());
-
-        let _ = run(
-            &input(ModuleEvent::NewPosition {
-                direction: Direction::Long,
-                entry_price: 100.0,
-                qty: 1.0,
-            }),
-            &mut state,
-        );
-
-        assert!(state.last_pending_cancel.is_none());
-    }
-
-    #[test]
     fn martingale_open_fill_does_not_replenish() {
         let mut state = EngineState::default();
         state.cfg.trade_mode = TradeMode::Martingale;
@@ -592,6 +571,14 @@ fn refresh_indicators(
     );
     if is_init || timeframes.contains(&TF_1M) {
         cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
+        state.big_gain.observe(
+            state.bar_1m,
+            snapshot.tf1m.volume_gain,
+            snapshot.tf1m.buy_sell_gain,
+            snapshot.tf1m.mrc_signal.zone,
+            state.mrc_crossing.candle_cross_mask,
+        );
+        state.mrc_crossing.candle_cross_mask = 0;
     }
     ModuleOutput {
         debug: String::new(),

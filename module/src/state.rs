@@ -2,7 +2,7 @@ use crate::builder::BuiltStrategy;
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
-use crate::observer::{DirectionChangeHistory, TpRepriceHistory};
+use crate::observer::{BigGainTracker, DirectionChangeHistory, TpRepriceHistory};
 use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
@@ -43,6 +43,7 @@ pub struct VLineState {
 #[derive(Debug, Clone, Copy)]
 pub struct MrcCrossingState {
     pub last_price: Option<f64>,
+    pub candle_cross_mask: u16,
     pub sequence: [u8; 8],
     pub sequence_times_ms: [u64; 8],
     pub sequence_len: usize,
@@ -64,6 +65,7 @@ impl Default for MrcCrossingState {
     fn default() -> Self {
         Self {
             last_price: None,
+            candle_cross_mask: 0,
             sequence: [0; 8],
             sequence_times_ms: [0; 8],
             sequence_len: 0,
@@ -175,6 +177,7 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
+    pub big_gain: BigGainTracker,
     pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
     pub direction_source: String,
@@ -182,7 +185,6 @@ pub struct EngineState {
     pub tp_reprice_history: TpRepriceHistory,
     pub mrc_risk: MrcRiskManager,
     pub movement_entry_pending: Option<PendingEntryState>,
-    pub last_pending_cancel: Option<String>,
     pub cascade_tf: CascadeState,
     pub exit_memory: ExitMemory,
     pub strategy_builder: Option<BuiltStrategy>,
@@ -202,6 +204,7 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
+            big_gain: BigGainTracker::default(),
             direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
             direction_source: "regime".to_string(),
@@ -209,7 +212,6 @@ impl Default for EngineState {
             tp_reprice_history: TpRepriceHistory::default(),
             mrc_risk: MrcRiskManager::default(),
             movement_entry_pending: None,
-            last_pending_cancel: None,
             cascade_tf: CascadeState::default(),
             exit_memory: ExitMemory::default(),
             strategy_builder: None,

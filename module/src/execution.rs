@@ -249,39 +249,6 @@ fn pending_position<'a>(
     }
 }
 
-fn cancel_pending_entry(
-    input: &ModuleInput,
-    state: &mut EngineState,
-    side: PositionState,
-    wait: &crate::model::EntryWait,
-) -> Option<ExecutionResult> {
-    let direction = match side {
-        PositionState::Long => Direction::Long,
-        PositionState::Short => Direction::Short,
-        PositionState::Flat => return None,
-    };
-    if pending_position(input, side)
-        .filter(|position| !has_active_position(Some(position)))
-        .is_some()
-    {
-        state.last_pending_cancel = Some(wait.reason.clone());
-        return Some(ExecutionResult {
-            close_positions: vec![close(
-                direction,
-                &close_reason(
-                    "entry-wait-cancel-pending",
-                    state,
-                    input.price,
-                    tick_size(input),
-                ),
-            )],
-            ..Default::default()
-        });
-    }
-
-    None
-}
-
 fn has_active_position(position: Option<&ModulePositionSummary>) -> bool {
     position
         .map(|position| position.qty > 0.0 || position.notional > 0.0)
@@ -723,10 +690,11 @@ pub fn evaluate_with_cascade(
             });
         }
         if !has_active_position(Some(long_position)) {
-            if let EntryGate::Wait(wait) = &decision.entry {
-                return cancel_pending_entry(input, state, PositionState::Long, wait);
+            if matches!(&decision.entry, EntryGate::Wait(_)) {
+                return None;
             }
-            state.position.entry_reason = entry_reason(decision).cloned();
+            let reason = entry_reason(decision).cloned();
+            state.position.entry_reason = reason;
             return Some(ExecutionResult {
                 update_positions: created_position_update(input, state, PositionState::Long)
                     .into_iter()
@@ -766,10 +734,11 @@ pub fn evaluate_with_cascade(
             });
         }
         if !has_active_position(Some(short_position)) {
-            if let EntryGate::Wait(wait) = &decision.entry {
-                return cancel_pending_entry(input, state, PositionState::Short, wait);
+            if matches!(&decision.entry, EntryGate::Wait(_)) {
+                return None;
             }
-            state.position.entry_reason = entry_reason(decision).cloned();
+            let reason = entry_reason(decision).cloned();
+            state.position.entry_reason = reason;
             return Some(ExecutionResult {
                 update_positions: created_position_update(input, state, PositionState::Short)
                     .into_iter()
@@ -798,8 +767,8 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
-    if let EntryGate::Wait(wait) = &decision.entry {
-        return cancel_pending_entry(input, state, entry_side, wait);
+    if matches!(&decision.entry, EntryGate::Wait(_)) {
+        return None;
     }
 
     let mut amount = entry_budget(input, state);
@@ -822,7 +791,8 @@ pub fn evaluate_with_cascade(
         }
     }
 
-    state.position.entry_reason = entry_reason(decision).cloned();
+    let reason = entry_reason(decision).cloned();
+    state.position.entry_reason = reason;
     let entry_price = entry_reason(decision)
         .map(|reason| reason.price())
         .unwrap_or(input.price);
@@ -1082,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_entry_does_not_create_and_cancels_pending_position() {
+    fn waiting_entry_keeps_pending_position() {
         let mut state = EngineState::default();
         let wait_decision = TradeDecision {
             market_state: MarketState::Long,
@@ -1105,6 +1075,7 @@ mod tests {
             &wait_decision,
         );
         assert!(first.is_none());
+        state.position.entry_reason = Some(EntryReason::SugInfoScalp { price: 99.0 });
 
         let mut pending_input = input();
         pending_input.positions.long = Some(ModulePositionSummary {
@@ -1113,19 +1084,18 @@ mod tests {
             pnl: 0.0,
             qty: 0.0,
         });
-        let wait = match &wait_decision.entry {
-            EntryGate::Wait(wait) => wait,
-            EntryGate::Open { .. } => unreachable!(),
-        };
-        let second = cancel_pending_entry(&pending_input, &mut state, PositionState::Long, wait)
-            .expect("pending position cancellation should produce an execution result");
-        assert!(second.open_positions.is_empty());
-        assert_eq!(second.close_positions.len(), 1);
-        assert!(second.update_positions.is_empty());
-        assert!(state
-            .last_pending_cancel
-            .as_deref()
-            .is_some_and(|reason| reason.contains("mrc-pullback-wait")));
+        let second = evaluate_with_cascade(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &wait_decision,
+        );
+        assert!(second.is_none());
+        assert_eq!(
+            state.position.entry_reason,
+            Some(EntryReason::SugInfoScalp { price: 99.0 })
+        );
     }
 
     #[test]
@@ -1152,6 +1122,39 @@ mod tests {
         assert!(result.close_positions.is_empty());
         assert_eq!(result.update_positions.len(), 1);
         assert_eq!(result.update_positions[0].enter_price, Some(100.0));
+        assert_eq!(
+            state.position.entry_reason,
+            Some(EntryReason::SugInfoScalp { price: 100.0 })
+        );
+    }
+
+    #[test]
+    fn unchanged_open_reason_keeps_pending_entry_without_update() {
+        let mut state = EngineState::default();
+        let mut pending_input = input();
+        pending_input.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 0.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+
+        let result = evaluate(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        )
+        .expect("unchanged pending entry should produce an execution result");
+
+        assert!(result.open_positions.is_empty());
+        assert!(result.close_positions.is_empty());
+        assert!(result.update_positions.is_empty());
+        assert_eq!(
+            state.position.entry_reason,
+            Some(EntryReason::SugInfoScalp { price: 100.0 })
+        );
     }
 
     #[test]
