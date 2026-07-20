@@ -43,7 +43,6 @@ impl SingleDynamicBuilder {
             cascade,
             sug_info,
             decision,
-            true,
         )
     }
 }

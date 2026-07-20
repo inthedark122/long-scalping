@@ -684,7 +684,7 @@ fn process_realtime(
         &cas_tf,
         sug_info,
         crate::model::TradeDecision {
-            market_state: regime.confirmed,
+            market_state: entry_direction,
             entry: entry_gate,
         },
     );

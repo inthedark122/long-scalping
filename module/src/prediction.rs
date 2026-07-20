@@ -306,42 +306,6 @@ fn direction_lock_gate(
     }))
 }
 
-fn one_way_lock_gate(
-    state: &EngineState,
-    snapshot: &IndicatorSnapshot,
-    side: PositionState,
-) -> Option<EntryGate> {
-    let lock = &state.direction_lock;
-    if lock.direction == MarketState::Sideways {
-        return None;
-    }
-
-    let desired = match side {
-        PositionState::Long => MarketState::Long,
-        PositionState::Short => MarketState::Short,
-        PositionState::Flat => MarketState::Sideways,
-    };
-
-    if desired != MarketState::Sideways && desired != lock.direction {
-        return Some(EntryGate::Wait(EntryWait {
-            reason: "one-way-lock".to_string(),
-            solutions: vec![EntryWaitSolution::WaitForDirectionBreak {
-                source: "direction-lock".to_string(),
-                direction: lock.direction,
-                break_price: lock.break_price,
-            }],
-            notes: vec![
-                format!("lock={}", lock.label()),
-                format!("plan={:?}", desired),
-                format!("price={:.4}", snapshot.tf1m.candle.close),
-                "same-side-only".to_string(),
-            ],
-        }));
-    }
-
-    None
-}
-
 fn movement_entry_confirmation_gate(
     state: &mut EngineState,
     plan: &MovementEntryPlan,
@@ -494,9 +458,6 @@ fn sideway_entry_gate(
     }
 
     let plan = sideway_entry_plan(snapshot, &signal, cascade)?;
-    if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
-        return Some(wait);
-    }
     if signal.active && !sideways::reentry_ready(&signal, side) {
         return Some(EntryGate::Wait(EntryWait {
             reason: "sideway-opposite-wait".to_string(),
@@ -772,10 +733,6 @@ pub fn entry_gate(
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: plan.entry }),
             };
         }
-    }
-
-    if let Some(wait) = one_way_lock_gate(state, snapshot, side) {
-        return wait;
     }
 
     if state.position.side == PositionState::Flat && cascade.samples < 3 {

@@ -74,6 +74,15 @@ pub fn render(
             regime.confirmed, decision.market_state, state.direction_source, state.direction_reason
         ),
         format!(
+            "regime=[{:?}:{}]",
+            regime.confirmed,
+            if decision.market_state == regime.confirmed {
+                "follow"
+            } else {
+                "break"
+            }
+        ),
+        format!(
             "entry_side={}",
             format_entry_side(
                 if state.direction_lock.direction != crate::model::MarketState::Sideways {

@@ -117,11 +117,10 @@ impl BuiltStrategy {
 
     pub fn describe(&self) -> String {
         format!(
-            "phase={} mode={} entry_wait={} dir_lock={} dir_close={} breakeven={} virtual_sl={}",
+            "phase={} mode={} entry_wait={} dir_close={} breakeven={} virtual_sl={}",
             self.phase.as_str(),
             self.trade_mode().as_str(),
             self.entry_wait_gate(),
-            self.dynamic.apply_direction_lock(),
             self.dynamic.direction_change_close(),
             self.breakeven_reclaim(),
             self.virtual_sl_tp_advance(),
@@ -174,13 +173,6 @@ impl DynamicBuilder {
         match self {
             Self::Single(builder) => builder.should_close_on_direction_change(input, state),
             Self::Martingale(builder) => builder.should_close_on_direction_change(input, state),
-        }
-    }
-
-    pub fn apply_direction_lock(&self) -> bool {
-        match self {
-            Self::Single(builder) => builder.policy.apply_direction_lock,
-            Self::Martingale(builder) => builder.policy.apply_direction_lock,
         }
     }
 

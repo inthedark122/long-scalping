@@ -1,8 +1,8 @@
 use super::policy::StrategyPolicy;
 use crate::detection::{cascade::CascadeSignal, sideways};
 use crate::model::{
-    EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, ExitKind, MarketState,
-    RegimeSnapshot, TradeDecision,
+    EntryGate, EntryOpenReason, EntryReason, EntryWait, ExitKind, MarketState, RegimeSnapshot,
+    TradeDecision,
 };
 use crate::prediction;
 use crate::state::EngineState;
@@ -26,7 +26,6 @@ pub(super) fn refine_common(
     cascade: &CascadeSignal,
     _sug_info: &SuggestionInfo,
     mut decision: TradeDecision,
-    apply_direction_lock: bool,
 ) -> TradeDecision {
     if state.position.side == crate::model::PositionState::Flat
         && state.exit_memory.kind == Some(ExitKind::StopLoss)
@@ -133,33 +132,6 @@ pub(super) fn refine_common(
             decision.entry = EntryGate::Open {
                 notes: plan.notes.clone(),
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoMovement { price: plan.price }),
-            };
-        }
-    }
-
-    if apply_direction_lock {
-        let locked_direction = state.direction_lock.direction;
-        if locked_direction != MarketState::Sideways && decision.market_state != locked_direction {
-            state.direction_source = "direction-lock".to_string();
-            state.direction_reason = format!(
-                "direction-lock:direction={:?}:reason={}",
-                locked_direction, state.direction_lock.reason
-            );
-            decision = TradeDecision {
-                market_state: locked_direction,
-                entry: EntryGate::Wait(EntryWait {
-                    reason: "one-way-lock".to_string(),
-                    solutions: vec![EntryWaitSolution::WaitForDirectionBreak {
-                        source: "direction-lock".to_string(),
-                        direction: locked_direction,
-                        break_price: state.direction_lock.break_price,
-                    }],
-                    notes: vec![
-                        format!("lock={}", state.direction_lock.label()),
-                        format!("price={:.4}", snapshot.tf1m.candle.close),
-                        "same-side-only".to_string(),
-                    ],
-                }),
             };
         }
     }

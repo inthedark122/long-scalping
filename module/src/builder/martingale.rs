@@ -43,7 +43,6 @@ impl MartingaleDynamicBuilder {
             cascade,
             sug_info,
             decision,
-            false,
         )
     }
 }
