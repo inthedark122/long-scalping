@@ -95,6 +95,9 @@ pub fn render(
             format_mrc_crossing(state, snapshot, decision, tick_size)
         ),
     ];
+    if let Some(reason) = state.last_pending_cancel.as_deref() {
+        parts.push(format!("pending_cancel={reason}"));
+    }
     if state.position.side == PositionState::Flat {
         parts.push(format!(
             "exec={}",

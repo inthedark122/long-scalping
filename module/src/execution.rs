@@ -227,8 +227,9 @@ fn pending_position<'a>(
 
 fn cancel_pending_entry(
     input: &ModuleInput,
-    state: &EngineState,
+    state: &mut EngineState,
     side: PositionState,
+    wait: &crate::model::EntryWait,
 ) -> Option<ExecutionResult> {
     let direction = match side {
         PositionState::Long => Direction::Long,
@@ -239,6 +240,7 @@ fn cancel_pending_entry(
         .filter(|position| !has_active_position(Some(position)))
         .is_some()
     {
+        state.last_pending_cancel = Some(wait.reason.clone());
         return Some(ExecutionResult {
             close_positions: vec![close(
                 direction,
@@ -698,8 +700,8 @@ pub fn evaluate_with_cascade(
             });
         }
         if !has_active_position(Some(long_position)) {
-            if matches!(decision.entry, EntryGate::Wait(_)) {
-                return cancel_pending_entry(input, state, PositionState::Long);
+            if let EntryGate::Wait(wait) = &decision.entry {
+                return cancel_pending_entry(input, state, PositionState::Long, wait);
             }
             state.position.entry_reason = entry_reason(decision).cloned();
             return Some(ExecutionResult {
@@ -741,8 +743,8 @@ pub fn evaluate_with_cascade(
             });
         }
         if !has_active_position(Some(short_position)) {
-            if matches!(decision.entry, EntryGate::Wait(_)) {
-                return cancel_pending_entry(input, state, PositionState::Short);
+            if let EntryGate::Wait(wait) = &decision.entry {
+                return cancel_pending_entry(input, state, PositionState::Short, wait);
             }
             state.position.entry_reason = entry_reason(decision).cloned();
             return Some(ExecutionResult {
@@ -773,8 +775,8 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
-    if matches!(decision.entry, EntryGate::Wait(_)) {
-        return cancel_pending_entry(input, state, entry_side);
+    if let EntryGate::Wait(wait) = &decision.entry {
+        return cancel_pending_entry(input, state, entry_side, wait);
     }
 
     let mut amount = entry_budget(input, state);
@@ -1050,11 +1052,19 @@ mod tests {
             pnl: 0.0,
             qty: 0.0,
         });
-        let second = cancel_pending_entry(&pending_input, &state, PositionState::Long)
+        let wait = match &wait_decision.entry {
+            EntryGate::Wait(wait) => wait,
+            EntryGate::Open { .. } => unreachable!(),
+        };
+        let second = cancel_pending_entry(&pending_input, &mut state, PositionState::Long, wait)
             .expect("pending position cancellation should produce an execution result");
         assert!(second.open_positions.is_empty());
         assert_eq!(second.close_positions.len(), 1);
         assert!(second.update_positions.is_empty());
+        assert!(state
+            .last_pending_cancel
+            .as_deref()
+            .is_some_and(|reason| reason.contains("mrc-pullback-wait")));
     }
 
     #[test]

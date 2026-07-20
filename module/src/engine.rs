@@ -122,6 +122,7 @@ fn handle_signal(
         state.trade_budget = 0.0;
         state.direction_lock = Default::default();
         state.movement_entry_pending = None;
+        state.last_pending_cancel = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -183,6 +184,9 @@ fn handle_new_position(
     direction: Direction,
     entry_price: f64,
 ) -> ModuleOutput {
+    // A pending-cancel reason belongs to the previous unfilled entry. Clear it
+    // only when the position-creation event confirms that a new position exists.
+    state.last_pending_cancel = None;
     state.position = PositionRuntime {
         side: dir_to_position(direction),
         entry_price,
@@ -414,6 +418,23 @@ mod tests {
                 .and_then(|martingale| martingale.last_filled_mark.as_deref()),
             Some("extra-1")
         );
+    }
+
+    #[test]
+    fn new_position_clears_previous_pending_cancel_reason() {
+        let mut state = EngineState::default();
+        state.last_pending_cancel = Some("mrc-pullback-wait".to_string());
+
+        let _ = run(
+            &input(ModuleEvent::NewPosition {
+                direction: Direction::Long,
+                entry_price: 100.0,
+                qty: 1.0,
+            }),
+            &mut state,
+        );
+
+        assert!(state.last_pending_cancel.is_none());
     }
 
     #[test]
