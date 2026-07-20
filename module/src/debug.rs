@@ -73,6 +73,16 @@ pub fn render(
             "dir=base={:?}:final={:?}:src={}:why={}",
             regime.confirmed, decision.market_state, state.direction_source, state.direction_reason
         ),
+        format!(
+            "entry_side={}",
+            format_entry_side(
+                if state.direction_lock.direction != crate::model::MarketState::Sideways {
+                    state.direction_lock.direction
+                } else {
+                    regime.confirmed
+                }
+            )
+        ),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf=[{}]", cascade_tf_text),
         format!("volume=[{}]", state.volume_gain.summary()),
@@ -233,6 +243,14 @@ fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64
         fmt_price_tick(lock.break_price, tick_size),
         lock.reason
     )
+}
+
+fn format_entry_side(direction: crate::model::MarketState) -> &'static str {
+    match direction {
+        crate::model::MarketState::Long => "Long",
+        crate::model::MarketState::Short => "Short",
+        crate::model::MarketState::Sideways => "Flat",
+    }
 }
 
 fn format_take_profit(state: &EngineState, snapshot: &IndicatorSnapshot, tick_size: f64) -> String {

@@ -658,7 +658,18 @@ fn process_realtime(
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     state.direction_source = "regime".to_string();
     state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
-    let entry_side = match regime.confirmed {
+    // The active direction lock is part of the main directional detection. If
+    // it has a direction, evaluate that side directly instead of requesting
+    // the regime side and then blocking it with one-way-lock.
+    let entry_direction = if !matches!(
+        state.direction_lock.direction,
+        crate::model::MarketState::Sideways
+    ) {
+        state.direction_lock.direction
+    } else {
+        regime.confirmed
+    };
+    let entry_side = match entry_direction {
         crate::model::MarketState::Long => crate::model::PositionState::Long,
         crate::model::MarketState::Short => crate::model::PositionState::Short,
         crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
