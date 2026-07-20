@@ -32,19 +32,8 @@ pub struct PositionRuntime {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VSideState {
-    pub count: u8,
-    pub last_power: f64,
-    pub prev_power: f64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
 pub struct VLineState {
     pub was_above: Option<bool>,
-    pub peak: Option<f64>,
-    pub trough: Option<f64>,
-    pub long_side: VSideState,
-    pub short_side: VSideState,
     pub last_cross_tick: u64,
     pub last_cross_dir: i8,
     pub cross_count: u32,

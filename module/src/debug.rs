@@ -1,5 +1,5 @@
 use crate::detection::{cascade, cascade::CascadeSignal, levels, sideways};
-use crate::format::{fmt_metric, fmt_price_tick};
+use crate::format::fmt_price_tick;
 use crate::model::{
     EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, RegimeSnapshot, TradeDecision,
 };
@@ -14,7 +14,6 @@ pub fn render(
     constraint: Option<&str>,
     tick_size: f64,
 ) -> String {
-    let vt = &state.vlines[4];
     let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let pending_entry = state
@@ -30,13 +29,6 @@ pub fn render(
             )
         })
         .unwrap_or_else(|| "na".to_string());
-    let gain_1m = fmt_metric(snapshot.tf1m.volume_gain, 4);
-    let gain_prog = fmt_metric(snapshot.tf1m.gain_progress_pct(), 2);
-    let vml = if vt.long_side.count == 0 && vt.short_side.count == 0 {
-        "na".to_string()
-    } else {
-        format!("{}/{}", vt.long_side.count, vt.short_side.count)
-    };
     let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
     let mrc_risk = state
         .mrc_risk
@@ -83,12 +75,6 @@ pub fn render(
         ),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf={}", cascade_tf_text),
-        format!("vml={}", vml),
-        format!("gain_1m={}", gain_1m),
-        format!("gain_zone={:?}", snapshot.tf1m.gain_zone()),
-        format!("gain_prog={}", gain_prog),
-        format!("gain_building={}", snapshot.tf1m.gain_is_building()),
-        format!("gain_late={}", snapshot.tf1m.gain_is_late()),
         format!("mrc_risk={mrc_risk}"),
         format!(
             "mrc_cross={}",
@@ -229,11 +215,9 @@ fn format_entry_wait_solution(
             phase,
             fast_candle_pct,
             candle_pct,
-            gain_zone,
-            gain_progress_pct,
         } => format!(
-            "fast-candle:{:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
-            phase, fast_candle_pct, candle_pct, gain_zone, gain_progress_pct
+            "fast-candle:{:?} fc={:.2}% candle={:.2}%",
+            phase, fast_candle_pct, candle_pct
         ),
     }
 }

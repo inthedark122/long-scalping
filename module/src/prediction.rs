@@ -255,19 +255,21 @@ pub fn fast_candle_entry_block(
 
     match fc_phase {
         FastCandlePhase::Building | FastCandlePhase::Tiring => Some(format!(
-            "fc-phase={:?} fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
+            "fc-phase={:?} fc={:.2}% candle={:.2}%",
             fc_phase,
-            sug_snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
-            candle_pct,
-            snapshot.tf1m.gain_zone(),
-            snapshot.tf1m.gain_progress_pct()
+            sug_snapshot
+                .fast_candle
+                .map(|fc| fc.range_pct())
+                .unwrap_or(0.0),
+            candle_pct
         )),
         FastCandlePhase::Cooling if !small_candle => Some(format!(
-            "fc-phase=Cooling candle-not-small fc={:.2}% candle={:.2}% gain_zone={:?} gain_prog={:.2}",
-            sug_snapshot.fast_candle.map(|fc| fc.range_pct()).unwrap_or(0.0),
-            candle_pct,
-            snapshot.tf1m.gain_zone(),
-            snapshot.tf1m.gain_progress_pct()
+            "fc-phase=Cooling candle-not-small fc={:.2}% candle={:.2}%",
+            sug_snapshot
+                .fast_candle
+                .map(|fc| fc.range_pct())
+                .unwrap_or(0.0),
+            candle_pct
         )),
         _ => None,
     }
@@ -820,8 +822,6 @@ pub fn entry_gate(
                 phase: fc_phase,
                 fast_candle_pct: fc.map(|fc| fc.range_pct()).unwrap_or(0.0),
                 candle_pct: candle_range_pct(candle),
-                gain_zone: snapshot.tf1m.gain_zone(),
-                gain_progress_pct: snapshot.tf1m.gain_progress_pct(),
             }],
             notes: vec![reason],
         });

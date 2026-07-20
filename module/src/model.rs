@@ -498,8 +498,6 @@ pub enum EntryWaitSolution {
         phase: FastCandlePhase,
         fast_candle_pct: f64,
         candle_pct: f64,
-        gain_zone: GainZone,
-        gain_progress_pct: f64,
     },
 }
 

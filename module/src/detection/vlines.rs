@@ -1,10 +1,4 @@
-use crate::state::{MrcCrossingState, VLineState, VSideState};
-
-fn close_v(side: &mut VSideState, power: f64) {
-    side.prev_power = side.last_power;
-    side.last_power = power;
-    side.count = side.count.saturating_add(1);
-}
+use crate::state::{MrcCrossingState, VLineState};
 
 fn record_cross(
     vlines: &mut [VLineState; 9],
@@ -164,28 +158,6 @@ pub fn update(
             crossing.movement_extreme.min(price)
         };
     }
-
-    // Preserve the existing excursion statistics for compatibility with the
-    // current diagnostics; the new crossing state above is event-based.
-    for (idx, line) in lines.iter().copied().enumerate() {
-        if line <= 0.0 || !line.is_finite() {
-            continue;
-        }
-        let tracker = &mut vlines[idx];
-        if price >= line {
-            if let Some(trough) = tracker.trough.take() {
-                let power = ((line - trough) / line.abs().max(f64::EPSILON) * 100.0).max(0.0);
-                close_v(&mut tracker.short_side, power);
-            }
-            tracker.peak = Some(tracker.peak.unwrap_or(price).max(price));
-        } else {
-            if let Some(peak) = tracker.peak.take() {
-                let power = ((peak - line) / line.abs().max(f64::EPSILON) * 100.0).max(0.0);
-                close_v(&mut tracker.long_side, power);
-            }
-            tracker.trough = Some(tracker.trough.unwrap_or(price).min(price));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -198,9 +170,9 @@ mod tests {
 
     #[test]
     fn realtime_crosses_record_direction_and_repeat_count() {
-        let mut vlines = [VLineState::default(); 9];
         let mut crossing = MrcCrossingState::default();
 
+        let mut vlines = [VLineState::default(); 9];
         update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
         update(&mut vlines, &mut crossing, lines(), 101.0, 2, 2_000);
         update(&mut vlines, &mut crossing, lines(), 99.5, 3, 3_000);
