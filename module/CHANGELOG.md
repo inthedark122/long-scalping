@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.64
+
+Martingale SL activation release.
+
+- Reserve an additional full martingale range before SL activation.
+- Keep the reserved activation price separate from the common level-based SL.
+- Expose the martingale SL activation price in debug output.
+
 # 1.0.63
 
 Deduplicated MRC crossing diagnostics release.
