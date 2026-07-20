@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.66
+
+Pending-entry protection release.
+
+- Keep unfilled MRC limit entries active when the next signal enters a wait state.
+- Reprice pending entries only when a later open decision changes the entry price.
+- Remove pending-cancellation debug state and preserve the existing entry reason.
+
 # 1.0.65
 
 Directional entry release.
