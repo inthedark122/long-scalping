@@ -5,8 +5,7 @@ use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
 use crate::model::{
-    EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TpControl,
-    TradeDecision,
+    EntryGate, EntryReason, ExitMode, MarketState, PositionState, TpControl, TradeDecision,
 };
 use crate::orders::{close, limit_open, tp_mark, update_position};
 use crate::risk::entry_budget;
@@ -86,17 +85,6 @@ fn close_reason(reason: &str, state: &EngineState, price: f64, tick_size: f64) -
         state.cfg.cap_init,
         state.cfg.trading_amount,
         state.trade_budget
-    )
-}
-
-fn is_forced_pullback_open(decision: &TradeDecision) -> bool {
-    matches!(
-        &decision.entry,
-        EntryGate::Open {
-            notes,
-            reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { .. })
-        }
-            if notes.iter().any(|note| note == "forced-pullback")
     )
 }
 
@@ -316,10 +304,7 @@ pub fn evaluate_with_cascade(
         return None;
     }
 
-    let mut amount = entry_budget(input, state);
-    if is_forced_pullback_open(decision) {
-        amount *= state.cfg.pullback_ratio();
-    }
+    let amount = entry_budget(input, state);
     let leverage = (input.leverage as f64).max(1.0);
     if amount <= 0.0 {
         return Some(ExecutionResult {

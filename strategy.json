@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.67 exit diagnostics release using compiled defaults or cap_init/trading_amount/pullback_amount/min_tp_percent/trade_mode/tp_control overrides. MRC revert tracking is directional, structural TP selection uses the larger of min_tp_percent and the cascade average, and BuySellGain defaults to zero when unavailable. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
+      "description": "Start the 1.0.67 exit diagnostics release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. MRC revert tracking is directional, structural TP selection uses the larger of min_tp_percent and the cascade average, and BuySellGain defaults to zero when unavailable. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
       "params": [
         {
           "code": "cap_init",
@@ -46,13 +46,6 @@
           "name": "Trading amount %",
           "description": "Normal entry size as a percent of the deployable budget. Clamped to 10-100.",
           "default": 50.0,
-          "variant": "Number"
-        },
-        {
-          "code": "pullback_amount",
-          "name": "Pullback amount %",
-          "description": "Forced pullback entry size as a percent of the normal deployable budget.",
-          "default": 25.0,
           "variant": "Number"
         },
         {

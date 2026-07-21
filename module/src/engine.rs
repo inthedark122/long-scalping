@@ -134,9 +134,6 @@ fn handle_signal(
         if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64()) {
             state.cfg.trading_amount = trading_amount.clamp(10.0, 100.0);
         }
-        if let Some(pullback_amount) = values.get("pullback_amount").and_then(|v| v.as_f64()) {
-            state.cfg.pullback_amount = pullback_amount.clamp(0.0, 100.0);
-        }
         if let Some(min_tp_percent) = values.get("min_tp_percent").and_then(|v| v.as_f64()) {
             state.cfg.min_tp_percent = min_tp_percent.max(0.0);
         }
@@ -158,11 +155,10 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
+                "start direction={:?} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
                 state.allowed_direction,
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
-                state.cfg.pullback_amount,
                 state.cfg.min_tp_percent(),
                 state.cfg.trade_mode.as_str(),
                 state.cfg.tp_control.as_str()

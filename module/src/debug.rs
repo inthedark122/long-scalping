@@ -603,7 +603,6 @@ mod tests {
         assert!(!debug.contains("mode=single"));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
-        assert!(!debug.contains("pullback_amount="));
     }
 
     #[test]
@@ -750,7 +749,6 @@ mod tests {
         assert!(!debug.contains("exec="));
         assert!(!debug.contains("cap_init="));
         assert!(!debug.contains("trading_amount="));
-        assert!(!debug.contains("pullback_amount="));
     }
 
     #[test]
