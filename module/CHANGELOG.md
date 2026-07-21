@@ -1,8 +1,13 @@
 # Changelog
 
-Unreleased
+# 1.0.67
 
-- Track the latest MRC revert line independently for long and short pullbacks.
+Exit diagnostics release.
+
+- Track MRC reverts independently for long and short pullbacks.
+- Add a configurable minimum structural TP and use the larger of it and the cascade average.
+- Move exit helpers into the exit/stop-loss modules and centralize tick-size handling.
+- Treat unavailable `BuySellGain` as zero and remove obsolete sticky MRC crossing extremes.
 
 # 1.0.66
 
