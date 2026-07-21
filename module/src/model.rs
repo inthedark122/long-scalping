@@ -11,16 +11,6 @@ pub enum MarketState {
     Sideways,
 }
 
-impl MarketState {
-    pub fn from_dir_pair(dp_dir: i8, zz_dir: i8) -> Self {
-        match (dp_dir, zz_dir) {
-            (1, 1) => Self::Long,
-            (-1, -1) => Self::Short,
-            _ => Self::Sideways,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PositionState {
     #[default]

@@ -49,10 +49,6 @@ pub fn render(
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
         format!("15m_fb={}", regime.fallback_used),
-        format!(
-            "dir_lock={}",
-            format_direction_lock(&state.direction_lock, tick_size)
-        ),
         format!("pending={}", pending_entry),
         format!(
             "sideway={}",
@@ -82,16 +78,7 @@ pub fn render(
                 "break"
             }
         ),
-        format!(
-            "entry_side={}",
-            format_entry_side(
-                if state.direction_lock.direction != crate::model::MarketState::Sideways {
-                    state.direction_lock.direction
-                } else {
-                    regime.confirmed
-                }
-            )
-        ),
+        format!("entry_side={}", format_entry_side(regime.confirmed)),
         format!("dir_hist=[{}]", state.direction_history.summary(tick_size)),
         format!("casTf=[{}]", cascade_tf_text),
         format!("volume=[{}]", state.volume_gain.summary()),
@@ -254,21 +241,6 @@ fn format_entry_wait_solution(
             phase, fast_candle_pct, candle_pct
         ),
     }
-}
-
-fn format_direction_lock(lock: &crate::state::DirectionLockState, tick_size: f64) -> String {
-    if lock.direction == crate::model::MarketState::Sideways {
-        return "na".to_string();
-    }
-    if lock.break_price <= 0.0 {
-        return format!("{:?}:na:{}", lock.direction, lock.reason);
-    }
-    format!(
-        "{:?}:{}:{}",
-        lock.direction,
-        fmt_price_tick(lock.break_price, tick_size),
-        lock.reason
-    )
 }
 
 fn format_entry_side(direction: crate::model::MarketState) -> &'static str {

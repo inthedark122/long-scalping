@@ -80,8 +80,7 @@ pub(super) fn refine_common(
             MarketState::Short => crate::model::PositionState::Short,
             MarketState::Sideways => crate::model::PositionState::Flat,
         };
-        if let Some(plan) =
-            prediction::sug_entry_plan(snapshot, sug_snapshot, state, cascade, entry_side)
+        if let Some(plan) = prediction::sug_entry_plan(snapshot, sug_snapshot, cascade, entry_side)
         {
             let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;

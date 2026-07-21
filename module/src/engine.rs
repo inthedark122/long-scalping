@@ -1,6 +1,6 @@
 use crate::builder;
 use crate::debug;
-use crate::detection::{cascade, direction_lock, regime, sideways, vlines};
+use crate::detection::{cascade, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
@@ -126,7 +126,6 @@ fn handle_signal(
     if code == "start" {
         state.allowed_direction = *direction;
         state.trade_budget = 0.0;
-        state.direction_lock = Default::default();
         state.movement_entry_pending = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
@@ -220,12 +219,6 @@ fn handle_new_position(
             };
         }
     };
-    direction_lock::refresh(
-        &mut state.direction_lock,
-        &snapshot.tf1m,
-        input.price,
-        state.ticks,
-    );
     let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop;
     let plan = if strategy.is_martingale() {
         martingale::exit_plan(
@@ -573,12 +566,6 @@ fn refresh_indicators(
     refresh_last_snapshot(state, &snapshot);
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
-    direction_lock::refresh(
-        &mut state.direction_lock,
-        &snapshot.tf1m,
-        input.price,
-        state.ticks,
-    );
     if is_init || timeframes.contains(&TF_1M) {
         cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
         state.volume_gain.observe(
@@ -635,12 +622,6 @@ fn process_realtime(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     let strategy = builder::ensure_runtime_builder(state);
-    direction_lock::refresh(
-        &mut state.direction_lock,
-        &snapshot.tf1m,
-        input.price,
-        state.ticks,
-    );
     vlines::update(
         &mut state.vlines,
         &mut state.mrc_crossing,
@@ -668,17 +649,7 @@ fn process_realtime(
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     state.direction_source = "regime".to_string();
     state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
-    // The active direction lock is part of the main directional detection. If
-    // it has a direction, evaluate that side directly instead of requesting
-    // the regime side and then blocking it with one-way-lock.
-    let entry_direction = if !matches!(
-        state.direction_lock.direction,
-        crate::model::MarketState::Sideways
-    ) {
-        state.direction_lock.direction
-    } else {
-        regime.confirmed
-    };
+    let entry_direction = regime.confirmed;
     let entry_side = match entry_direction {
         crate::model::MarketState::Long => crate::model::PositionState::Long,
         crate::model::MarketState::Short => crate::model::PositionState::Short,

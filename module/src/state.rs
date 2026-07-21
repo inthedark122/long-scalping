@@ -115,14 +115,6 @@ pub struct CascadeState {
 }
 
 #[derive(Debug, Clone)]
-pub struct DirectionLockState {
-    pub direction: MarketState,
-    pub break_price: f64,
-    pub last_tick: u64,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct PendingEntryState {
     pub direction: MarketState,
     pub armed_tick: u64,
@@ -141,32 +133,6 @@ impl Default for PendingEntryState {
     }
 }
 
-impl Default for DirectionLockState {
-    fn default() -> Self {
-        Self {
-            direction: MarketState::Sideways,
-            break_price: 0.0,
-            last_tick: 0,
-            reason: "na".to_string(),
-        }
-    }
-}
-
-impl DirectionLockState {
-    pub fn label(&self) -> String {
-        if self.direction == MarketState::Sideways {
-            return "na".to_string();
-        }
-        if self.break_price <= 0.0 {
-            return format!("{:?}:na:{}", self.direction, self.reason);
-        }
-        format!(
-            "{:?}:{:.4}:{}",
-            self.direction, self.break_price, self.reason
-        )
-    }
-}
-
 pub struct EngineState {
     pub ticks: u64,
     pub bar_1m: u64,
@@ -182,7 +148,6 @@ pub struct EngineState {
     pub structural_stop_loss: Option<LevelPoint>,
     pub processed_structural_stop_losses: Vec<LevelPoint>,
     pub volume_gain: VolumeGainTracker,
-    pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
     pub direction_source: String,
     pub direction_reason: String,
@@ -212,7 +177,6 @@ impl Default for EngineState {
             structural_stop_loss: None,
             processed_structural_stop_losses: Vec::new(),
             volume_gain: VolumeGainTracker::default(),
-            direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
             direction_source: "regime".to_string(),
             direction_reason: "na".to_string(),
