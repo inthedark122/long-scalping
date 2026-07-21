@@ -1,4 +1,5 @@
 use crate::builder::BuiltStrategy;
+use crate::detection::levels::LevelPoint;
 use crate::martingale::LadderProfile;
 use crate::model::MarketState;
 use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
@@ -180,6 +181,8 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
+    pub structural_stop_loss: Option<LevelPoint>,
+    pub processed_structural_stop_losses: Vec<LevelPoint>,
     pub volume_gain: VolumeGainTracker,
     pub direction_lock: DirectionLockState,
     pub direction_history: DirectionChangeHistory,
@@ -207,6 +210,8 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
+            structural_stop_loss: None,
+            processed_structural_stop_losses: Vec::new(),
             volume_gain: VolumeGainTracker::default(),
             direction_lock: DirectionLockState::default(),
             direction_history: DirectionChangeHistory::default(),
@@ -263,6 +268,8 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Long
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
+                state.structural_stop_loss = None;
+                state.processed_structural_stop_losses.clear();
                 state.position = PositionRuntime {
                     side: PositionState::Long,
                     entry_price: entry,
@@ -285,6 +292,8 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Short
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
+                state.structural_stop_loss = None;
+                state.processed_structural_stop_losses.clear();
                 state.position = PositionRuntime {
                     side: PositionState::Short,
                     entry_price: entry,
@@ -304,6 +313,8 @@ pub fn sync_position_state(
             }
         }
         _ => {
+            state.structural_stop_loss = None;
+            state.processed_structural_stop_losses.clear();
             state.position = PositionRuntime::default();
         }
     }

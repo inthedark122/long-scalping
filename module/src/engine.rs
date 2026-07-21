@@ -183,6 +183,8 @@ fn handle_new_position(
     direction: Direction,
     entry_price: f64,
 ) -> ModuleOutput {
+    state.structural_stop_loss = None;
+    state.processed_structural_stop_losses.clear();
     state.position = PositionRuntime {
         side: dir_to_position(direction),
         entry_price,
@@ -252,8 +254,7 @@ fn handle_new_position(
         } else {
             plan.take_profit.price()
         };
-        state.position.stop_loss = plan.stop_loss.price();
-        state.position.stop_loss_reason = plan.stop_loss.reason();
+        exit::set_stop_loss(state, plan.stop_loss);
         if let Some(martingale) = state.position.martingale.as_mut() {
             martingale.sl_activation_price = plan.stop_loss.activation_price();
         }
@@ -296,6 +297,8 @@ fn handle_finish_position(
 ) -> ModuleOutput {
     risk::apply_close_pnl(input, state, pnl);
     if state.position.side == dir_to_position(direction) {
+        state.structural_stop_loss = None;
+        state.processed_structural_stop_losses.clear();
         state.position = PositionRuntime::default();
     }
     ModuleOutput {

@@ -117,10 +117,27 @@ pub fn render(
         && state.position.stop_loss > 0.0
         && !state.position.stop_loss_reason.is_empty()
     {
+        let processed_structural_sl = if state.processed_structural_stop_losses.is_empty() {
+            "na".to_string()
+        } else {
+            state
+                .processed_structural_stop_losses
+                .iter()
+                .map(|level| {
+                    format!(
+                        "{}@{}",
+                        level.label(),
+                        fmt_price_tick(level.value, tick_size)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         parts.push(format!(
-            "sl={} reason={}",
+            "sl={} reason={} processed_sl={}",
             fmt_price_tick(state.position.stop_loss, tick_size),
-            state.position.stop_loss_reason
+            state.position.stop_loss_reason,
+            processed_structural_sl,
         ));
     }
     if let Some(activation_price) = state

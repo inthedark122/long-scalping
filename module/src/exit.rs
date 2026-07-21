@@ -1,7 +1,14 @@
+use crate::builder::BuiltStrategy;
 use crate::detection::{cascade, levels};
-use crate::model::{EntryReason, IndicatorSnapshot, PositionState, SugInfoSnapshot};
-use crate::state::CascadeState;
+use crate::format::tick_size;
+use crate::martingale;
+use crate::model::{
+    EntryReason, ExitMode, IndicatorSnapshot, PositionState, SugInfoSnapshot, TpControl,
+};
+use crate::orders::{tp_limit_order, tp_mark};
+use crate::state::{CascadeState, EngineState};
 use crate::stop_loss;
+use lte_strategy_bridge::abi::{Direction, ModuleInput, ModulePlaceOrder, ModuleUpdatePosition};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExitPlan {
@@ -40,6 +47,13 @@ impl StopLoss {
     pub fn activation_price(self) -> Option<f64> {
         match self {
             Self::Martingale { price, .. } => Some(price),
+            _ => None,
+        }
+    }
+
+    pub fn structural_level(self) -> Option<levels::LevelPoint> {
+        match self {
+            Self::Structural { level } => Some(level),
             _ => None,
         }
     }
@@ -99,16 +113,17 @@ fn structural_plan(
     price: f64,
     side: PositionState,
     enforce_cascade_minimum: bool,
+    excluded_stop_losses: &[levels::LevelPoint],
 ) -> Option<(levels::LevelPoint, levels::LevelPoint)> {
     let take_profit =
         structural_take_profit_level(levels, cascade, price, side, enforce_cascade_minimum)?;
     match side {
         PositionState::Long => {
-            let sl = levels.nearest_below_point(price)?;
+            let sl = levels.nearest_below_point_excluding(price, excluded_stop_losses)?;
             Some((take_profit, sl))
         }
         PositionState::Short => {
-            let sl = levels.nearest_above_point(price)?;
+            let sl = levels.nearest_above_point_excluding(price, excluded_stop_losses)?;
             Some((take_profit, sl))
         }
         PositionState::Flat => None,
@@ -316,6 +331,28 @@ pub fn compute(
     entry_reason: Option<&EntryReason>,
     enforce_cascade_minimum: bool,
 ) -> Option<ExitPlan> {
+    compute_with_excluded_stop_losses(
+        snapshot,
+        sug_snapshot,
+        cascade,
+        price,
+        side,
+        entry_reason,
+        enforce_cascade_minimum,
+        &[],
+    )
+}
+
+pub fn compute_with_excluded_stop_losses(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    cascade: &CascadeState,
+    price: f64,
+    side: PositionState,
+    entry_reason: Option<&EntryReason>,
+    enforce_cascade_minimum: bool,
+    excluded_stop_losses: &[levels::LevelPoint],
+) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
     }
@@ -333,7 +370,14 @@ pub fn compute(
     }
 
     let levels = levels::structural_levels(snapshot);
-    let structural = structural_plan(&levels, cascade, price, side, enforce_cascade_minimum);
+    let structural = structural_plan(
+        &levels,
+        cascade,
+        price,
+        side,
+        enforce_cascade_minimum,
+        excluded_stop_losses,
+    );
 
     if let Some(plan) = movement_plan(snapshot, sug_snapshot, cascade, price, side, structural) {
         if take_profit_meets_cascade_minimum(
@@ -358,7 +402,8 @@ pub fn compute(
             ) else {
                 return None;
             };
-            let Some(raw_sl) = levels.nearest_below_point(price) else {
+            let Some(raw_sl) = levels.nearest_below_point_excluding(price, excluded_stop_losses)
+            else {
                 return None;
             };
 
@@ -378,7 +423,8 @@ pub fn compute(
             ) else {
                 return None;
             };
-            let Some(raw_sl) = levels.nearest_above_point(price) else {
+            let Some(raw_sl) = levels.nearest_above_point_excluding(price, excluded_stop_losses)
+            else {
                 return None;
             };
 
@@ -390,6 +436,438 @@ pub fn compute(
         }
         PositionState::Flat => None,
     }
+}
+
+fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
+    let position = match side {
+        PositionState::Long => input.positions.long.as_ref(),
+        PositionState::Short => input.positions.short.as_ref(),
+        PositionState::Flat => None,
+    };
+    position
+        .map(|position| {
+            if position.qty != 0.0 {
+                position.qty.abs()
+            } else if position.notional > 0.0 {
+                (position.notional / input.price.max(f64::EPSILON)).max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn virtual_stop_loss_hit_with_activation(
+    state: &mut EngineState,
+    side: PositionState,
+    price: f64,
+) -> bool {
+    let activation_price = state
+        .position
+        .martingale
+        .as_ref()
+        .and_then(|martingale| martingale.sl_activation_price);
+    match activation_price {
+        Some(activation_price) => {
+            if !stop_loss::virtual_stop_loss_hit(side, price, activation_price) {
+                return false;
+            }
+            if let Some(martingale) = state.position.martingale.as_mut() {
+                martingale.sl_activation_price = None;
+            }
+            stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss)
+        }
+        None => stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss),
+    }
+}
+
+fn record_tp_reprice(
+    state: &mut EngineState,
+    input: &ModuleInput,
+    side: PositionState,
+    previous_tp: f64,
+    new_tp: f64,
+    reason: &str,
+    source: &str,
+    virtual_sl_hit: bool,
+    extra: String,
+) {
+    let Some(detected_at_ms) = input
+        .sug_info
+        .as_ref()
+        .map(|sug_info| sug_info.system_time as u64)
+    else {
+        return;
+    };
+    state.tp_reprice_history.observe(
+        detected_at_ms,
+        input.price,
+        previous_tp,
+        new_tp,
+        reason.to_string(),
+        source.to_string(),
+        state.position.exit_mode,
+        virtual_sl_hit,
+        format!("side={:?}|{}", side, extra),
+    );
+}
+
+fn tp_reprice_order_note(state: &EngineState, tick_size: f64, prefix: &str) -> String {
+    format!(
+        "{}|tp_reprice={}",
+        prefix,
+        state
+            .tp_reprice_history
+            .summary(tick_size)
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
+fn structural_stop_loss_note(state: &EngineState) -> String {
+    let active = state
+        .structural_stop_loss
+        .map(|level| format!("{}@{:.4}", level.label(), level.value))
+        .unwrap_or_else(|| "na".to_string());
+    let processed = if state.processed_structural_stop_losses.is_empty() {
+        "na".to_string()
+    } else {
+        state
+            .processed_structural_stop_losses
+            .iter()
+            .map(|level| format!("{}@{:.4}", level.label(), level.value))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!("active={active}|processed={processed}")
+}
+
+pub(crate) fn set_stop_loss(state: &mut EngineState, stop_loss: StopLoss) {
+    state.position.stop_loss = stop_loss.price();
+    state.position.stop_loss_reason = stop_loss.reason();
+    state.structural_stop_loss = stop_loss.structural_level();
+    if let Some(level) = state.structural_stop_loss {
+        if !state.processed_structural_stop_losses.contains(&level) {
+            state.processed_structural_stop_losses.push(level);
+        }
+    }
+}
+
+fn position_exit_plan(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    reference_price: f64,
+    side: PositionState,
+    builder: &BuiltStrategy,
+    enforce_cascade_minimum: bool,
+) -> Option<ExitPlan> {
+    if builder.is_martingale() {
+        martingale::exit_plan(
+            snapshot,
+            side,
+            reference_price,
+            state.position.entry_reason.as_ref(),
+            state
+                .position
+                .martingale
+                .as_ref()
+                .map(|martingale| martingale.profile),
+        )
+    } else {
+        compute_with_excluded_stop_losses(
+            snapshot,
+            sug_snapshot,
+            &state.cascade_tf,
+            reference_price,
+            side,
+            state.position.entry_reason.as_ref(),
+            enforce_cascade_minimum,
+            &state.processed_structural_stop_losses,
+        )
+    }
+}
+
+fn initialize_exit_plan(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    side: PositionState,
+    builder: &BuiltStrategy,
+) -> Option<ModulePlaceOrder> {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return None,
+    };
+    let reference_price = if state.position.entry_price > 0.0 {
+        state.position.entry_price
+    } else {
+        input.price
+    };
+    let plan = position_exit_plan(
+        state,
+        snapshot,
+        sug_snapshot,
+        reference_price,
+        side,
+        builder,
+        true,
+    )?;
+    state.position.take_profit = plan.take_profit.price();
+    set_stop_loss(state, plan.stop_loss);
+    state.position.exit_tp_reliable = plan.tp_reliable;
+    state.position.exit_mode = ExitMode::Structural;
+    let qty = position_qty(input, side);
+    if qty <= 0.0 {
+        return None;
+    }
+    let mark = tp_mark(direction);
+    let note = plan.take_profit.order_note();
+    Some(tp_limit_order(
+        direction,
+        qty,
+        plan.take_profit.price(),
+        &mark,
+        Some(&note),
+    ))
+}
+
+fn ensure_trailing_exit_order(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    side: PositionState,
+    builder: &BuiltStrategy,
+) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => Direction::Both,
+    };
+    let mark = tp_mark(direction);
+    let qty = position_qty(input, side);
+    if qty <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    if state.position.stop_loss <= 0.0 {
+        let reference_price = if state.position.entry_price > 0.0 {
+            state.position.entry_price
+        } else {
+            input.price
+        };
+        let Some(plan) = position_exit_plan(
+            state,
+            snapshot,
+            sug_snapshot,
+            reference_price,
+            side,
+            builder,
+            false,
+        ) else {
+            return (Vec::new(), Vec::new());
+        };
+        set_stop_loss(state, plan.stop_loss);
+        state.position.exit_tp_reliable = plan.tp_reliable;
+    }
+
+    let previous_stop_loss = state.position.stop_loss;
+    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
+    let tick = tick_size(input);
+
+    if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
+        if !virtual_sl_hit {
+            state.position.take_profit = 0.0;
+            state.position.exit_mode = ExitMode::Structural;
+        }
+        return (Vec::new(), Vec::new());
+    }
+
+    if virtual_sl_hit {
+        let Some(recovery_tp) = stop_loss::trailing_recovery_take_profit(input.price, side, tick)
+        else {
+            return (Vec::new(), Vec::new());
+        };
+        state.position.take_profit = recovery_tp;
+        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
+        record_tp_reprice(
+            state,
+            input,
+            side,
+            0.0,
+            recovery_tp,
+            "trailing-sl-cross",
+            "trailing-virtual-sl",
+            true,
+            format!(
+                "mode=trailing-stop|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
+                mark, input.price, previous_stop_loss, tick
+            ),
+        );
+        let note = tp_reprice_order_note(state, tick, "tp:trailing-stop|sl-cross");
+        return (
+            vec![tp_limit_order(
+                direction,
+                qty,
+                recovery_tp,
+                &mark,
+                Some(&note),
+            )],
+            Vec::new(),
+        );
+    }
+
+    if let Some(plan) = position_exit_plan(
+        state,
+        snapshot,
+        sug_snapshot,
+        input.price,
+        side,
+        builder,
+        false,
+    ) {
+        let candidate_stop_loss = plan.stop_loss.price();
+        let favorable = match side {
+            PositionState::Long => candidate_stop_loss > previous_stop_loss,
+            PositionState::Short => candidate_stop_loss < previous_stop_loss,
+            PositionState::Flat => false,
+        };
+        if favorable {
+            set_stop_loss(state, plan.stop_loss);
+            state.position.exit_tp_reliable = plan.tp_reliable;
+        }
+    }
+    (Vec::new(), Vec::new())
+}
+
+pub(crate) fn ensure_active_exit_order(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    side: PositionState,
+    builder: &BuiltStrategy,
+) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
+    if side == PositionState::Flat {
+        return (Vec::new(), Vec::new());
+    }
+    if state.cfg.tp_control == TpControl::TrailingStop {
+        return ensure_trailing_exit_order(input, state, snapshot, sug_snapshot, side, builder);
+    }
+
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => Direction::Both,
+    };
+    let mark = tp_mark(direction);
+    let qty = position_qty(input, side);
+    if qty <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+    if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
+        return initialize_exit_plan(input, state, snapshot, sug_snapshot, side, builder)
+            .map(|order| (vec![order], Vec::new()))
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+    }
+
+    let tick = tick_size(input);
+    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
+    if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
+        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
+    }
+    if !matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
+        return (Vec::new(), Vec::new());
+    }
+
+    if builder.is_martingale() && builder.virtual_sl_tp_advance() && virtual_sl_hit {
+        let desired_tp = stop_loss::martingale_recovery_take_profit(input.price, side, tick);
+        if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
+            let previous_tp = state.position.take_profit;
+            state.position.take_profit = desired_tp;
+            record_tp_reprice(
+                state,
+                input,
+                side,
+                previous_tp,
+                desired_tp,
+                "tp-advance",
+                "virtual-sl",
+                true,
+                format!(
+                    "mode=martingale|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
+                    mark, input.price, state.position.stop_loss, tick
+                ),
+            );
+            let note = tp_reprice_order_note(state, tick, "tp:martingale|reprice");
+            return (
+                vec![tp_limit_order(
+                    direction,
+                    qty,
+                    desired_tp,
+                    &mark,
+                    Some(&note),
+                )],
+                Vec::new(),
+            );
+        }
+        return (Vec::new(), Vec::new());
+    }
+
+    let Some(plan) = compute(
+        snapshot,
+        sug_snapshot,
+        &state.cascade_tf,
+        input.price,
+        side,
+        state.position.entry_reason.as_ref(),
+        false,
+    ) else {
+        return (Vec::new(), Vec::new());
+    };
+    state.position.exit_tp_reliable = plan.tp_reliable;
+    if (plan.take_profit.price() - state.position.take_profit).abs() <= f64::EPSILON {
+        return (Vec::new(), Vec::new());
+    }
+    let previous_tp = state.position.take_profit;
+    state.position.take_profit = plan.take_profit.price();
+    record_tp_reprice(
+        state,
+        input,
+        side,
+        previous_tp,
+        plan.take_profit.price(),
+        "tp-reprice",
+        plan.take_profit.source_label(),
+        virtual_sl_hit,
+        format!(
+            "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|sl_levels={}|mark={}|tick={:.4}",
+            plan.tp_reliable,
+            state.position.exit_mode.as_str(),
+            input.price,
+            state.position.stop_loss,
+            structural_stop_loss_note(state),
+            mark,
+            tick
+        ),
+    );
+    let note = tp_reprice_order_note(
+        state,
+        tick,
+        &format!("{}|reprice", plan.take_profit.order_note()),
+    );
+    (
+        vec![tp_limit_order(
+            direction,
+            qty,
+            plan.take_profit.price(),
+            &mark,
+            Some(&note),
+        )],
+        Vec::new(),
+    )
 }
 
 pub fn describe(plan: Option<ExitPlan>) -> String {

@@ -1,6 +1,6 @@
-use crate::builder::{ensure_runtime_builder, BuiltStrategy};
+use crate::builder::ensure_runtime_builder;
 use crate::exit;
-use crate::format::{fmt_price_tick, fmt_qty};
+use crate::format::{fmt_price_tick, fmt_qty, tick_size};
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
@@ -8,10 +8,9 @@ use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, ExitMode, MarketState, PositionState, TpControl,
     TradeDecision,
 };
-use crate::orders::{close, limit_open, tp_limit_order, tp_mark, update_position};
+use crate::orders::{close, limit_open, tp_mark, update_position};
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState, MartingaleRuntime};
-use crate::stop_loss;
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
     ModulePositionSummary, ModuleUpdatePosition,
@@ -158,79 +157,6 @@ fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn tick_size(input: &ModuleInput) -> f64 {
-    input.symbol_info.price_tick_size.max(f64::EPSILON)
-}
-
-fn virtual_stop_loss_hit_with_activation(
-    state: &mut EngineState,
-    side: PositionState,
-    price: f64,
-) -> bool {
-    let activation_price = state
-        .position
-        .martingale
-        .as_ref()
-        .and_then(|martingale| martingale.sl_activation_price);
-    match activation_price {
-        Some(activation_price) => {
-            if !stop_loss::virtual_stop_loss_hit(side, price, activation_price) {
-                return false;
-            }
-            if let Some(martingale) = state.position.martingale.as_mut() {
-                martingale.sl_activation_price = None;
-            }
-            stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss)
-        }
-        None => stop_loss::virtual_stop_loss_hit(side, price, state.position.stop_loss),
-    }
-}
-
-fn reprice_timestamp_ms(input: &ModuleInput) -> Option<u64> {
-    input
-        .sug_info
-        .as_ref()
-        .map(|sug_info| sug_info.system_time as u64)
-}
-
-fn record_tp_reprice(
-    state: &mut EngineState,
-    input: &ModuleInput,
-    side: PositionState,
-    previous_tp: f64,
-    new_tp: f64,
-    reason: &str,
-    source: &str,
-    virtual_sl_hit: bool,
-    extra: String,
-) {
-    let Some(detected_at_ms) = reprice_timestamp_ms(input) else {
-        return;
-    };
-    state.tp_reprice_history.observe(
-        detected_at_ms,
-        input.price,
-        previous_tp,
-        new_tp,
-        reason.to_string(),
-        source.to_string(),
-        state.position.exit_mode,
-        virtual_sl_hit,
-        format!("side={:?}|{}", side, extra),
-    );
-}
-
-fn tp_reprice_order_note(state: &EngineState, tick_size: f64, prefix: &str) -> String {
-    format!(
-        "{}|tp_reprice={}",
-        prefix,
-        state
-            .tp_reprice_history
-            .summary(tick_size)
-            .unwrap_or_else(|| "none".to_string())
-    )
-}
-
 fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
     matches!(
         (position_side, decision_state),
@@ -277,341 +203,6 @@ fn created_position_update(
     }
     state.position.entry_price = desired_price;
     Some(update_position(direction, Some(desired_price)))
-}
-
-fn position_exit_plan(
-    state: &EngineState,
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    reference_price: f64,
-    side: PositionState,
-    builder: &BuiltStrategy,
-    enforce_cascade_minimum: bool,
-) -> Option<exit::ExitPlan> {
-    if builder.is_martingale() {
-        martingale::exit_plan(
-            snapshot,
-            side,
-            reference_price,
-            state.position.entry_reason.as_ref(),
-            state
-                .position
-                .martingale
-                .as_ref()
-                .map(|martingale| martingale.profile),
-        )
-    } else {
-        exit::compute(
-            snapshot,
-            sug_snapshot,
-            &state.cascade_tf,
-            reference_price,
-            side,
-            state.position.entry_reason.as_ref(),
-            enforce_cascade_minimum,
-        )
-    }
-}
-
-fn initialize_exit_plan(
-    input: &ModuleInput,
-    state: &mut EngineState,
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    side: PositionState,
-    builder: &BuiltStrategy,
-) -> Option<ModulePlaceOrder> {
-    let direction = match side {
-        PositionState::Long => Direction::Long,
-        PositionState::Short => Direction::Short,
-        PositionState::Flat => return None,
-    };
-    let reference_price = if state.position.entry_price > 0.0 {
-        state.position.entry_price
-    } else {
-        input.price
-    };
-    let plan = position_exit_plan(
-        state,
-        snapshot,
-        sug_snapshot,
-        reference_price,
-        side,
-        builder,
-        true,
-    )?;
-    state.position.take_profit = plan.take_profit.price();
-    state.position.stop_loss = plan.stop_loss.price();
-    state.position.stop_loss_reason = plan.stop_loss.reason();
-    state.position.exit_tp_reliable = plan.tp_reliable;
-    state.position.exit_mode = ExitMode::Structural;
-    let order_mark = tp_mark(direction);
-    let qty = position_qty(input, side);
-    if qty <= 0.0 {
-        return None;
-    }
-    let order_note = Some(plan.take_profit.order_note());
-    Some(tp_limit_order(
-        direction,
-        qty,
-        plan.take_profit.price(),
-        &order_mark,
-        order_note.as_deref(),
-    ))
-}
-
-fn ensure_trailing_exit_order(
-    input: &ModuleInput,
-    state: &mut EngineState,
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    side: PositionState,
-    builder: &BuiltStrategy,
-) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
-    let direction = match side {
-        PositionState::Long => Direction::Long,
-        PositionState::Short => Direction::Short,
-        PositionState::Flat => Direction::Both,
-    };
-    let order_mark = tp_mark(direction);
-
-    let qty = position_qty(input, side);
-    if qty <= 0.0 {
-        return (Vec::new(), Vec::new());
-    }
-
-    if state.position.stop_loss <= 0.0 {
-        let reference_price = if state.position.entry_price > 0.0 {
-            state.position.entry_price
-        } else {
-            input.price
-        };
-        if let Some(plan) = position_exit_plan(
-            state,
-            snapshot,
-            sug_snapshot,
-            reference_price,
-            side,
-            builder,
-            false,
-        ) {
-            state.position.stop_loss = plan.stop_loss.price();
-            state.position.stop_loss_reason = plan.stop_loss.reason();
-            state.position.exit_tp_reliable = plan.tp_reliable;
-        } else {
-            return (Vec::new(), Vec::new());
-        }
-    }
-
-    let previous_stop_loss = state.position.stop_loss;
-    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
-    let tick = tick_size(input);
-
-    if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
-        if !virtual_sl_hit {
-            state.position.take_profit = 0.0;
-            state.position.exit_mode = ExitMode::Structural;
-            return (Vec::new(), Vec::new());
-        }
-        return (Vec::new(), Vec::new());
-    }
-
-    if virtual_sl_hit {
-        let Some(recovery_tp) = stop_loss::trailing_recovery_take_profit(input.price, side, tick)
-        else {
-            return (Vec::new(), Vec::new());
-        };
-        state.position.take_profit = recovery_tp;
-        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
-        record_tp_reprice(
-            state,
-            input,
-            side,
-            0.0,
-            recovery_tp,
-            "trailing-sl-cross",
-            "trailing-virtual-sl",
-            true,
-            format!(
-                "mode=trailing-stop|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
-                order_mark, input.price, previous_stop_loss, tick
-            ),
-        );
-        let note = tp_reprice_order_note(state, tick, "tp:trailing-stop|sl-cross");
-        return (
-            vec![tp_limit_order(
-                direction,
-                qty,
-                recovery_tp,
-                &order_mark,
-                Some(&note),
-            )],
-            Vec::new(),
-        );
-    }
-
-    if let Some(plan) = position_exit_plan(
-        state,
-        snapshot,
-        sug_snapshot,
-        input.price,
-        side,
-        builder,
-        false,
-    ) {
-        let candidate_stop_loss = plan.stop_loss.price();
-        let favorable = match side {
-            PositionState::Long => candidate_stop_loss > previous_stop_loss,
-            PositionState::Short => candidate_stop_loss < previous_stop_loss,
-            PositionState::Flat => false,
-        };
-        if favorable {
-            state.position.stop_loss = candidate_stop_loss;
-            state.position.stop_loss_reason = plan.stop_loss.reason();
-            state.position.exit_tp_reliable = plan.tp_reliable;
-        }
-    }
-
-    (Vec::new(), Vec::new())
-}
-
-fn ensure_active_exit_order(
-    input: &ModuleInput,
-    state: &mut EngineState,
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    side: PositionState,
-    builder: &BuiltStrategy,
-) -> (Vec<ModulePlaceOrder>, Vec<ModuleUpdatePosition>) {
-    if side == PositionState::Flat {
-        return (Vec::new(), Vec::new());
-    }
-
-    if state.cfg.tp_control == TpControl::TrailingStop {
-        return ensure_trailing_exit_order(input, state, snapshot, sug_snapshot, side, builder);
-    }
-
-    let direction = match side {
-        PositionState::Long => Direction::Long,
-        PositionState::Short => Direction::Short,
-        PositionState::Flat => Direction::Both,
-    };
-    let order_mark = tp_mark(direction);
-
-    let mut notes = Vec::new();
-    let qty = position_qty(input, side);
-    if qty <= 0.0 {
-        return (Vec::new(), Vec::new());
-    }
-
-    if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
-        if let Some(order) =
-            initialize_exit_plan(input, state, snapshot, sug_snapshot, side, builder)
-        {
-            return (vec![order], Vec::new());
-        }
-        return (Vec::new(), Vec::new());
-    }
-
-    let tick = tick_size(input);
-    let virtual_sl_hit = virtual_stop_loss_hit_with_activation(state, side, input.price);
-
-    if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
-        state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
-        notes.push(format!("virtual-sl-hit={:.4}", state.position.stop_loss));
-    }
-
-    if matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
-        if builder.is_martingale() && builder.virtual_sl_tp_advance() {
-            if virtual_sl_hit {
-                let desired_tp =
-                    stop_loss::martingale_recovery_take_profit(input.price, side, tick);
-                if (desired_tp - state.position.take_profit).abs() > f64::EPSILON {
-                    let previous_tp = state.position.take_profit;
-                    state.position.take_profit = desired_tp;
-                    notes.push(format!("tp-advance={:.4}", desired_tp));
-                    record_tp_reprice(
-                        state,
-                        input,
-                        side,
-                        previous_tp,
-                        desired_tp,
-                        "tp-advance",
-                        "virtual-sl",
-                        true,
-                        format!(
-                            "mode=martingale|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}",
-                            order_mark, input.price, state.position.stop_loss, tick
-                        ),
-                    );
-                    let note = tp_reprice_order_note(state, tick, "tp:martingale|reprice");
-                    let order =
-                        tp_limit_order(direction, qty, desired_tp, &order_mark, Some(&note));
-                    return (vec![order], Vec::new());
-                }
-            }
-            return (Vec::new(), Vec::new());
-        }
-
-        let trail_plan = exit::compute(
-            snapshot,
-            sug_snapshot,
-            &state.cascade_tf,
-            input.price,
-            side,
-            state.position.entry_reason.as_ref(),
-            false,
-        );
-        if let Some(plan) = trail_plan {
-            state.position.exit_tp_reliable = plan.tp_reliable;
-            if (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON {
-                let previous_tp = state.position.take_profit;
-                state.position.take_profit = plan.take_profit.price();
-                notes.push(format!("tp-reprice={:.4}", plan.take_profit.price()));
-                notes.push(format!("source={}", plan.take_profit.source_label()));
-                record_tp_reprice(
-                    state,
-                    input,
-                    side,
-                    previous_tp,
-                    plan.take_profit.price(),
-                    "tp-reprice",
-                    plan.take_profit.source_label(),
-                    virtual_sl_hit,
-                    format!(
-                        "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|mark={}|tick={:.4}",
-                        plan.tp_reliable,
-                        state.position.exit_mode.as_str(),
-                        input.price,
-                        state.position.stop_loss,
-                        order_mark,
-                        tick
-                    ),
-                );
-                let note = tp_reprice_order_note(
-                    state,
-                    tick,
-                    &format!("{}|reprice", plan.take_profit.order_note()),
-                );
-                let order = tp_limit_order(
-                    direction,
-                    qty,
-                    plan.take_profit.price(),
-                    &order_mark,
-                    Some(&note),
-                );
-                return (vec![order], Vec::new());
-            }
-            return (Vec::new(), Vec::new());
-        }
-        return (Vec::new(), Vec::new());
-    }
-
-    if state.position.take_profit > 0.0 {
-        return (Vec::new(), Vec::new());
-    }
-
-    (Vec::new(), Vec::new())
 }
 
 #[cfg(test)]
@@ -702,7 +293,7 @@ pub fn evaluate_with_cascade(
                 ..Default::default()
             });
         }
-        let (tp_orders, update_positions) = ensure_active_exit_order(
+        let (tp_orders, update_positions) = exit::ensure_active_exit_order(
             input,
             state,
             snapshot,
@@ -746,7 +337,7 @@ pub fn evaluate_with_cascade(
                 ..Default::default()
             });
         }
-        let (tp_orders, update_positions) = ensure_active_exit_order(
+        let (tp_orders, update_positions) = exit::ensure_active_exit_order(
             input,
             state,
             snapshot,
@@ -832,8 +423,7 @@ pub fn evaluate_with_cascade(
                 sl_activation_price: plan.stop_loss.activation_price(),
             });
             state.position.take_profit = 0.0;
-            state.position.stop_loss = plan.stop_loss.price();
-            state.position.stop_loss_reason = plan.stop_loss.reason();
+            exit::set_stop_loss(state, plan.stop_loss);
             state.position.exit_mode = ExitMode::Structural;
             let tp_orders = if state.cfg.tp_control == TpControl::TrailingStop {
                 Vec::new()
@@ -942,7 +532,7 @@ mod tests {
         martingale.sl_activation_price = Some(95.0);
         state.position.martingale = Some(martingale);
 
-        assert!(!virtual_stop_loss_hit_with_activation(
+        assert!(!exit::virtual_stop_loss_hit_with_activation(
             &mut state,
             PositionState::Long,
             96.0
@@ -956,7 +546,7 @@ mod tests {
             Some(95.0)
         );
 
-        assert!(virtual_stop_loss_hit_with_activation(
+        assert!(exit::virtual_stop_loss_hit_with_activation(
             &mut state,
             PositionState::Long,
             94.0
@@ -2269,7 +1859,7 @@ mod tests {
 
         assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
         assert!(result.as_ref().unwrap().update_positions.is_empty());
-        let expected_tp = stop_loss::martingale_recovery_take_profit(
+        let expected_tp = crate::stop_loss::martingale_recovery_take_profit(
             inp.price,
             PositionState::Long,
             tick_size(&inp),

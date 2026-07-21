@@ -153,11 +153,35 @@ impl LevelBook {
             .min_by(Self::compare_points)
     }
 
+    pub fn nearest_above_point_excluding(
+        &self,
+        price: f64,
+        excluded: &[LevelPoint],
+    ) -> Option<LevelPoint> {
+        self.above
+            .iter()
+            .copied()
+            .filter(|point| point.value > price && !excluded.contains(point))
+            .min_by(Self::compare_points)
+    }
+
     pub fn nearest_below_point(&self, price: f64) -> Option<LevelPoint> {
         self.below
             .iter()
             .copied()
             .filter(|point| point.value < price)
+            .max_by(Self::compare_points)
+    }
+
+    pub fn nearest_below_point_excluding(
+        &self,
+        price: f64,
+        excluded: &[LevelPoint],
+    ) -> Option<LevelPoint> {
+        self.below
+            .iter()
+            .copied()
+            .filter(|point| point.value < price && !excluded.contains(point))
             .max_by(Self::compare_points)
     }
 
@@ -500,6 +524,29 @@ mod tests {
         assert!(book.below.len() > 4);
         assert!(book.nearest_above(100.0).is_some());
         assert!(book.nearest_below(100.0).is_some());
+    }
+
+    #[test]
+    fn structural_stop_selection_skips_executed_level() {
+        let snapshot = IndicatorSnapshot {
+            tf1m: tf(100.0, 1.0),
+            tf5m: tf(100.0, 2.0),
+            tf15m: tf(100.0, 3.0),
+            tf1h: tf(100.0, 4.0),
+            ..Default::default()
+        };
+        let book = structural_levels(&snapshot);
+        let below = book.nearest_below_point(100.0).unwrap();
+        let above = book.nearest_above_point(100.0).unwrap();
+
+        assert_ne!(
+            book.nearest_below_point_excluding(100.0, &[below]),
+            Some(below)
+        );
+        assert_ne!(
+            book.nearest_above_point_excluding(100.0, &[above]),
+            Some(above)
+        );
     }
 
     #[test]

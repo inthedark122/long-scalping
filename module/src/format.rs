@@ -1,3 +1,9 @@
+use lte_strategy_bridge::abi::ModuleInput;
+
+pub fn tick_size(input: &ModuleInput) -> f64 {
+    input.symbol_info.price_tick_size.max(f64::EPSILON)
+}
+
 pub fn fmt_price(value: f64) -> String {
     if value <= 0.0 {
         "na".to_string()
