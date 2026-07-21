@@ -14,7 +14,7 @@ pub fn render(
     constraint: Option<&str>,
     tick_size: f64,
 ) -> String {
-    let cascade_tf_text = format_cascade(cascade_tf, snapshot.tf1m.candle.close);
+    let cascade_tf_text = format_cascade(cascade_tf, &state.cascade_tf, snapshot.tf1m.candle.close);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
     let pending_entry = state
         .movement_entry_pending
@@ -414,7 +414,14 @@ fn format_mrc_crossing(
         crossing.no_pullback_count,
         crossing.highest_line.map(mrc_line_label).unwrap_or("na"),
         crossing.lowest_line.map(mrc_line_label).unwrap_or("na"),
-        crossing.reverted_line.map(mrc_line_label).unwrap_or("na"),
+        crossing
+            .reverted_long_line
+            .map(mrc_line_label)
+            .unwrap_or("na"),
+        crossing
+            .reverted_short_line
+            .map(mrc_line_label)
+            .unwrap_or("na"),
         movement,
         next_progress
     )
@@ -462,16 +469,24 @@ fn format_sequence_duration(duration_ms: u64) -> String {
     }
 }
 
-fn format_cascade(cascade: &CascadeSignal, price: f64) -> String {
+fn format_cascade(
+    cascade: &CascadeSignal,
+    state: &crate::state::CascadeState,
+    price: f64,
+) -> String {
     let movement_pct = cascade::average_size_percent(cascade.completed_size, price).unwrap_or(0.0);
     let cascade_avg_pct = cascade::average_size_percent(cascade.average_size, price).unwrap_or(0.0);
+    let last3_pct = cascade::recent_signed_total_size_percent(state, 3, price).unwrap_or(0.0);
+    let last5_pct = cascade::recent_signed_total_size_percent(state, 5, price).unwrap_or(0.0);
     format!(
-        "{:?}:{}:move={:.2}%/{:.0}%:avg={:.2}%",
+        "{:?}:{}:move={:.2}%/{:.0}%:avg={:.2}%:last3dist={:.2}%:last5dist={:.2}%",
         cascade.phase,
         cascade.dir,
         movement_pct,
         cascade.movement_position * 100.0,
         cascade_avg_pct,
+        last3_pct,
+        last5_pct,
     )
 }
 

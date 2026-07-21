@@ -91,6 +91,7 @@ impl Default for MrcCrossingState {
 pub struct CascadeMovement {
     pub high: f64,
     pub low: f64,
+    pub dir: i8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

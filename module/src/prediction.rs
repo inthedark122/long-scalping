@@ -1151,6 +1151,7 @@ mod tests {
         history.movement_history[0] = crate::state::CascadeMovement {
             high: 100.2,
             low: 99.2,
+            dir: 1,
         };
         history.movement_history_len = 1;
 

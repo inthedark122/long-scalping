@@ -14,8 +14,12 @@ use serde_json::Value;
 mod builder;
 #[path = "../detection/cascade.rs"]
 mod cascade_impl;
+#[path = "../exit.rs"]
+mod exit_impl;
 #[path = "../format.rs"]
 mod format;
+#[path = "../detection/levels.rs"]
+mod levels_impl;
 #[path = "../martingale.rs"]
 mod martingale;
 #[path = "../model.rs"]
@@ -26,15 +30,38 @@ mod mrc_impl;
 mod observer;
 #[path = "../orders.rs"]
 mod orders;
+#[path = "../prediction.rs"]
+mod prediction_impl;
+#[path = "../risk_control.rs"]
+mod risk_control;
+#[path = "../detection/sideways.rs"]
+mod sideways_impl;
 #[path = "../state.rs"]
 mod state;
+#[path = "../stop_loss.rs"]
+mod stop_loss_impl;
 mod detection {
     pub mod mrc {
         pub use crate::mrc_impl::*;
     }
+    pub mod levels {
+        pub use crate::levels_impl::*;
+    }
     pub mod cascade {
         pub use crate::cascade_impl::*;
     }
+    pub mod sideways {
+        pub use crate::sideways_impl::*;
+    }
+}
+mod exit {
+    pub use crate::exit_impl::*;
+}
+mod prediction {
+    pub use crate::prediction_impl::*;
+}
+mod stop_loss {
+    pub use crate::stop_loss_impl::*;
 }
 
 use detection::cascade::{self, CascadeSignal, MovementPhase};
@@ -79,6 +106,37 @@ struct CandleRow {
     zz_break_price: f64,
     gain: f64,
     ntps: i64,
+}
+
+#[derive(Debug, Clone)]
+struct CascadeChartPoint {
+    candle: CandleRow,
+    dir: i8,
+    phase: MovementPhase,
+    signal: &'static str,
+    movement_low: f64,
+    movement_high: f64,
+    average_size: f64,
+    strength: f64,
+    previous_dist3_pct: Option<f64>,
+    previous_dist5_pct: Option<f64>,
+    previous_dist8_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct ChartBreakLevel {
+    price: f64,
+    mid_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ChartCascadeBlock {
+    start_index: usize,
+    end_index: usize,
+    high: f64,
+    low: f64,
+    dir: i8,
+    break_levels: Vec<ChartBreakLevel>,
 }
 
 #[derive(Debug, Clone)]
@@ -622,6 +680,409 @@ fn to_candle(row: &CandleRow) -> Candle {
     }
 }
 
+fn chart_points(candles: &[CandleRow]) -> Vec<CascadeChartPoint> {
+    let mut state = CascadeState::default();
+    candles
+        .iter()
+        .map(|candle| {
+            let signal = cascade::update_from_candle(&mut state, &to_candle(candle));
+            CascadeChartPoint {
+                candle: candle.clone(),
+                dir: signal.dir,
+                phase: signal.phase,
+                signal: movement_signal(&signal),
+                movement_low: state.cas_low,
+                movement_high: state.cas_high,
+                average_size: signal.average_size,
+                strength: signal.strength,
+                previous_dist3_pct: cascade::recent_signed_total_size_percent(
+                    &state,
+                    3,
+                    candle.close,
+                ),
+                previous_dist5_pct: cascade::recent_signed_total_size_percent(
+                    &state,
+                    5,
+                    candle.close,
+                ),
+                previous_dist8_pct: cascade::recent_signed_total_size_percent(
+                    &state,
+                    8,
+                    candle.close,
+                ),
+            }
+        })
+        .collect()
+}
+
+fn chart_cascade_blocks(candles: &[CandleRow]) -> Vec<ChartCascadeBlock> {
+    let mut raw = Vec::<ChartCascadeBlock>::new();
+    for (idx, candle) in candles.iter().enumerate() {
+        let dir = candle_dir(candle);
+        if dir == 0 {
+            continue;
+        }
+        if let Some(current) = raw.last_mut() {
+            if current.dir == dir {
+                current.high = current.high.max(candle.high);
+                current.low = current.low.min(candle.low);
+                current.end_index = idx;
+                continue;
+            }
+        }
+        raw.push(ChartCascadeBlock {
+            start_index: idx,
+            end_index: idx,
+            high: candle.high,
+            low: candle.low,
+            dir,
+            break_levels: Vec::new(),
+        });
+    }
+
+    if raw.len() < 3 {
+        return raw;
+    }
+
+    let avg_raw = raw.iter().map(|block| block.high - block.low).sum::<f64>() / raw.len() as f64;
+    let mut working = raw;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut next: Vec<ChartCascadeBlock> = Vec::with_capacity(working.len());
+        let mut idx = 0;
+        while idx < working.len() {
+            let prev = next.last().cloned();
+            let cur = working[idx].clone();
+            let following = working.get(idx + 1).cloned();
+            let enough_samples = idx >= 10;
+            if let (Some(prev), Some(following)) = (prev, following) {
+                if prev.dir == following.dir && cur.dir != prev.dir && enough_samples {
+                    let counter_size = cur.high - cur.low;
+                    let neighbour_avg =
+                        ((prev.high - prev.low) + (following.high - following.low)) / 2.0;
+                    let threshold = neighbour_avg.min(avg_raw) * 0.40;
+                    if counter_size <= threshold {
+                        let break_price = if cur.dir < 0 { cur.low } else { cur.high };
+                        let mut merged = prev;
+                        merged.end_index = following.end_index;
+                        merged.high = merged.high.max(cur.high).max(following.high);
+                        merged.low = merged.low.min(cur.low).min(following.low);
+                        merged.break_levels.push(ChartBreakLevel {
+                            price: break_price,
+                            mid_index: (cur.start_index + cur.end_index) / 2,
+                        });
+                        merged.break_levels.extend(following.break_levels);
+                        next.pop();
+                        next.push(merged);
+                        idx += 2;
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+            next.push(cur);
+            idx += 1;
+        }
+        working = next;
+    }
+    working
+}
+
+fn chart_cascade_blocks_from_core(candles: &[CandleRow]) -> Vec<ChartCascadeBlock> {
+    let mut state = CascadeState::default();
+    let mut blocks = Vec::new();
+    let mut active_start = None;
+
+    for (idx, candle) in candles.iter().enumerate() {
+        let before = state;
+        let signal = cascade::update_from_candle(&mut state, &to_candle(candle));
+        if active_start.is_none() && state.cas_dir != 0 {
+            active_start = Some(idx);
+        }
+        if signal.phase == MovementPhase::Reversal {
+            if let Some(start_index) = active_start {
+                let break_levels = (0..before.break_n)
+                    .map(|break_index| ChartBreakLevel {
+                        price: before.breaks[break_index],
+                        mid_index: (start_index + idx.saturating_sub(1)) / 2,
+                    })
+                    .collect();
+                blocks.push(ChartCascadeBlock {
+                    start_index,
+                    end_index: idx.saturating_sub(1),
+                    high: before.cas_high,
+                    low: before.cas_low,
+                    dir: before.cas_dir,
+                    break_levels,
+                });
+            }
+            active_start = Some(idx);
+        }
+    }
+
+    if let Some(start_index) = active_start {
+        let break_levels = (0..state.break_n)
+            .map(|break_index| ChartBreakLevel {
+                price: state.breaks[break_index],
+                mid_index: (start_index + candles.len().saturating_sub(1)) / 2,
+            })
+            .collect();
+        blocks.push(ChartCascadeBlock {
+            start_index,
+            end_index: candles.len().saturating_sub(1),
+            high: state.cas_high,
+            low: state.cas_low,
+            dir: state.cas_dir,
+            break_levels,
+        });
+    }
+    blocks
+}
+
+fn svg_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn chart_previous_average_percent(
+    blocks: &[ChartCascadeBlock],
+    current_index: usize,
+    count: usize,
+) -> Option<f64> {
+    if count == 0 || current_index < count {
+        return None;
+    }
+    let start = current_index - count;
+    let total = blocks[start..current_index]
+        .iter()
+        .filter(|block| block.low > 0.0)
+        .map(|block| (block.high - block.low) / block.low * 100.0)
+        .sum::<f64>();
+    Some(total / count as f64)
+}
+
+fn render_cascade_svg(
+    symbol_key: &str,
+    points: &[CascadeChartPoint],
+    output: &str,
+) -> Result<(), Box<dyn Error>> {
+    if points.is_empty() {
+        return Err("cannot render an empty cascade chart".into());
+    }
+
+    let width = 1600.0;
+    let height = 900.0;
+    let left = 76.0;
+    let right = 28.0;
+    let top = 68.0;
+    let price_bottom = 610.0;
+    let distance_top = 690.0;
+    let distance_bottom = 845.0;
+    let plot_width = width - left - right;
+    let price_min = points
+        .iter()
+        .map(|p| p.candle.low)
+        .fold(f64::INFINITY, f64::min);
+    let price_max = points
+        .iter()
+        .map(|p| p.candle.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let price_pad = ((price_max - price_min) * 0.06).max(price_max * 0.0005);
+    let min_price = price_min - price_pad;
+    let max_price = price_max + price_pad;
+    let x = |idx: usize| left + idx as f64 * plot_width / points.len().max(1) as f64;
+    let y_price = |price: f64| {
+        price_bottom - (price - min_price) / (max_price - min_price) * (price_bottom - top)
+    };
+    let candle_width = (plot_width / points.len() as f64 * 0.68).max(1.0);
+    let candles: Vec<CandleRow> = points.iter().map(|point| point.candle.clone()).collect();
+    let blocks = chart_cascade_blocks_from_core(&candles);
+
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">\n<style>text{{font-family:monospace;font-size:13px;fill:#c9d1d9}} .grid{{stroke:#30363d;stroke-width:1}} .wick{{stroke-width:1}} .label{{font-size:15px;font-weight:bold}} </style>\n<rect width=\"100%\" height=\"100%\" fill=\"#0d1117\"/>\n<text x=\"{left}\" y=\"30\" class=\"label\">Cascade chart: {symbol}</text>\n<text x=\"{left}\" y=\"50\">last {count} candles · 1m · production cascade state replay</text>\n",
+        symbol = svg_escape(symbol_key),
+        count = points.len(),
+    );
+
+    for step in 0..=5 {
+        let price = min_price + (max_price - min_price) * step as f64 / 5.0;
+        let y = y_price(price);
+        svg.push_str(&format!("<line x1=\"{left}\" y1=\"{y:.2}\" x2=\"{}\" y2=\"{y:.2}\" class=\"grid\"/><text x=\"8\" y=\"{:.2}\">{price:.4}</text>\n", width - right, y + 4.0));
+    }
+    for (idx, point) in points.iter().enumerate() {
+        let cx = x(idx) + plot_width / points.len() as f64 / 2.0;
+        let open = y_price(point.candle.open);
+        let close = y_price(point.candle.close);
+        let high = y_price(point.candle.high);
+        let low = y_price(point.candle.low);
+        let color = if point.candle.close >= point.candle.open {
+            "#3fb950"
+        } else {
+            "#f85149"
+        };
+        let rect_y = open.min(close);
+        let rect_h = (open - close).abs().max(1.0);
+        svg.push_str(&format!("<line x1=\"{cx:.2}\" y1=\"{high:.2}\" x2=\"{cx:.2}\" y2=\"{low:.2}\" stroke=\"{color}\" class=\"wick\"/><rect x=\"{:.2}\" y=\"{rect_y:.2}\" width=\"{candle_width:.2}\" height=\"{rect_h:.2}\" fill=\"{color}\"/>\n", cx - candle_width / 2.0));
+    }
+
+    let historical = blocks.len().saturating_sub(2);
+    let avg_size = if historical > 0 {
+        blocks[..historical]
+            .iter()
+            .map(|block| block.high - block.low)
+            .sum::<f64>()
+            / historical as f64
+    } else {
+        0.0
+    };
+    for (block_index, block) in blocks.iter().enumerate() {
+        let significant = block_index + 2 >= blocks.len()
+            || (avg_size > 0.0 && block.high - block.low >= avg_size * 0.6);
+        if !significant {
+            continue;
+        }
+        let x_start = x(block.start_index);
+        let x_end = x(block.end_index + 1);
+        let y_top = y_price(block.high);
+        let y_bottom = y_price(block.low);
+        let height = (y_bottom - y_top).abs();
+        let is_long = block.dir > 0;
+        let fill = if is_long { "#00c850" } else { "#dc3232" };
+        let border = if is_long { "#00e664" } else { "#ff5050" };
+        svg.push_str(&format!(
+            "<rect x=\"{x_start:.2}\" y=\"{y_top:.2}\" width=\"{:.2}\" height=\"{height:.2}\" fill=\"{fill}\" fill-opacity=\"0.20\" stroke=\"{border}\" stroke-opacity=\"0.70\"/>\n",
+            (x_end - x_start).max(candle_width)
+        ));
+        for break_level in &block.break_levels {
+            let y = y_price(break_level.price);
+            if y >= y_top && y <= y_bottom {
+                svg.push_str(&format!(
+                    "<line x1=\"{x_start:.2}\" y1=\"{y:.2}\" x2=\"{x_end:.2}\" y2=\"{y:.2}\" stroke=\"{border}\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/><circle cx=\"{:.2}\" cy=\"{y:.2}\" r=\"2\" fill=\"{border}\"/>\n",
+                    x(break_level.mid_index) + candle_width / 2.0
+                ));
+            }
+        }
+        let pct = (block.high - block.low) / block.low * 100.0;
+        let label = if block.break_levels.is_empty() {
+            format!("{pct:.1}%")
+        } else {
+            format!("{pct:.1}% ×{}", block.break_levels.len() + 1)
+        };
+        let point = points.get(block.start_index);
+        let recent3 = point
+            .and_then(|point| point.previous_dist3_pct)
+            .map(|value| format!("3dist={value:.1}%"))
+            .unwrap_or_else(|| "3dist=na".to_string());
+        let recent5 = point
+            .and_then(|point| point.previous_dist5_pct)
+            .map(|value| format!("5dist={value:.1}%"))
+            .unwrap_or_else(|| "5dist=na".to_string());
+        let recent8 = point
+            .and_then(|point| point.previous_dist8_pct)
+            .map(|value| format!("8dist={value:.1}%"))
+            .unwrap_or_else(|| "8dist=na".to_string());
+        let (label_y, recent3_y, recent5_y, recent8_y) = if is_long {
+            (y_top - 5.0, y_top - 20.0, y_top - 35.0, y_top - 50.0)
+        } else {
+            (
+                y_bottom + 14.0,
+                y_bottom + 29.0,
+                y_bottom + 44.0,
+                y_bottom + 59.0,
+            )
+        };
+        svg.push_str(&format!(
+            "<text x=\"{:.2}\" y=\"{label_y:.2}\" text-anchor=\"middle\" fill=\"{border}\" font-weight=\"bold\">{label}</text><text x=\"{:.2}\" y=\"{recent3_y:.2}\" text-anchor=\"middle\" fill=\"{border}\" font-size=\"10\">{recent3}</text><text x=\"{:.2}\" y=\"{recent5_y:.2}\" text-anchor=\"middle\" fill=\"{border}\" font-size=\"10\">{recent5}</text><text x=\"{:.2}\" y=\"{recent8_y:.2}\" text-anchor=\"middle\" fill=\"{border}\" font-size=\"10\">{recent8}</text>\n",
+            (x_start + x_end) / 2.0,
+            (x_start + x_end) / 2.0,
+            (x_start + x_end) / 2.0,
+            (x_start + x_end) / 2.0,
+        ));
+    }
+    let distance_values = [
+        (
+            "3dist",
+            "#58a6ff",
+            points
+                .iter()
+                .map(|point| point.previous_dist3_pct)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "5dist",
+            "#d29922",
+            points
+                .iter()
+                .map(|point| point.previous_dist5_pct)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "8dist",
+            "#bc8cff",
+            points
+                .iter()
+                .map(|point| point.previous_dist8_pct)
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    let max_distance = distance_values
+        .iter()
+        .flat_map(|(_, _, values)| values.iter().flatten())
+        .map(|value| value.abs())
+        .fold(0.1_f64, f64::max);
+    let zero_y = (distance_top + distance_bottom) / 2.0;
+    let y_distance = |value: f64| {
+        zero_y
+            - value.clamp(-max_distance, max_distance) / max_distance
+                * (distance_bottom - distance_top)
+                / 2.0
+    };
+    svg.push_str(&format!(
+        "<line x1=\"{left}\" y1=\"{zero_y:.2}\" x2=\"{}\" y2=\"{zero_y:.2}\" class=\"grid\"/><text x=\"8\" y=\"{:.2}\">0.0%</text><text x=\"{left}\" y=\"{:.2}\" class=\"label\">Signed completed-move distance</text>\n",
+        width - right,
+        zero_y + 4.0,
+        distance_top - 12.0,
+    ));
+    for (name, color, values) in distance_values {
+        let mut path = String::new();
+        let mut connected = false;
+        for (idx, value) in values.iter().enumerate() {
+            let Some(value) = value else {
+                connected = false;
+                continue;
+            };
+            let cx = x(idx) + plot_width / points.len() as f64 / 2.0;
+            path.push_str(&format!(
+                "{} {:.2},{:.2}",
+                if connected { "L" } else { "M" },
+                cx,
+                y_distance(*value)
+            ));
+            connected = true;
+        }
+        if !path.is_empty() {
+            let offset = match name {
+                "3dist" => 0.0,
+                "5dist" => 72.0,
+                _ => 144.0,
+            };
+            svg.push_str(&format!(
+                "<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/><text x=\"{}\" y=\"{:.2}\" fill=\"{color}\">{name}</text>\n",
+                width - right - offset,
+                distance_top - 12.0,
+            ));
+        }
+    }
+    svg.push_str(&format!("<line x1=\"{left}\" y1=\"{price_bottom}\" x2=\"{}\" y2=\"{price_bottom}\" class=\"grid\"/>\n", width - right));
+    svg.push_str("<text x=\"80\" y=\"650\">green/red: cascade blocks · dashed lines: absorbed break levels · labels: block range and signed completed distance</text>\n</svg>\n");
+    std::fs::write(output, svg)?;
+    Ok(())
+}
+
 fn movement_signal(signal: &CascadeSignal) -> &'static str {
     if signal.samples < 3 || signal.average_size <= 0.0 || signal.dir == 0 {
         return if signal.phase == MovementPhase::Starting {
@@ -740,7 +1201,9 @@ fn summarize_results(results: &[TradeResult]) -> String {
 
 fn parse_candle(item: &Value) -> CandleRow {
     let ind = item.get("indicators").unwrap_or(&Value::Null);
-    let candle = ind.get("candle").unwrap_or(&Value::Null);
+    // The full indicator endpoint nests candle data; the chart fast path asks
+    // for indicator_name=candle and returns the candle fields directly.
+    let candle = ind.get("candle").unwrap_or(ind);
     let dp = ind.get("dpsignal").unwrap_or(&Value::Null);
     let zz = ind.get("zigzagtrend").unwrap_or(&Value::Null);
     let signal = ind.get("signal").unwrap_or(&Value::Null);
@@ -876,15 +1339,23 @@ fn candidate_entry(lock: &DirectionLock, signal: &CascadeSignal) -> Option<(i8, 
     }
 }
 
-fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+fn fetch_history_with_indicator(
+    symbol_key: &str,
+    limit: usize,
+    indicator_name: Option<&str>,
+) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+    let indicator_query = indicator_name
+        .map(|name| format!("&indicator_name={name}"))
+        .unwrap_or_default();
     let url = format!(
-        "{}?symbol_key={}&timeframe=60&limit={}",
+        "{}?symbol_key={}&timeframe=60&limit={}{}",
         BASE_URL,
         encode_symbol_key(symbol_key),
-        limit
+        limit,
+        indicator_query
     );
     let mut cmd = Command::new("curl");
-    cmd.args(["-fsSL"]);
+    cmd.args(["-fsSL", "--max-time", "180"]);
     if let Some(ip) = resolve_host_ip() {
         cmd.args(["--resolve", &format!("{}:443:{}", BASE_HOST, ip)]);
     }
@@ -901,6 +1372,14 @@ fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<d
     }
     rows.sort_by_key(|row| row.time_ms);
     Ok(rows)
+}
+
+fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+    fetch_history_with_indicator(symbol_key, limit, None)
+}
+
+fn fetch_candle_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+    fetch_history_with_indicator(symbol_key, limit, Some("candle"))
 }
 
 fn fetch_full_history(
@@ -967,8 +1446,12 @@ fn simulate(
             cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size),
             cur.close,
         );
+        let last3_pct =
+            cascade::recent_signed_total_size_percent(&state, 3, cur.close).unwrap_or(0.0);
+        let last5_pct =
+            cascade::recent_signed_total_size_percent(&state, 5, cur.close).unwrap_or(0.0);
         traces.push(format!(
-            "{} candle={:.4}% dir={} phase={:?} signal={} size={:.4}% avg={:.4}% tp_p90={:.4}% samples={} window={} gain={:.4} ntps={}",
+            "{} candle={:.4}% dir={} phase={:?} signal={} size={:.4}% avg={:.4}% last3dist={:.4}% last5dist={:.4}% tp_p90={:.4}% samples={} window={} gain={:.4} ntps={}",
             fmt_time(cur.time_ms),
             candle_pct(cur),
             if signal.dir > 0 { "LONG" } else if signal.dir < 0 { "SHORT" } else { "FLAT" },
@@ -976,6 +1459,8 @@ fn simulate(
             signal_kind,
             size_pct,
             avg_pct,
+            last3_pct,
+            last5_pct,
             tp_p90_pct,
             signal.samples,
             cascade_window(&state, cur.close),
@@ -1272,15 +1757,21 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
         };
         let signal = cascade::update_from_candle(&mut state, &to_candle(&row));
         refresh_direction_lock(&mut lock, &row);
+        let last3_pct =
+            cascade::recent_signed_total_size_percent(&state, 3, row.close).unwrap_or(0.0);
+        let last5_pct =
+            cascade::recent_signed_total_size_percent(&state, 5, row.close).unwrap_or(0.0);
 
         println!(
-                "{} dir={} phase={:?} signal={} candle={:.4}% avg={:.4}% tp_p90={:.4}% size={:.4}% samples={} lock={} broken={} break_line={}",
+                "{} dir={} phase={:?} signal={} candle={:.4}% avg={:.4}% last3dist={:.4}% last5dist={:.4}% tp_p90={:.4}% size={:.4}% samples={} lock={} broken={} break_line={}",
                 fmt_time(row.time_ms),
                 if signal.dir > 0 { "LONG" } else if signal.dir < 0 { "SHORT" } else { "FLAT" },
                 signal.phase,
                 movement_signal(&signal),
                 candle_pct(&row),
                 block_pct(signal.average_size, row.close),
+                last3_pct,
+                last5_pct,
                 block_pct(
                     cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size),
                     row.close,
@@ -1452,7 +1943,7 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
 
 fn usage() {
     eprintln!(
-        "movement_research --mode replay|live|both|chart [--symbol-key KEY] [--symbols A,B] [--history N] [--full-history] [--ws-seconds N] [--tp-mult X] [--sl-mult X] [--csv FILE] [--raw]"
+        "movement_research --mode replay|live|both|chart [--symbol-key KEY] [--symbols A,B] [--history N] [--full-history] [--output FILE] [--ws-seconds N] [--tp-mult X] [--sl-mult X] [--csv FILE] [--raw]"
     );
 }
 
@@ -1467,6 +1958,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut tp_mult = 1.0;
     let mut sl_mult = 0.8;
     let mut csv = String::new();
+    let mut output = String::new();
     let mut raw = false;
     let mut symbols = String::new();
 
@@ -1531,6 +2023,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--csv" => {
                 if let Some(val) = args.get(i + 1) {
                     csv = val.clone();
+                    i += 2;
+                    continue;
+                }
+            }
+            "--output" => {
+                if let Some(val) = args.get(i + 1) {
+                    output = val.clone();
                     i += 2;
                     continue;
                 }
@@ -1614,7 +2113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if mode == "chart" {
         for symbol_key in &symbol_keys {
-            let candles = fetch_full_history(symbol_key, history)?;
+            // Chart mode intentionally requests exactly the visible window. This keeps
+            // the command fast and makes "last N candles" deterministic.
+            let candles = fetch_candle_history(symbol_key, history)?;
             if candles.len() < 50 {
                 eprintln!(
                     "{symbol_key}: need at least 50 candles, got {}",
@@ -1622,19 +2123,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                 );
                 continue;
             }
-            let (results, traces, events, sideway_probes) = simulate(&candles, tp_mult, sl_mult);
-            println!("Chart history: {symbol_key}");
-            println!("candles={}", candles.len());
-            for line in traces {
-                println!("{line}");
-            }
-            if !sideway_probes.is_empty() {
-                print_sideway_summary("sideways", &sideway_probes);
-            }
-            println!("{}", summarize_results(&results));
-            if !events.is_empty() {
-                println!("events={}", events.len());
-            }
+            let all_points = chart_points(&candles);
+            let start = all_points.len().saturating_sub(history);
+            let points = &all_points[start..];
+            let chart_output = if output.is_empty() {
+                let stem = symbol_key
+                    .split('#')
+                    .nth(1)
+                    .unwrap_or(symbol_key)
+                    .replace("-USDT-SWAP", "")
+                    .replace('/', "_");
+                format!("cascade-{stem}-{}.svg", points.len())
+            } else {
+                output.clone()
+            };
+            render_cascade_svg(symbol_key, points, &chart_output)?;
+            println!("Cascade chart: {symbol_key}");
+            println!("candles={} output={chart_output}", points.len());
         }
         return Ok(());
     }
