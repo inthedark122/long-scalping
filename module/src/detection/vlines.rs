@@ -49,16 +49,6 @@ fn record_cross(
     crossing.last_line = Some(line_idx as u8);
     crossing.candle_cross_mask |= 1u16 << line_idx;
     crossing.last_direction = direction;
-    crossing.highest_line = Some(
-        crossing
-            .highest_line
-            .map_or(line_idx as u8, |value| value.max(line_idx as u8)),
-    );
-    crossing.lowest_line = Some(
-        crossing
-            .lowest_line
-            .map_or(line_idx as u8, |value| value.min(line_idx as u8)),
-    );
     crossing.movement_start = line;
     crossing.movement_target = next_line.unwrap_or(0.0);
     crossing.movement_high = price;
@@ -199,8 +189,6 @@ mod tests {
 
         assert_eq!(&crossing.sequence[..2], &[4, 5]);
         assert_eq!(crossing.no_pullback_count, 2);
-        assert_eq!(crossing.highest_line, Some(5));
-        assert_eq!(crossing.lowest_line, Some(4));
     }
 
     #[test]

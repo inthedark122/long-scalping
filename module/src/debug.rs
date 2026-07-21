@@ -422,15 +422,13 @@ fn format_mrc_crossing(
         })
         .unwrap_or("na");
     format!(
-        "[last={}:{}:{} track={} seq={} no_pullback={} high={} low={} revert=long:{}:short:{} move={} next={}]",
+        "[last={}:{}:{} track={} seq={} no_pullback={} revert=long:{}:short:{} move={} next={}]",
         latest,
         direction,
         count,
         tracked_line,
         if sequence.is_empty() { "na" } else { &sequence },
         crossing.no_pullback_count,
-        crossing.highest_line.map(mrc_line_label).unwrap_or("na"),
-        crossing.lowest_line.map(mrc_line_label).unwrap_or("na"),
         crossing
             .reverted_long_line
             .map(mrc_line_label)
