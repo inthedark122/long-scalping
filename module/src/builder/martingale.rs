@@ -1,5 +1,5 @@
 use super::policy::StrategyPolicy;
-use super::shared::{refine_common, should_close_on_direction_change_impl};
+use super::shared::refine_common;
 use crate::detection::{cascade::CascadeSignal, sideways::SidewaySignal};
 use crate::model::{IndicatorSnapshot, RegimeSnapshot, SugInfoSnapshot, TradeDecision};
 use crate::state::EngineState;
@@ -13,14 +13,6 @@ pub struct MartingaleDynamicBuilder {
 impl MartingaleDynamicBuilder {
     pub(super) fn new(policy: StrategyPolicy) -> Self {
         Self { policy }
-    }
-
-    pub(super) fn should_close_on_direction_change(
-        &self,
-        input: &lte_strategy_bridge::abi::ModuleInput,
-        state: &EngineState,
-    ) -> bool {
-        should_close_on_direction_change_impl(self.policy, input, state)
     }
 
     pub(super) fn refine_realtime_decision(

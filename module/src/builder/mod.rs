@@ -84,14 +84,6 @@ impl BuiltStrategy {
         self.dynamic.virtual_sl_tp_advance()
     }
 
-    pub fn should_close_on_direction_change(
-        &self,
-        input: &lte_strategy_bridge::abi::ModuleInput,
-        state: &EngineState,
-    ) -> bool {
-        self.dynamic.should_close_on_direction_change(input, state)
-    }
-
     pub fn refine_realtime_decision(
         &self,
         state: &mut EngineState,
@@ -117,11 +109,10 @@ impl BuiltStrategy {
 
     pub fn describe(&self) -> String {
         format!(
-            "phase={} mode={} entry_wait={} dir_close={} breakeven={} virtual_sl={}",
+            "phase={} mode={} entry_wait={} breakeven={} virtual_sl={}",
             self.phase.as_str(),
             self.trade_mode().as_str(),
             self.entry_wait_gate(),
-            self.dynamic.direction_change_close(),
             self.breakeven_reclaim(),
             self.virtual_sl_tp_advance(),
         )
@@ -162,24 +153,6 @@ impl DynamicBuilder {
         match self {
             Self::Single(builder) => builder.policy.virtual_sl_tp_advance,
             Self::Martingale(builder) => builder.policy.virtual_sl_tp_advance,
-        }
-    }
-
-    pub fn should_close_on_direction_change(
-        &self,
-        input: &lte_strategy_bridge::abi::ModuleInput,
-        state: &EngineState,
-    ) -> bool {
-        match self {
-            Self::Single(builder) => builder.should_close_on_direction_change(input, state),
-            Self::Martingale(builder) => builder.should_close_on_direction_change(input, state),
-        }
-    }
-
-    pub fn direction_change_close(&self) -> bool {
-        match self {
-            Self::Single(builder) => builder.policy.direction_change_close,
-            Self::Martingale(builder) => builder.policy.direction_change_close,
         }
     }
 

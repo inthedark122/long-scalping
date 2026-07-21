@@ -1,6 +1,6 @@
 use crate::builder::ensure_runtime_builder;
 use crate::exit;
-use crate::format::{fmt_price_tick, fmt_qty, tick_size};
+use crate::format::{fmt_price_tick, tick_size};
 use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
@@ -107,31 +107,6 @@ fn entry_reason(decision: &TradeDecision) -> Option<&EntryReason> {
     }
 }
 
-fn position_snapshot(
-    input: &ModuleInput,
-    state: &EngineState,
-    side: PositionState,
-    tick_size: f64,
-) -> String {
-    let position = active_position(input, side);
-    let raw_qty = position.map(|position| position.qty).unwrap_or(0.0);
-    let notional = position.map(|position| position.notional).unwrap_or(0.0);
-    let pnl = position.map(|position| position.pnl).unwrap_or(0.0);
-    let abs_qty = position_qty(input, side);
-    format!(
-        "pos={:?} raw_qty={} abs_qty={} notional={} pnl={} entry_price={} tp={} sl={} exit_mode={}",
-        side,
-        fmt_qty(raw_qty),
-        fmt_qty(abs_qty),
-        fmt_price_tick(notional, tick_size),
-        fmt_price_tick(pnl, tick_size),
-        fmt_price_tick(state.position.entry_price, tick_size),
-        fmt_price_tick(state.position.take_profit, tick_size),
-        fmt_price_tick(state.position.stop_loss, tick_size),
-        state.position.exit_mode.as_str(),
-    )
-}
-
 fn active_position<'a>(
     input: &'a ModuleInput,
     side: PositionState,
@@ -155,13 +130,6 @@ fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
             }
         })
         .unwrap_or(0.0)
-}
-
-fn direction_changed(position_side: PositionState, decision_state: MarketState) -> bool {
-    matches!(
-        (position_side, decision_state),
-        (PositionState::Long, MarketState::Short) | (PositionState::Short, MarketState::Long)
-    )
 }
 
 fn pending_position<'a>(
@@ -265,21 +233,6 @@ pub fn evaluate_with_cascade(
     }
 
     if let Some(long_position) = input.positions.long.as_ref() {
-        if direction_changed(PositionState::Long, decision.market_state)
-            && builder.should_close_on_direction_change(input, state)
-        {
-            return Some(ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Long,
-                    &format!(
-                        "{} {}",
-                        close_reason("direction-changed", state, input.price, tick_size(input)),
-                        position_snapshot(input, state, PositionState::Long, tick_size(input))
-                    ),
-                )],
-                ..Default::default()
-            });
-        }
         if !has_active_position(Some(long_position)) {
             if matches!(&decision.entry, EntryGate::Wait(_)) {
                 return None;
@@ -309,21 +262,6 @@ pub fn evaluate_with_cascade(
     }
 
     if let Some(short_position) = input.positions.short.as_ref() {
-        if direction_changed(PositionState::Short, decision.market_state)
-            && builder.should_close_on_direction_change(input, state)
-        {
-            return Some(ExecutionResult {
-                close_positions: vec![close(
-                    Direction::Short,
-                    &format!(
-                        "{} {}",
-                        close_reason("direction-changed", state, input.price, tick_size(input)),
-                        position_snapshot(input, state, PositionState::Short, tick_size(input))
-                    ),
-                )],
-                ..Default::default()
-            });
-        }
         if !has_active_position(Some(short_position)) {
             if matches!(&decision.entry, EntryGate::Wait(_)) {
                 return None;
@@ -1873,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn short_position_closes_on_direction_change() {
+    fn direction_change_does_not_close_short_position() {
         let mut state = EngineState::default();
         state.position = crate::state::PositionRuntime {
             side: crate::model::PositionState::Short,
@@ -1903,8 +1841,7 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert_eq!(result.as_ref().unwrap().close_positions.len(), 1);
-        assert!(result.as_ref().unwrap().update_positions.is_empty());
+        assert!(result.as_ref().unwrap().close_positions.is_empty());
     }
 
     #[test]

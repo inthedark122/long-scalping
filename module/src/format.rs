@@ -23,14 +23,6 @@ pub fn fmt_price_tick(value: f64, tick_size: f64) -> String {
     trim_price(rounded)
 }
 
-pub fn fmt_qty(value: f64) -> String {
-    if value <= 0.0 {
-        "na".to_string()
-    } else {
-        format!("{:.8}", value)
-    }
-}
-
 pub fn fmt_duration_ms(value: u64) -> String {
     if value == 0 {
         "na".to_string()

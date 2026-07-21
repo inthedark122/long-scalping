@@ -1,4 +1,3 @@
-use super::policy::StrategyPolicy;
 use crate::detection::{cascade::CascadeSignal, sideways};
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, ExitKind, MarketState, RegimeSnapshot,
@@ -7,15 +6,6 @@ use crate::model::{
 use crate::prediction;
 use crate::state::EngineState;
 use lte_strategy_bridge::sug_info::SuggestionInfo;
-
-pub(super) fn should_close_on_direction_change_impl(
-    policy: StrategyPolicy,
-    input: &lte_strategy_bridge::abi::ModuleInput,
-    state: &EngineState,
-) -> bool {
-    let _ = (input, state);
-    policy.direction_change_close
-}
 
 pub(super) fn refine_common(
     state: &mut EngineState,

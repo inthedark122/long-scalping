@@ -4,7 +4,6 @@ use crate::model::TradeMode;
 pub struct StrategyPolicy {
     pub(super) trade_mode: TradeMode,
     pub(super) entry_wait_gate: bool,
-    pub(super) direction_change_close: bool,
     pub(super) breakeven_reclaim: bool,
     pub(super) virtual_sl_tp_advance: bool,
 }
@@ -15,14 +14,12 @@ impl StrategyPolicy {
             TradeMode::Single => Self {
                 trade_mode,
                 entry_wait_gate: true,
-                direction_change_close: true,
                 breakeven_reclaim: false,
                 virtual_sl_tp_advance: false,
             },
             TradeMode::Martingale => Self {
                 trade_mode,
                 entry_wait_gate: false,
-                direction_change_close: false,
                 breakeven_reclaim: false,
                 virtual_sl_tp_advance: true,
             },
