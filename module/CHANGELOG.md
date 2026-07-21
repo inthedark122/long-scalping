@@ -1,5 +1,9 @@
 # Changelog
 
+Unreleased
+
+- Track the latest MRC revert line independently for long and short pullbacks.
+
 # 1.0.66
 
 Pending-entry protection release.

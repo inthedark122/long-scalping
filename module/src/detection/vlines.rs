@@ -27,7 +27,11 @@ fn record_cross(
     let pulled_back = crossing.sequence_len >= 2
         && crossing.sequence[crossing.sequence_len - 2] == line_idx as u8;
     if pulled_back {
-        crossing.reverted_line = crossing.last_line;
+        if direction > 0 {
+            crossing.reverted_long_line = crossing.last_line;
+        } else {
+            crossing.reverted_short_line = crossing.last_line;
+        }
         crossing.no_pullback_count = 0;
     } else {
         crossing.no_pullback_count = crossing.no_pullback_count.saturating_add(1);
@@ -208,10 +212,25 @@ mod tests {
         update(&mut vlines, &mut crossing, lines(), 105.0, 2, 62_000);
         update(&mut vlines, &mut crossing, lines(), 99.0, 3, 92_000);
 
-        assert_eq!(crossing.reverted_line, Some(5));
+        assert_eq!(crossing.reverted_short_line, Some(5));
+        assert_eq!(crossing.reverted_long_line, None);
         assert_eq!(crossing.no_pullback_count, 0);
         assert_eq!(crossing.movement_direction, -1);
         assert_eq!(&crossing.sequence[..3], &[4, 5, 4]);
+    }
+
+    #[test]
+    fn pullbacks_track_long_and_short_lines_independently() {
+        let mut vlines = [VLineState::default(); 9];
+        let mut crossing = MrcCrossingState::default();
+
+        update(&mut vlines, &mut crossing, lines(), 99.0, 1, 1_000);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 2, 2_000);
+        update(&mut vlines, &mut crossing, lines(), 99.0, 3, 3_000);
+        update(&mut vlines, &mut crossing, lines(), 105.0, 4, 4_000);
+
+        assert_eq!(crossing.reverted_short_line, Some(5));
+        assert_eq!(crossing.reverted_long_line, Some(4));
     }
 
     #[test]

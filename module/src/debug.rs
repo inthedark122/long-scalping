@@ -405,7 +405,7 @@ fn format_mrc_crossing(
         })
         .unwrap_or("na");
     format!(
-        "[last={}:{}:{} track={} seq={} no_pullback={} high={} low={} revert={} move={} next={}]",
+        "[last={}:{}:{} track={} seq={} no_pullback={} high={} low={} revert=long:{}:short:{} move={} next={}]",
         latest,
         direction,
         count,
