@@ -172,6 +172,8 @@ pub struct EngineState {
     pub bar_1m: u64,
     pub cfg: Config,
     pub cfg_loaded: bool,
+    /// Direction preference received by the start signal. Entry guard only.
+    pub allowed_direction: Direction,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
     pub trade_budget: f64,
@@ -201,6 +203,7 @@ impl Default for EngineState {
             bar_1m: 0,
             cfg: Config::default(),
             cfg_loaded: false,
+            allowed_direction: Direction::Both,
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
             trade_budget: 0.0,

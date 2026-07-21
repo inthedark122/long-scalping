@@ -82,7 +82,11 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
                 ..Default::default()
             },
         },
-        ModuleEvent::Signal { code, values, .. } => handle_signal(code, values, state),
+        ModuleEvent::Signal {
+            direction,
+            code,
+            values,
+        } => handle_signal(direction, code, values, state),
         ModuleEvent::Action { name, values } => handle_action(input, name, values),
         ModuleEvent::NewPosition {
             direction,
@@ -114,11 +118,13 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
 }
 
 fn handle_signal(
+    direction: &Direction,
     code: &str,
     values: &std::collections::HashMap<String, serde_json::Value>,
     state: &mut EngineState,
 ) -> ModuleOutput {
     if code == "start" {
+        state.allowed_direction = *direction;
         state.trade_budget = 0.0;
         state.direction_lock = Default::default();
         state.movement_entry_pending = None;
@@ -152,7 +158,8 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
+                "start direction={:?} cap_init={:.2}% trading_amount={:.2}% pullback_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
+                state.allowed_direction,
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.pullback_amount,

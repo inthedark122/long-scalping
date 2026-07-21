@@ -296,6 +296,22 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
 
+    let direction_allowed = matches!(
+        (state.allowed_direction, entry_side),
+        (Direction::Both, _)
+            | (Direction::Long, PositionState::Long)
+            | (Direction::Short, PositionState::Short)
+    );
+    if !direction_allowed {
+        return Some(ExecutionResult {
+            constraint: Some(format!(
+                "entry-direction-guard:allowed={:?}:requested={:?}",
+                state.allowed_direction, entry_side
+            )),
+            ..Default::default()
+        });
+    }
+
     if matches!(&decision.entry, EntryGate::Wait(_)) {
         return None;
     }
@@ -1037,6 +1053,27 @@ mod tests {
         );
         assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
         assert_eq!(result.as_ref().unwrap().open_positions[0].amount, Some(1.0));
+    }
+
+    #[test]
+    fn configured_direction_guards_only_new_entries() {
+        let mut state = EngineState::default();
+        state.allowed_direction = Direction::Long;
+
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Short),
+        )
+        .expect("guard should return an execution result");
+
+        assert!(result.open_positions.is_empty());
+        assert_eq!(
+            result.constraint.as_deref(),
+            Some("entry-direction-guard:allowed=Long:requested=Short")
+        );
     }
 
     #[test]
