@@ -273,7 +273,7 @@ fn build_timeframe(
         volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
         volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
         volume_gain_max: read_raw_float(raw, timeframe, "volume_50", "GainMax")?,
-        buy_sell_gain: read_raw_float(raw, timeframe, "volume_50", "BuySellGain")?,
+        buy_sell_gain: read_raw_float(raw, timeframe, "volume_50", "BuySellGain").unwrap_or(0.0),
     })
 }
 

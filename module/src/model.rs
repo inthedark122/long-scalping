@@ -70,6 +70,8 @@ pub struct Config {
     #[serde(default = "default_pullback_amount")]
     pub pullback_amount: f64,
     #[serde(default)]
+    pub min_tp_percent: f64,
+    #[serde(default)]
     pub trade_mode: TradeMode,
     #[serde(default)]
     pub tp_control: TpControl,
@@ -93,6 +95,7 @@ impl Default for Config {
             cap_init: default_cap_init(),
             trading_amount: default_trading_amount(),
             pullback_amount: default_pullback_amount(),
+            min_tp_percent: 0.0,
             trade_mode: TradeMode::default(),
             tp_control: TpControl::default(),
         }
@@ -110,6 +113,14 @@ impl Config {
 
     pub fn pullback_ratio(&self) -> f64 {
         (self.pullback_amount / 100.0).clamp(0.0, 1.0)
+    }
+
+    pub fn min_tp_percent(&self) -> f64 {
+        if self.min_tp_percent.is_finite() {
+            self.min_tp_percent.max(0.0)
+        } else {
+            0.0
+        }
     }
 }
 

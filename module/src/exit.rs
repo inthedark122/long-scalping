@@ -114,9 +114,16 @@ fn structural_plan(
     side: PositionState,
     enforce_cascade_minimum: bool,
     excluded_stop_losses: &[levels::LevelPoint],
+    configured_minimum_percent: f64,
 ) -> Option<(levels::LevelPoint, levels::LevelPoint)> {
-    let take_profit =
-        structural_take_profit_level(levels, cascade, price, side, enforce_cascade_minimum)?;
+    let take_profit = structural_take_profit_level(
+        levels,
+        cascade,
+        price,
+        side,
+        enforce_cascade_minimum,
+        configured_minimum_percent,
+    )?;
     match side {
         PositionState::Long => {
             let sl = levels.nearest_below_point_excluding(price, excluded_stop_losses)?;
@@ -137,15 +144,29 @@ fn cascade_average_percent(cascade: &CascadeState, price: f64) -> Option<f64> {
     cascade::average_size_percent(cascade.avg_size, price)
 }
 
+fn effective_minimum_percent(
+    cascade: &CascadeState,
+    price: f64,
+    configured_minimum_percent: f64,
+) -> Option<f64> {
+    let configured_minimum_percent = configured_minimum_percent.max(0.0);
+    match cascade_average_percent(cascade, price) {
+        Some(cascade_minimum) => Some(cascade_minimum.max(configured_minimum_percent)),
+        None if configured_minimum_percent > 0.0 => Some(configured_minimum_percent),
+        None => None,
+    }
+}
+
 fn structural_take_profit_level(
     levels: &crate::detection::levels::LevelBook,
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
     enforce_cascade_minimum: bool,
+    configured_minimum_percent: f64,
 ) -> Option<levels::LevelPoint> {
     let minimum_percent = if enforce_cascade_minimum {
-        cascade_average_percent(cascade, price)
+        effective_minimum_percent(cascade, price, configured_minimum_percent)
     } else {
         None
     };
@@ -184,11 +205,14 @@ fn take_profit_meets_cascade_minimum(
     side: PositionState,
     take_profit: f64,
     enforce_cascade_minimum: bool,
+    configured_minimum_percent: f64,
 ) -> bool {
     if !enforce_cascade_minimum {
         return true;
     }
-    let Some(minimum_percent) = cascade_average_percent(cascade, price) else {
+    let Some(minimum_percent) =
+        effective_minimum_percent(cascade, price, configured_minimum_percent)
+    else {
         return true;
     };
     let distance_percent = match side {
@@ -353,6 +377,30 @@ pub fn compute_with_excluded_stop_losses(
     enforce_cascade_minimum: bool,
     excluded_stop_losses: &[levels::LevelPoint],
 ) -> Option<ExitPlan> {
+    compute_with_excluded_stop_losses_and_minimum(
+        snapshot,
+        sug_snapshot,
+        cascade,
+        price,
+        side,
+        entry_reason,
+        enforce_cascade_minimum,
+        excluded_stop_losses,
+        0.0,
+    )
+}
+
+pub fn compute_with_excluded_stop_losses_and_minimum(
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    cascade: &CascadeState,
+    price: f64,
+    side: PositionState,
+    entry_reason: Option<&EntryReason>,
+    enforce_cascade_minimum: bool,
+    excluded_stop_losses: &[levels::LevelPoint],
+    configured_minimum_percent: f64,
+) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
     }
@@ -364,6 +412,7 @@ pub fn compute_with_excluded_stop_losses(
             side,
             reason.take_profit.price(),
             enforce_cascade_minimum,
+            configured_minimum_percent,
         ) {
             return Some(reason);
         }
@@ -377,6 +426,7 @@ pub fn compute_with_excluded_stop_losses(
         side,
         enforce_cascade_minimum,
         excluded_stop_losses,
+        configured_minimum_percent,
     );
 
     if let Some(plan) = movement_plan(snapshot, sug_snapshot, cascade, price, side, structural) {
@@ -386,6 +436,7 @@ pub fn compute_with_excluded_stop_losses(
             side,
             plan.take_profit.price(),
             enforce_cascade_minimum,
+            configured_minimum_percent,
         ) {
             return Some(plan);
         }
@@ -399,6 +450,7 @@ pub fn compute_with_excluded_stop_losses(
                 price,
                 side,
                 enforce_cascade_minimum,
+                configured_minimum_percent,
             ) else {
                 return None;
             };
@@ -420,6 +472,7 @@ pub fn compute_with_excluded_stop_losses(
                 price,
                 side,
                 enforce_cascade_minimum,
+                configured_minimum_percent,
             ) else {
                 return None;
             };
@@ -574,7 +627,7 @@ fn position_exit_plan(
                 .map(|martingale| martingale.profile),
         )
     } else {
-        compute_with_excluded_stop_losses(
+        compute_with_excluded_stop_losses_and_minimum(
             snapshot,
             sug_snapshot,
             &state.cascade_tf,
@@ -583,6 +636,7 @@ fn position_exit_plan(
             state.position.entry_reason.as_ref(),
             enforce_cascade_minimum,
             &state.processed_structural_stop_losses,
+            state.cfg.min_tp_percent(),
         )
     }
 }
@@ -1050,6 +1104,20 @@ mod tests {
             .take_profit
             .order_note()
             .contains("tp:structural|level="));
+
+        let configured_minimum_plan = compute_with_excluded_stop_losses_and_minimum(
+            &snapshot,
+            &SugInfoSnapshot::default(),
+            &cascade,
+            100.0,
+            PositionState::Long,
+            None,
+            true,
+            &[],
+            6.0,
+        )
+        .unwrap();
+        assert_eq!(configured_minimum_plan.take_profit.price(), 110.0);
     }
 
     #[test]
