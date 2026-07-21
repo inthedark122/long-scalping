@@ -705,7 +705,6 @@ fn ensure_trailing_exit_order(
     if qty <= 0.0 {
         return (Vec::new(), Vec::new());
     }
-
     if state.position.stop_loss <= 0.0 {
         let reference_price = if state.position.entry_price > 0.0 {
             state.position.entry_price
@@ -821,6 +820,7 @@ pub(crate) fn ensure_active_exit_order(
     if qty <= 0.0 {
         return (Vec::new(), Vec::new());
     }
+    let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
         return initialize_exit_plan(input, state, snapshot, sug_snapshot, side, builder)
             .map(|order| (vec![order], Vec::new()))
@@ -832,7 +832,7 @@ pub(crate) fn ensure_active_exit_order(
     if virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl {
         state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
     }
-    if !matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) {
+    if !matches!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl) && !recalculate_tp {
         return (Vec::new(), Vec::new());
     }
 
@@ -879,8 +879,14 @@ pub(crate) fn ensure_active_exit_order(
         state.position.entry_reason.as_ref(),
         false,
     ) else {
+        if recalculate_tp {
+            state.last_active_tp_recalc_bar = Some(state.bar_1m);
+        }
         return (Vec::new(), Vec::new());
     };
+    if recalculate_tp {
+        state.last_active_tp_recalc_bar = Some(state.bar_1m);
+    }
     state.position.exit_tp_reliable = plan.tp_reliable;
     if (plan.take_profit.price() - state.position.take_profit).abs() <= f64::EPSILON {
         return (Vec::new(), Vec::new());

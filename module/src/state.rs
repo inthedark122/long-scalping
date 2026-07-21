@@ -140,6 +140,8 @@ pub struct EngineState {
     pub cfg_loaded: bool,
     /// Direction preference received by the start signal. Entry guard only.
     pub allowed_direction: Direction,
+    /// Last 1m bar for which the active-position TP was recalculated.
+    pub last_active_tp_recalc_bar: Option<u64>,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
     pub trade_budget: f64,
@@ -169,6 +171,7 @@ impl Default for EngineState {
             cfg: Config::default(),
             cfg_loaded: false,
             allowed_direction: Direction::Both,
+            last_active_tp_recalc_bar: None,
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
             trade_budget: 0.0,
