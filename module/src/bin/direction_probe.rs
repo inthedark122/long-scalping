@@ -29,6 +29,8 @@ mod orders;
 mod prediction_impl;
 #[path = "../detection/regime.rs"]
 mod regime_impl;
+#[path = "../risk_control.rs"]
+mod risk_control;
 #[path = "../detection/sideways.rs"]
 mod sideways_impl;
 #[path = "../state.rs"]
@@ -69,7 +71,7 @@ mod stop_loss {
 use detection::cascade::{self, CascadeSignal};
 use detection::{mrc, regime, sideways};
 use model::{
-    Candle, EntryGate, EntryOpenReason, EntryWaitSolution, IndicatorSnapshot, MarketState,
+    Candle, EntryGate, EntryWaitSolution, IndicatorSnapshot, MarketState,
     PositionState, SugInfoSnapshot, TimeframeSnapshot,
 };
 use state::{CascadeState, EngineState};
@@ -791,14 +793,16 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         confirmation_label(confirmation),
         entry_price,
         match exit_plan.as_ref() {
-            Some(plan) => plan.take_profit,
+            Some(plan) => plan.take_profit.price(),
             None => 0.0,
         },
         match exit_plan.as_ref() {
-            Some(plan) => plan.stop_loss,
+            Some(plan) => plan.stop_loss.price(),
             None => 0.0,
         },
-        exit_plan.as_ref().map(|plan| plan.source),
+        exit_plan
+            .as_ref()
+            .map(|plan| plan.take_profit.source_label()),
         gate_break_instruction(
             &recommendation.gate,
             recommendation.side,
@@ -849,12 +853,11 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         match exit_plan {
             Some(plan) => {
                 println!(
-                    "expected_exit source={:?} tp={:.6} sl={:.6} structural_tp={:.6} structural_sl={:.6} reliable={}",
-                    plan.source,
-                    plan.take_profit,
-                    plan.stop_loss,
-                    plan.structural_take_profit,
-                    plan.structural_stop_loss,
+                    "expected_exit source={} tp={:.6} sl={:.6} sl_reason={} reliable={}",
+                    plan.take_profit.source_label(),
+                    plan.take_profit.price(),
+                    plan.stop_loss.price(),
+                    plan.stop_loss.reason(),
                     plan.tp_reliable
                 );
             }
