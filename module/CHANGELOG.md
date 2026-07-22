@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.69
+
+Active TP recalculation release.
+
+- Recalculate the active-position TP once per completed 1-minute bar.
+- Reuse the existing TP calculation and order replacement behavior.
+
 # 1.0.67
 
 Exit diagnostics release.
