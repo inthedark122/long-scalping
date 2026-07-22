@@ -34,7 +34,8 @@ pub struct ExecutionResult {
 fn open_note(
     side: Direction,
     amount: f64,
-    price: f64,
+    order_price: f64,
+    market_price: f64,
     tick_size: f64,
     decision: &TradeDecision,
     state: &EngineState,
@@ -64,12 +65,17 @@ fn open_note(
             .unwrap_or_else(|| "none".to_string()),
         EntryGate::Wait(_) => "none".to_string(),
     };
+    let reason_price = entry_reason(decision)
+        .map(EntryReason::price)
+        .unwrap_or(market_price);
     format!(
-        "open {} because {} reason={} price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        "open {} because {} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
         entry_note,
         reason_note,
-        fmt_price_tick(price, tick_size),
+        fmt_price_tick(reason_price, tick_size),
+        fmt_price_tick(order_price, tick_size),
+        fmt_price_tick(market_price, tick_size),
         amount,
         state.cfg.cap_init,
         state.cfg.trading_amount,
@@ -391,6 +397,7 @@ pub fn evaluate_with_cascade(
                     Direction::Long,
                     amount,
                     entry_price,
+                    input.price,
                     tick_size(input),
                     decision,
                     state,
@@ -407,6 +414,7 @@ pub fn evaluate_with_cascade(
                     Direction::Short,
                     amount,
                     entry_price,
+                    input.price,
                     tick_size(input),
                     decision,
                     state,
