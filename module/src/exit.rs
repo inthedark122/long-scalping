@@ -920,6 +920,11 @@ pub(crate) fn ensure_active_exit_order(
         return (Vec::new(), Vec::new());
     }
 
+    // Active TP recalculation keeps the configured/cascade minimum until the
+    // position has crossed the virtual SL. After that point the recovery/trail
+    // behavior is intentionally allowed to use the current price movement.
+    let enforce_cascade_minimum =
+        !virtual_sl_hit && state.position.exit_mode != ExitMode::TrailAfterVirtualSl;
     let Some(plan) = compute(
         snapshot,
         sug_snapshot,
@@ -927,7 +932,7 @@ pub(crate) fn ensure_active_exit_order(
         input.price,
         side,
         state.position.entry_reason.as_ref(),
-        false,
+        enforce_cascade_minimum,
     ) else {
         if recalculate_tp {
             state.last_active_tp_recalc_bar = Some(state.bar_1m);
