@@ -126,13 +126,58 @@ fn structural_plan(
     )?;
     match side {
         PositionState::Long => {
-            let sl = levels.nearest_below_point_excluding(price, excluded_stop_losses)?;
+            let sl = structural_stop_loss_level(levels, price, side, excluded_stop_losses)?;
             Some((take_profit, sl))
         }
         PositionState::Short => {
-            let sl = levels.nearest_above_point_excluding(price, excluded_stop_losses)?;
+            let sl = structural_stop_loss_level(levels, price, side, excluded_stop_losses)?;
             Some((take_profit, sl))
         }
+        PositionState::Flat => None,
+    }
+}
+
+fn structural_stop_loss_level(
+    levels: &levels::LevelBook,
+    price: f64,
+    side: PositionState,
+    excluded: &[levels::LevelPoint],
+) -> Option<levels::LevelPoint> {
+    let excluded_mrc_kind = |kind| match side {
+        PositionState::Long => matches!(
+            kind,
+            levels::LevelKind::MrcMean
+                | levels::LevelKind::MrcDownSmall
+                | levels::LevelKind::MrcDownInner
+                | levels::LevelKind::MrcDownOuter
+        ),
+        PositionState::Short => matches!(
+            kind,
+            levels::LevelKind::MrcMean
+                | levels::LevelKind::MrcUpSmall
+                | levels::LevelKind::MrcUpInner
+                | levels::LevelKind::MrcUpOuter
+        ),
+        PositionState::Flat => true,
+    };
+
+    match side {
+        PositionState::Long => levels
+            .below
+            .iter()
+            .copied()
+            .filter(|level| {
+                level.value < price && !excluded.contains(level) && !excluded_mrc_kind(level.kind)
+            })
+            .max_by(levels::LevelBook::compare_points),
+        PositionState::Short => levels
+            .above
+            .iter()
+            .copied()
+            .filter(|level| {
+                level.value > price && !excluded.contains(level) && !excluded_mrc_kind(level.kind)
+            })
+            .min_by(levels::LevelBook::compare_points),
         PositionState::Flat => None,
     }
 }
@@ -171,6 +216,9 @@ fn structural_take_profit_level(
         None
     };
     let qualifies = |level: &levels::LevelPoint| {
+        if matches!(level.kind, levels::LevelKind::MrcMean) {
+            return false;
+        }
         let distance_percent = match side {
             PositionState::Long => (level.value - price) / price * 100.0,
             PositionState::Short => (price - level.value) / price * 100.0,
@@ -454,7 +502,8 @@ pub fn compute_with_excluded_stop_losses_and_minimum(
             ) else {
                 return None;
             };
-            let Some(raw_sl) = levels.nearest_below_point_excluding(price, excluded_stop_losses)
+            let Some(raw_sl) =
+                structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
             else {
                 return None;
             };
@@ -476,7 +525,8 @@ pub fn compute_with_excluded_stop_losses_and_minimum(
             ) else {
                 return None;
             };
-            let Some(raw_sl) = levels.nearest_above_point_excluding(price, excluded_stop_losses)
+            let Some(raw_sl) =
+                structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
             else {
                 return None;
             };
@@ -975,6 +1025,8 @@ mod tests {
             },
             dp_dir: 0,
             zz_dir: 0,
+            zz_buy_price: close - 5.0,
+            zz_sell_price: close + 5.0,
             ..Default::default()
         }
     }
@@ -1035,6 +1087,51 @@ mod tests {
         .unwrap();
         assert!(plan.take_profit.price() < 100.0);
         assert!(plan.stop_loss.price() > 100.0);
+    }
+
+    #[test]
+    fn structural_stop_skips_mrc_side_and_mean_line() {
+        let mut long_snapshot = IndicatorSnapshot {
+            tf1m: tf(100.0),
+            tf5m: tf(100.0),
+            tf15m: tf(100.0),
+            tf1h: tf(100.0),
+            ..Default::default()
+        };
+        long_snapshot.tf1m.dp_zee = 94.0;
+        long_snapshot.tf1m.zz_buy_price = 0.0;
+        long_snapshot.tf1m.zz_sell_price = 0.0;
+        long_snapshot.tf5m.zz_buy_price = 0.0;
+        long_snapshot.tf5m.zz_sell_price = 0.0;
+        long_snapshot.tf15m.zz_buy_price = 0.0;
+        long_snapshot.tf15m.zz_sell_price = 0.0;
+        let long_plan = compute(
+            &long_snapshot,
+            &SugInfoSnapshot::default(),
+            &CascadeState::default(),
+            100.0,
+            PositionState::Long,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(long_plan.stop_loss.price(), 94.0);
+        assert_eq!(long_plan.stop_loss.reason(), "structural:1m:below:dp_zee");
+
+        let mut short_snapshot = long_snapshot;
+        short_snapshot.tf1m.dp_zee = 106.0;
+        let short_plan = compute(
+            &short_snapshot,
+            &SugInfoSnapshot::default(),
+            &CascadeState::default(),
+            100.0,
+            PositionState::Short,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(short_plan.stop_loss.price(), 106.0);
+        assert_eq!(short_plan.stop_loss.reason(), "structural:1m:above:dp_zee");
     }
 
     #[test]

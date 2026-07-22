@@ -49,6 +49,7 @@ impl LevelSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LevelKind {
+    MrcMean,
     MrcUpSmall,
     MrcUpInner,
     MrcUpOuter,
@@ -64,6 +65,7 @@ pub enum LevelKind {
 impl LevelKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::MrcMean => "mrc_mean",
             Self::MrcUpSmall => "mrc_up_small",
             Self::MrcUpInner => "mrc_up_inner",
             Self::MrcUpOuter => "mrc_up_outer",
@@ -130,7 +132,7 @@ pub struct LevelBook {
 }
 
 impl LevelBook {
-    fn compare_points(a: &LevelPoint, b: &LevelPoint) -> Ordering {
+    pub(crate) fn compare_points(a: &LevelPoint, b: &LevelPoint) -> Ordering {
         a.value
             .total_cmp(&b.value)
             .then(a.source.priority().cmp(&b.source.priority()))
@@ -271,6 +273,15 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
             &mut above,
             LevelPoint {
                 source,
+                kind: LevelKind::MrcMean,
+                side: LevelSide::Above,
+                value: tf.mrc.mean_line,
+            },
+        );
+        push_level(
+            &mut above,
+            LevelPoint {
+                source,
                 kind: LevelKind::MrcUpSmall,
                 side: LevelSide::Above,
                 value: tf.mrc.up_small,
@@ -355,6 +366,15 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 kind: LevelKind::ZzBreakPrice,
                 side: LevelSide::Above,
                 value: tf.zz_break_price,
+            },
+        );
+        push_level(
+            &mut below,
+            LevelPoint {
+                source,
+                kind: LevelKind::MrcMean,
+                side: LevelSide::Below,
+                value: tf.mrc.mean_line,
             },
         );
         push_level(
