@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.70
+
+Entry and active-exit protection release.
+
+- Keep configured/cascade TP minimums during active TP recalculation until the virtual SL is crossed.
+- Skip opposite-side MRC levels and the MRC mean line when selecting structural stop losses.
+- Expose reason, submitted order, and market prices in entry notes for fill tracing.
+
 # 1.0.69
 
 Active TP recalculation release.
