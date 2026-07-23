@@ -244,8 +244,10 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
         zz_dir: dir_to_int(zz.get("Direction")),
         dp_zee: f64_key(dp, "Zee")?,
         dp_zee1: f64_key(dp, "Zee1")?,
-        zz_buy_price: f64_key(zz, "BuyPrice")?,
-        zz_sell_price: f64_key(zz, "SellPrice")?,
+        // Zigzag extrema are absent when no local bottom/top exists in the
+        // processing window; keep those fields as None instead of failing.
+        zz_buy_price: f64_key(zz, "BuyPrice"),
+        zz_sell_price: f64_key(zz, "SellPrice"),
         zz_break_price: f64_key(zz, "BreakPrice")?,
         volume_gain: f64_key(volume_50, "Gain")?,
         volume_gain_min: f64_key(volume_50, "GainMin")?,

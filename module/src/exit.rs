@@ -972,8 +972,8 @@ mod tests {
             },
             dp_dir: 0,
             zz_dir: 0,
-            zz_buy_price: close - 5.0,
-            zz_sell_price: close + 5.0,
+            zz_buy_price: Some(close - 5.0),
+            zz_sell_price: Some(close + 5.0),
             ..Default::default()
         }
     }
@@ -1044,12 +1044,12 @@ mod tests {
             ..Default::default()
         };
         long_snapshot.tf1m.dp_zee = 94.0;
-        long_snapshot.tf1m.zz_buy_price = 0.0;
-        long_snapshot.tf1m.zz_sell_price = 0.0;
-        long_snapshot.tf5m.zz_buy_price = 0.0;
-        long_snapshot.tf5m.zz_sell_price = 0.0;
-        long_snapshot.tf15m.zz_buy_price = 0.0;
-        long_snapshot.tf15m.zz_sell_price = 0.0;
+        long_snapshot.tf1m.zz_buy_price = None;
+        long_snapshot.tf1m.zz_sell_price = None;
+        long_snapshot.tf5m.zz_buy_price = None;
+        long_snapshot.tf5m.zz_sell_price = None;
+        long_snapshot.tf15m.zz_buy_price = None;
+        long_snapshot.tf15m.zz_sell_price = None;
         let long_plan = compute(
             &long_snapshot,
             &SugInfoSnapshot::default(),

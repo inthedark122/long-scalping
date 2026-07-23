@@ -256,6 +256,27 @@ fn push_level(levels: &mut Vec<LevelPoint>, point: LevelPoint) {
     levels.push(point);
 }
 
+fn push_optional_level(
+    levels: &mut Vec<LevelPoint>,
+    source: LevelSource,
+    kind: LevelKind,
+    side: LevelSide,
+    value: Option<f64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    push_level(
+        levels,
+        LevelPoint {
+            source,
+            kind,
+            side,
+            value,
+        },
+    );
+}
+
 fn sort_levels(levels: &mut [LevelPoint]) {
     levels.sort_by(LevelBook::compare_points);
 }
@@ -350,14 +371,12 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 value: tf.dp_zee1,
             },
         );
-        push_level(
+        push_optional_level(
             &mut above,
-            LevelPoint {
-                source,
-                kind: LevelKind::ZzSellPrice,
-                side: LevelSide::Above,
-                value: tf.zz_sell_price,
-            },
+            source,
+            LevelKind::ZzSellPrice,
+            LevelSide::Above,
+            tf.zz_sell_price,
         );
         push_level(
             &mut above,
@@ -395,14 +414,12 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 value: tf.dp_zee1,
             },
         );
-        push_level(
+        push_optional_level(
             &mut below,
-            LevelPoint {
-                source,
-                kind: LevelKind::ZzSellPrice,
-                side: LevelSide::Below,
-                value: tf.zz_buy_price,
-            },
+            source,
+            LevelKind::ZzSellPrice,
+            LevelSide::Below,
+            tf.zz_buy_price,
         );
         push_level(
             &mut below,
@@ -523,8 +540,8 @@ mod tests {
             },
             dp_zee: close - offset * 0.5,
             dp_zee1: close + offset * 0.5,
-            zz_buy_price: close - offset * 0.75,
-            zz_sell_price: close + offset * 0.75,
+            zz_buy_price: Some(close - offset * 0.75),
+            zz_sell_price: Some(close + offset * 0.75),
             zz_break_price: close + offset * 1.25,
             ..Default::default()
         }

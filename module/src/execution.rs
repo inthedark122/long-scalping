@@ -1340,8 +1340,8 @@ mod tests {
             current_cross: 0.0,
             mean_line_slope: 0.0,
         };
-        snapshot.tf1m.zz_buy_price = 95.0;
-        snapshot.tf1m.zz_sell_price = 110.0;
+        snapshot.tf1m.zz_buy_price = Some(95.0);
+        snapshot.tf1m.zz_sell_price = Some(110.0);
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
         snapshot.tf1h = snapshot.tf1m;
@@ -1402,8 +1402,8 @@ mod tests {
             current_cross: 0.0,
             mean_line_slope: 0.0,
         };
-        snapshot.tf1m.zz_buy_price = 95.0;
-        snapshot.tf1m.zz_sell_price = 110.0;
+        snapshot.tf1m.zz_buy_price = Some(95.0);
+        snapshot.tf1m.zz_sell_price = Some(110.0);
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
         snapshot.tf1h = snapshot.tf1m;
@@ -1465,8 +1465,8 @@ mod tests {
             current_cross: 0.0,
             mean_line_slope: 0.0,
         };
-        snapshot.tf1m.zz_buy_price = 95.0;
-        snapshot.tf1m.zz_sell_price = 110.0;
+        snapshot.tf1m.zz_buy_price = Some(95.0);
+        snapshot.tf1m.zz_sell_price = Some(110.0);
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
         snapshot.tf1h = snapshot.tf1m;
@@ -1567,8 +1567,8 @@ mod tests {
             current_cross: 0.0,
             mean_line_slope: 1.0,
         };
-        snapshot.tf1m.zz_buy_price = 95.0;
-        snapshot.tf1m.zz_sell_price = 110.0;
+        snapshot.tf1m.zz_buy_price = Some(95.0);
+        snapshot.tf1m.zz_sell_price = Some(110.0);
         snapshot.tf1m.candle.close = inp.price;
         snapshot.tf5m = snapshot.tf1m;
         snapshot.tf15m = snapshot.tf1m;
@@ -2213,8 +2213,8 @@ mod tests {
                     },
                     dp_dir: 0,
                     zz_dir: 0,
-                    zz_buy_price: 95.0,
-                    zz_sell_price: 110.0,
+                    zz_buy_price: Some(95.0),
+                    zz_sell_price: Some(110.0),
                     ..Default::default()
                 },
                 tf5m: Default::default(),

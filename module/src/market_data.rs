@@ -138,7 +138,16 @@ fn read_raw_float(
                 indicator,
                 field
             )
-        })
+    })
+}
+
+fn read_optional_raw_float(
+    indicators: &RawIndicators,
+    timeframe: TimeframeSec,
+    indicator: &str,
+    field: &str,
+) -> Option<f64> {
+    read_raw_float(indicators, timeframe, indicator, field).ok()
 }
 
 fn build_timeframe(
@@ -267,8 +276,10 @@ fn build_timeframe(
         zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
         dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee")?,
         dp_zee1: read_raw_float(raw, timeframe, "dpsignal", "Zee1")?,
-        zz_buy_price: read_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice")?,
-        zz_sell_price: read_raw_float(raw, timeframe, "zigzagtrend", "SellPrice")?,
+        // Zigzag BuyPrice/SellPrice are empty when no local bottom/top exists
+        // in the processing window, so preserve that absence as None.
+        zz_buy_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
+        zz_sell_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
         zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice")?,
         volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
         volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
@@ -486,6 +497,25 @@ mod tests {
         assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
         assert_eq!(snap.tf1h.zz_dir, -1);
+    }
+
+    #[test]
+    fn missing_zigzag_extrema_are_empty_levels() {
+        let (history, mut raw) = mk_history();
+        for candles in raw.values_mut() {
+            for candle in candles {
+                if let Some(zigzag) = candle.get_mut("zigzagtrend") {
+                    zigzag.remove("BuyPrice");
+                    zigzag.remove("SellPrice");
+                }
+            }
+        }
+
+        let snap = build_indicator_snapshot(&history, &raw)
+            .expect("missing zigzag extrema should not block snapshot processing");
+        assert_eq!(snap.tf1m.zz_buy_price, None);
+        assert_eq!(snap.tf1m.zz_sell_price, None);
+        assert_eq!(snap.tf1m.zz_break_price, 100.0);
     }
 
     #[test]
