@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.71
+
+Dynamic-exit release.
+
+- Remove sideway-specific TP/SL exit planning.
+- Use the normal movement/structural exit calculation for sideway entries and virtual-SL repricing.
+- Remove the unused entry-reason parameter from exit planning APIs and callers.
+
 # 1.0.70
 
 Entry and active-exit protection release.
