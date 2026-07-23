@@ -101,6 +101,15 @@ fn entry_reason(decision: &TradeDecision) -> Option<&EntryReason> {
     }
 }
 
+fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64) -> f64 {
+    let tick = tick_size(input);
+    match side {
+        PositionState::Long if input.price < reason_price => (input.price - 2.0 * tick).max(tick),
+        PositionState::Short if input.price > reason_price => input.price + 2.0 * tick,
+        _ => reason_price,
+    }
+}
+
 fn active_position<'a>(
     input: &'a ModuleInput,
     side: PositionState,
@@ -153,13 +162,14 @@ fn created_position_update(
         PositionState::Short => Direction::Short,
         PositionState::Flat => return None,
     };
-    let desired_price = state
+    let reason_price = state
         .position
         .entry_reason
         .as_ref()
         .map(|reason| reason.price())
         .filter(|price| *price > 0.0)
         .unwrap_or(input.price);
+    let desired_price = order_entry_price(input, side, reason_price);
     if (state.position.entry_price - desired_price).abs() <= f64::EPSILON {
         return None;
     }
@@ -338,14 +348,15 @@ pub fn evaluate_with_cascade(
         if !entry_price.is_finite() || entry_price <= 0.0 {
             return None;
         }
-        if (pending_position.entry_price - entry_price).abs() > f64::EPSILON {
+        let order_price = order_entry_price(input, entry_side, entry_price);
+        if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
             let direction = match entry_side {
                 PositionState::Long => Direction::Long,
                 PositionState::Short => Direction::Short,
                 PositionState::Flat => Direction::Both,
             };
             return Some(ExecutionResult {
-                update_positions: vec![update_position(direction, Some(entry_price))],
+                update_positions: vec![update_position(direction, Some(order_price))],
                 ..Default::default()
             });
         }
@@ -387,16 +398,17 @@ pub fn evaluate_with_cascade(
         });
     }
 
+    let order_price = order_entry_price(input, entry_side, entry_price);
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
             open_positions: vec![limit_open(
                 Direction::Long,
                 amount,
-                entry_price,
+                order_price,
                 &open_note(
                     Direction::Long,
                     amount,
-                    entry_price,
+                    order_price,
                     input.price,
                     tick_size(input),
                     decision,
@@ -409,11 +421,11 @@ pub fn evaluate_with_cascade(
             open_positions: vec![limit_open(
                 Direction::Short,
                 amount,
-                entry_price,
+                order_price,
                 &open_note(
                     Direction::Short,
                     amount,
-                    entry_price,
+                    order_price,
                     input.price,
                     tick_size(input),
                     decision,
@@ -2039,6 +2051,34 @@ mod tests {
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn crossed_long_entry_uses_two_ticks_below_market() {
+        let mut inp = input();
+        inp.price = 99.0;
+        inp.symbol_info.price_tick_size = 0.01;
+
+        assert_eq!(order_entry_price(&inp, PositionState::Long, 100.0), 98.98);
+    }
+
+    #[test]
+    fn crossed_short_entry_uses_two_ticks_above_market() {
+        let mut inp = input();
+        inp.price = 101.0;
+        inp.symbol_info.price_tick_size = 0.01;
+
+        assert_eq!(order_entry_price(&inp, PositionState::Short, 100.0), 101.02);
+    }
+
+    #[test]
+    fn uncrossed_entry_keeps_reason_price() {
+        let mut inp = input();
+        inp.price = 100.5;
+        inp.symbol_info.price_tick_size = 0.01;
+
+        assert_eq!(order_entry_price(&inp, PositionState::Long, 100.0), 100.0);
+        assert_eq!(order_entry_price(&inp, PositionState::Short, 101.0), 101.0);
     }
 
     #[test]
