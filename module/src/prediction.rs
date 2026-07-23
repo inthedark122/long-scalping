@@ -20,7 +20,6 @@ fn candidate_exit_plan(
     cascade: &crate::state::CascadeState,
     price: f64,
     side: PositionState,
-    entry_reason: Option<&EntryReason>,
 ) -> Option<crate::exit::ExitPlan> {
     exit::compute(
         snapshot,
@@ -28,7 +27,6 @@ fn candidate_exit_plan(
         cascade,
         price,
         side,
-        entry_reason,
         false,
     )
 }
@@ -826,7 +824,6 @@ pub fn entry_gate(
         &state.cascade_tf,
         current_price,
         side,
-        state.position.entry_reason.as_ref(),
     ) {
         plan
     } else {

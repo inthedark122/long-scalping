@@ -2,9 +2,7 @@ use crate::builder::BuiltStrategy;
 use crate::detection::{cascade, levels};
 use crate::format::tick_size;
 use crate::martingale;
-use crate::model::{
-    EntryReason, ExitMode, IndicatorSnapshot, PositionState, SugInfoSnapshot, TpControl,
-};
+use crate::model::{ExitMode, IndicatorSnapshot, PositionState, SugInfoSnapshot, TpControl};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::state::{CascadeState, EngineState};
 use crate::stop_loss;
@@ -358,49 +356,12 @@ fn movement_plan(
     }
 }
 
-fn sideway_plan(reason: &EntryReason, side: PositionState) -> Option<ExitPlan> {
-    let EntryReason::SidewayScalp {
-        price,
-        block_low,
-        block_high,
-        ..
-    } = reason
-    else {
-        return None;
-    };
-
-    if !price.is_finite() || !block_low.is_finite() || !block_high.is_finite() {
-        return None;
-    }
-    if block_high <= block_low {
-        return None;
-    }
-
-    let width = (block_high - block_low).abs();
-    let buffer = (width * 0.10).max((*price * 0.0005).max(f64::EPSILON));
-    let (take_profit, stop_loss) = match side {
-        PositionState::Long => (
-            (*block_high).max(*price + buffer),
-            (*block_low - buffer).max(f64::EPSILON),
-        ),
-        PositionState::Short => ((*block_low).max(f64::EPSILON), *block_high + buffer),
-        PositionState::Flat => return None,
-    };
-
-    Some(ExitPlan {
-        take_profit: TakeProfit::Sideway { price: take_profit },
-        stop_loss: StopLoss::Sideway { price: stop_loss },
-        tp_reliable: true,
-    })
-}
-
 pub fn compute(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
-    entry_reason: Option<&EntryReason>,
     enforce_cascade_minimum: bool,
 ) -> Option<ExitPlan> {
     compute_with_excluded_stop_losses(
@@ -409,7 +370,6 @@ pub fn compute(
         cascade,
         price,
         side,
-        entry_reason,
         enforce_cascade_minimum,
         &[],
     )
@@ -421,7 +381,6 @@ pub fn compute_with_excluded_stop_losses(
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
-    entry_reason: Option<&EntryReason>,
     enforce_cascade_minimum: bool,
     excluded_stop_losses: &[levels::LevelPoint],
 ) -> Option<ExitPlan> {
@@ -431,7 +390,6 @@ pub fn compute_with_excluded_stop_losses(
         cascade,
         price,
         side,
-        entry_reason,
         enforce_cascade_minimum,
         excluded_stop_losses,
         0.0,
@@ -444,26 +402,12 @@ pub fn compute_with_excluded_stop_losses_and_minimum(
     cascade: &CascadeState,
     price: f64,
     side: PositionState,
-    entry_reason: Option<&EntryReason>,
     enforce_cascade_minimum: bool,
     excluded_stop_losses: &[levels::LevelPoint],
     configured_minimum_percent: f64,
 ) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
-    }
-
-    if let Some(reason) = entry_reason.and_then(|reason| sideway_plan(reason, side)) {
-        if take_profit_meets_cascade_minimum(
-            cascade,
-            price,
-            side,
-            reason.take_profit.price(),
-            enforce_cascade_minimum,
-            configured_minimum_percent,
-        ) {
-            return Some(reason);
-        }
     }
 
     let levels = levels::structural_levels(snapshot);
@@ -683,7 +627,6 @@ fn position_exit_plan(
             &state.cascade_tf,
             reference_price,
             side,
-            state.position.entry_reason.as_ref(),
             enforce_cascade_minimum,
             &state.processed_structural_stop_losses,
             state.cfg.min_tp_percent(),
@@ -931,7 +874,6 @@ pub(crate) fn ensure_active_exit_order(
         &state.cascade_tf,
         input.price,
         side,
-        state.position.entry_reason.as_ref(),
         enforce_cascade_minimum,
     ) else {
         if recalculate_tp {
@@ -1057,7 +999,6 @@ mod tests {
             &cascade,
             100.0,
             PositionState::Long,
-            None,
             false,
         )
         .unwrap();
@@ -1086,7 +1027,6 @@ mod tests {
             &cascade,
             100.0,
             PositionState::Short,
-            None,
             false,
         )
         .unwrap();
@@ -1116,7 +1056,6 @@ mod tests {
             &CascadeState::default(),
             100.0,
             PositionState::Long,
-            None,
             false,
         )
         .unwrap();
@@ -1131,7 +1070,6 @@ mod tests {
             &CascadeState::default(),
             100.0,
             PositionState::Short,
-            None,
             false,
         )
         .unwrap();
@@ -1172,7 +1110,6 @@ mod tests {
             &cascade,
             100.0,
             PositionState::Long,
-            None,
             true,
         )
         .is_none());
@@ -1202,7 +1139,6 @@ mod tests {
             &cascade,
             100.0,
             PositionState::Long,
-            None,
             true,
         )
         .unwrap();
@@ -1219,7 +1155,6 @@ mod tests {
             &cascade,
             100.0,
             PositionState::Long,
-            None,
             true,
             &[],
             6.0,
@@ -1228,35 +1163,4 @@ mod tests {
         assert_eq!(configured_minimum_plan.take_profit.price(), 110.0);
     }
 
-    #[test]
-    fn sideway_plan_uses_block_edges() {
-        let snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        let sug = SugInfoSnapshot::default();
-        let cascade = CascadeState::default();
-        let reason = EntryReason::SidewayScalp {
-            price: 99.0,
-            block_low: 98.0,
-            block_high: 102.0,
-            source: "OrderBlock".to_string(),
-        };
-        let plan = compute(
-            &snapshot,
-            &sug,
-            &cascade,
-            99.0,
-            PositionState::Long,
-            Some(&reason),
-            false,
-        )
-        .unwrap();
-        assert!(matches!(plan.take_profit, TakeProfit::Sideway { .. }));
-        assert!(plan.take_profit.price() >= 102.0);
-        assert!(plan.stop_loss.price() < 98.0);
-    }
 }

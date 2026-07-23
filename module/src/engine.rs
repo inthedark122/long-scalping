@@ -241,7 +241,6 @@ fn handle_new_position(
                 &state.cascade_tf,
                 entry_price,
                 side,
-                state.position.entry_reason.as_ref(),
                 !trailing_stop,
             )
         })

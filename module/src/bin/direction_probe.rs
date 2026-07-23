@@ -780,7 +780,6 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         &cascade_state,
         entry_price,
         recommendation_side,
-        None,
         false,
     );
 
