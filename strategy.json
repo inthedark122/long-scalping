@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.71",
+      "module_version": "1.0.72",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.71"
+          "module_version": "1.0.72"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.71 dynamic-exit release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. Sideway-specific exit plans are removed; active positions use the normal movement/structural TP and virtual-SL logic. MRC revert tracking is directional, structural stop selection skips opposite-side MRC levels and the mean line, structural TP selection uses the larger of min_tp_percent and the cascade average, and BuySellGain defaults to zero when unavailable. Active-position TP is recalculated once per 1m bar while minimum TP rules remain active until the virtual SL is crossed. Entry notes expose reason, order, and market prices. TP control normal preserves current TP behavior; trailing-stop suppresses normal TP, trails the virtual SL, and places a two-tick recovery TP after an SL cross.",
+      "description": "Start the 1.0.72 release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. Missing zigzagtrend BuyPrice/SellPrice values are preserved as empty optional extrema when no local top or bottom exists in the processing window. Crossed entry prices use a two-tick offset from the current market while preserving the original entry reason.",
       "params": [
         {
           "code": "cap_init",

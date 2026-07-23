@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.72
+
+Zigzag data handling and crossed-entry pricing release.
+
+- Preserve missing zigzagtrend `BuyPrice` and `SellPrice` values as optional extrema instead of treating them as zero or failing indicator processing.
+- Submit crossed long/short limit entries two ticks beyond the current market while preserving the original entry reason and price.
+
 # 1.0.71
 
 Dynamic-exit release.
