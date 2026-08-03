@@ -9,14 +9,12 @@ pub enum OneMConfirmation {
 }
 
 fn classify(tf: &TimeframeSnapshot) -> MarketState {
-    let price_above_frozen_anchor = tf.dp_zee1 > 0.0 && tf.candle.close >= tf.dp_zee1;
-    let price_below_frozen_anchor = tf.dp_zee1 > 0.0 && tf.candle.close <= tf.dp_zee1;
     let zigzag_allows_long = tf.zz_dir >= 0;
     let zigzag_allows_short = tf.zz_dir <= 0;
 
-    if tf.mrc_signal.bullish_structure && price_above_frozen_anchor && zigzag_allows_long {
+    if tf.mrc_signal.bullish_structure && zigzag_allows_long {
         MarketState::Long
-    } else if tf.mrc_signal.bearish_structure && price_below_frozen_anchor && zigzag_allows_short {
+    } else if tf.mrc_signal.bearish_structure && zigzag_allows_short {
         MarketState::Short
     } else {
         MarketState::Sideways
@@ -82,24 +80,19 @@ fn timeframe_reason(timeframe: &TimeframeSnapshot) -> String {
 
     let long_fail = direction_failures(
         timeframe.mrc_signal.bullish_structure,
-        timeframe.dp_zee1 > 0.0 && timeframe.candle.close >= timeframe.dp_zee1,
         timeframe.zz_dir >= 0,
     );
     let short_fail = direction_failures(
         timeframe.mrc_signal.bearish_structure,
-        timeframe.dp_zee1 > 0.0 && timeframe.candle.close <= timeframe.dp_zee1,
         timeframe.zz_dir <= 0,
     );
     format!("L-{}:S-{}", long_fail, short_fail)
 }
 
-fn direction_failures(mrc: bool, anchor: bool, zigzag: bool) -> String {
+fn direction_failures(mrc: bool, zigzag: bool) -> String {
     let mut failures = String::new();
     if !mrc {
         failures.push('m');
-    }
-    if !anchor {
-        failures.push('a');
     }
     if !zigzag {
         failures.push('z');
@@ -116,7 +109,7 @@ mod tests {
     use super::*;
     use crate::model::{Candle, MrcBands, TimeframeSnapshot};
 
-    fn tf(dp: i8, zz: i8, slope: f64, close: f64, mean: f64) -> TimeframeSnapshot {
+    fn tf(zz: i8, slope: f64, close: f64, mean: f64) -> TimeframeSnapshot {
         TimeframeSnapshot {
             candle: Candle {
                 open: close,
@@ -153,10 +146,7 @@ mod tests {
                 },
                 close,
             ),
-            dp_dir: dp,
             zz_dir: zz,
-            dp_zee: close - 1.0,
-            dp_zee1: close - 1.0,
             ..Default::default()
         }
     }
@@ -164,32 +154,29 @@ mod tests {
     #[test]
     fn regime_becomes_long_short_or_sideways() {
         let long = classify_regime(
-            &tf(1, 0, 1.0, 111.0, 100.0),
-            &tf(1, 0, 1.0, 111.0, 100.0),
-            &tf(1, 0, 1.0, 111.0, 100.0),
+            &tf(0, 1.0, 111.0, 100.0),
+            &tf(0, 1.0, 111.0, 100.0),
+            &tf(0, 1.0, 111.0, 100.0),
         );
         assert_eq!(long.confirmed, MarketState::Long);
 
         let short = classify_regime(
             &TimeframeSnapshot {
-                dp_zee1: 90.0,
-                ..tf(-1, -1, -1.0, 89.0, 100.0)
+                ..tf(-1, -1.0, 89.0, 100.0)
             },
             &TimeframeSnapshot {
-                dp_zee1: 90.0,
-                ..tf(-1, -1, -1.0, 89.0, 100.0)
+                ..tf(-1, -1.0, 89.0, 100.0)
             },
             &TimeframeSnapshot {
-                dp_zee1: 90.0,
-                ..tf(-1, -1, -1.0, 89.0, 100.0)
+                ..tf(-1, -1.0, 89.0, 100.0)
             },
         );
         assert_eq!(short.confirmed, MarketState::Short);
 
         let sideways = classify_regime(
-            &tf(1, -1, 0.0, 100.0, 100.0),
-            &tf(1, -1, 0.0, 100.0, 100.0),
-            &tf(1, -1, 0.0, 100.0, 100.0),
+            &tf(-1, 0.0, 100.0, 100.0),
+            &tf(-1, 0.0, 100.0, 100.0),
+            &tf(-1, 0.0, 100.0, 100.0),
         );
         assert_eq!(sideways.confirmed, MarketState::Sideways);
     }
@@ -197,9 +184,9 @@ mod tests {
     #[test]
     fn fallback_resolves_ambiguous_primary() {
         let regime = classify_regime(
-            &tf(1, -1, 0.0, 100.0, 100.0),
-            &tf(1, 0, 1.0, 111.0, 100.0),
-            &tf(1, 0, 1.0, 111.0, 100.0),
+            &tf(-1, 0.0, 100.0, 100.0),
+            &tf(0, 1.0, 111.0, 100.0),
+            &tf(0, 1.0, 111.0, 100.0),
         );
         assert!(regime.fallback_used);
         assert_eq!(regime.confirmed, MarketState::Long);
@@ -207,16 +194,16 @@ mod tests {
 
     #[test]
     fn confirmation_tracks_sideways_regime() {
-        let conf = classify_confirmation(MarketState::Sideways, &tf(1, 0, 1.0, 111.0, 100.0));
+        let conf = classify_confirmation(MarketState::Sideways, &tf(0, 1.0, 111.0, 100.0));
         assert_eq!(conf, OneMConfirmation::Tracked);
     }
 
     #[test]
     fn confirmation_marks_alignment_and_neutral() {
-        let aligned = classify_confirmation(MarketState::Long, &tf(1, 1, 1.0, 111.0, 100.0));
+        let aligned = classify_confirmation(MarketState::Long, &tf(1, 1.0, 111.0, 100.0));
         assert_eq!(aligned, OneMConfirmation::Aligned);
 
-        let neutral = classify_confirmation(MarketState::Short, &tf(1, 0, 1.0, 111.0, 100.0));
+        let neutral = classify_confirmation(MarketState::Short, &tf(0, 1.0, 111.0, 100.0));
         assert_eq!(neutral, OneMConfirmation::Countertrend);
     }
 }

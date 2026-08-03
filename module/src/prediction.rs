@@ -273,12 +273,6 @@ pub fn fast_candle_entry_block(
     }
 }
 
-fn dp_signal_band(snapshot: &IndicatorSnapshot, price: f64, anchor: f64) -> f64 {
-    let span = (snapshot.tf1m.dp_zee - snapshot.tf1m.dp_zee1).abs();
-    let anchor_gap = (price - anchor).abs();
-    span.max(anchor_gap) * 0.25
-}
-
 fn movement_entry_confirmation_gate(
     state: &mut EngineState,
     plan: &MovementEntryPlan,
@@ -702,20 +696,9 @@ pub fn entry_gate(
     {
         let price = snapshot.tf1m.candle.close;
         let level_book = levels::structural_levels(snapshot);
-        let band = dp_signal_band(snapshot, price, state.exit_memory.price);
-        let band_low = (state.exit_memory.price - band).max(0.0);
-        let band_high = state.exit_memory.price + band;
         let notes = vec![
             format!("failed_price={:.4}", state.exit_memory.price),
             format!("current={:.4}", price),
-            format!(
-                "dp_distance={:.4}%",
-                if price > 0.0 {
-                    ((price - snapshot.tf1m.dp_zee1).abs() / price) * 100.0
-                } else {
-                    0.0
-                }
-            ),
             state.exit_memory.summary(),
         ];
         match side {
@@ -726,27 +709,16 @@ pub fn entry_gate(
                         EntryWaitSolution::ReclaimLevel {
                             source: "failed-level".to_string(),
                             level: state.exit_memory.price,
-                            band_low,
-                            band_high,
-                        },
-                        EntryWaitSolution::ReclaimDpsignal {
-                            source: "dpsignal".to_string(),
-                            anchor: snapshot.tf1m.dp_zee1.max(snapshot.tf1m.dp_zee),
-                            distance_pct: if price > 0.0 {
-                                ((price - snapshot.tf1m.dp_zee1).abs() / price) * 100.0
-                            } else {
-                                0.0
-                            },
-                            band_low,
-                            band_high,
+                            band_low: state.exit_memory.price,
+                            band_high: state.exit_memory.price,
                         },
                         EntryWaitSolution::ReclaimLevel {
                             source: "structural".to_string(),
                             level: level_book
                                 .nearest_above(price)
                                 .unwrap_or(state.exit_memory.price),
-                            band_low,
-                            band_high,
+                            band_low: state.exit_memory.price,
+                            band_high: state.exit_memory.price,
                         },
                     ],
                     notes,
@@ -759,27 +731,16 @@ pub fn entry_gate(
                         EntryWaitSolution::ReclaimLevel {
                             source: "failed-level".to_string(),
                             level: state.exit_memory.price,
-                            band_low,
-                            band_high,
-                        },
-                        EntryWaitSolution::ReclaimDpsignal {
-                            source: "dpsignal".to_string(),
-                            anchor: snapshot.tf1m.dp_zee1.min(snapshot.tf1m.dp_zee),
-                            distance_pct: if price > 0.0 {
-                                ((price - snapshot.tf1m.dp_zee1).abs() / price) * 100.0
-                            } else {
-                                0.0
-                            },
-                            band_low,
-                            band_high,
+                            band_low: state.exit_memory.price,
+                            band_high: state.exit_memory.price,
                         },
                         EntryWaitSolution::ReclaimLevel {
                             source: "structural".to_string(),
                             level: level_book
                                 .nearest_below(price)
                                 .unwrap_or(state.exit_memory.price),
-                            band_low,
-                            band_high,
+                            band_low: state.exit_memory.price,
+                            band_high: state.exit_memory.price,
                         },
                     ],
                     notes,
@@ -834,88 +795,6 @@ pub fn entry_gate(
             }),
         };
     };
-    let candle = signal_candle(snapshot, sug_snapshot);
-    let candle_pct = candle_range_pct(candle);
-    let small_candle = candle_pct <= 0.40;
-    let fc_phase = sug_snapshot
-        .fast_candle
-        .map(|fc| fc.phase(candle))
-        .unwrap_or(FastCandlePhase::Absent);
-
-    if !plan.tp_reliable && !(matches!(fc_phase, FastCandlePhase::Cooling) && small_candle) {
-        let level_book = levels::structural_levels(snapshot);
-        let anchor = if matches!(side, PositionState::Long) {
-            snapshot.tf1m.dp_zee1.max(snapshot.tf1m.dp_zee)
-        } else {
-            snapshot.tf1m.dp_zee1.min(snapshot.tf1m.dp_zee)
-        };
-        let band = dp_signal_band(snapshot, current_price, anchor);
-        return EntryGate::Wait(EntryWait {
-            reason: format!(
-                "tp-unreliable tp={:.4} sl={:.4}",
-                plan.take_profit.price(),
-                plan.stop_loss.price()
-            ),
-            solutions: vec![
-                EntryWaitSolution::ReclaimDpsignal {
-                    source: "dpsignal".to_string(),
-                    anchor,
-                    distance_pct: if snapshot.tf1m.candle.close > 0.0 {
-                        ((current_price - anchor).abs() / current_price) * 100.0
-                    } else {
-                        0.0
-                    },
-                    band_low: (anchor - band).max(0.0),
-                    band_high: anchor + band,
-                },
-                EntryWaitSolution::ReclaimLevel {
-                    source: "structural".to_string(),
-                    level: if matches!(side, PositionState::Long) {
-                        level_book.nearest_above(current_price).unwrap_or(anchor)
-                    } else {
-                        level_book.nearest_below(current_price).unwrap_or(anchor)
-                    },
-                    band_low: (anchor - band).max(0.0),
-                    band_high: anchor + band,
-                },
-            ],
-            notes: vec![
-                format!("tp={:.4}", plan.take_profit.price()),
-                format!("sl={:.4}", plan.stop_loss.price()),
-                format!("tp_reliable={}", plan.tp_reliable),
-                state.exit_memory.summary(),
-            ],
-        });
-    }
-
-    if matches!(state.exit_memory.kind, Some(ExitKind::TakeProfit))
-        && state.exit_memory.side == side
-        && !state.exit_memory.reliable
-    {
-        return EntryGate::Wait(EntryWait {
-            reason: "post-tp-tight".to_string(),
-            solutions: vec![EntryWaitSolution::ReclaimDpsignal {
-                source: "dpsignal".to_string(),
-                anchor: snapshot.tf1m.dp_zee1,
-                distance_pct: if current_price > 0.0 {
-                    ((current_price - snapshot.tf1m.dp_zee1).abs() / current_price) * 100.0
-                } else {
-                    0.0
-                },
-                band_low: (snapshot.tf1m.dp_zee1
-                    - dp_signal_band(snapshot, current_price, snapshot.tf1m.dp_zee1))
-                .max(0.0),
-                band_high: snapshot.tf1m.dp_zee1
-                    + dp_signal_band(snapshot, current_price, snapshot.tf1m.dp_zee1),
-            }],
-            notes: vec![
-                format!("tp={:.4}", plan.take_profit.price()),
-                format!("sl={:.4}", plan.stop_loss.price()),
-                state.exit_memory.summary(),
-            ],
-        });
-    }
-
     EntryGate::Open {
         notes: vec![format!(
             "tp={:.4} sl={:.4} tp_reliable={}",

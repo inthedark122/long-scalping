@@ -163,10 +163,7 @@ pub struct TimeframeSnapshot {
     pub mrc: MrcBands,
     #[serde(default)]
     pub mrc_signal: MrcSignal,
-    pub dp_dir: i8,
     pub zz_dir: i8,
-    pub dp_zee: f64,
-    pub dp_zee1: f64,
     pub zz_buy_price: Option<f64>,
     pub zz_sell_price: Option<f64>,
     pub zz_break_price: f64,
@@ -475,13 +472,6 @@ pub enum EntryWaitSolution {
     ReclaimLevel {
         source: String,
         level: f64,
-        band_low: f64,
-        band_high: f64,
-    },
-    ReclaimDpsignal {
-        source: String,
-        anchor: f64,
-        distance_pct: f64,
         band_low: f64,
         band_high: f64,
     },

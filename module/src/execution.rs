@@ -927,53 +927,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_post_sl_wait_uses_dpsignal_band() {
-        let mut state = EngineState::default();
-        state.exit_memory = crate::model::ExitMemory {
-            side: PositionState::Long,
-            kind: Some(ExitKind::StopLoss),
-            price: 100.0,
-            take_profit: 102.0,
-            stop_loss: 95.0,
-            reliable: true,
-            tick: 10,
-        };
-        let mut snapshot = IndicatorSnapshot::default();
-        snapshot.tf1m.candle = crate::model::Candle {
-            open: 99.0,
-            high: 99.4,
-            low: 98.7,
-            close: 99.1,
-        };
-        snapshot.tf1m.dp_zee = 101.0;
-        snapshot.tf1m.dp_zee1 = 100.5;
-        snapshot.tf1m.mrc = crate::model::MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 0.0,
-        };
-        snapshot.tf5m = snapshot.tf1m;
-        snapshot.tf15m = snapshot.tf1m;
-        snapshot.tf1h = snapshot.tf1m;
-
-        let result = evaluate(
-            &input(),
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-    }
-
-    #[test]
     fn legacy_cooling_fast_candle_does_not_override_open_decision() {
         let mut state = EngineState::default();
         let mut snapshot = IndicatorSnapshot::default();
@@ -1211,53 +1164,6 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
-    }
-
-    #[test]
-    fn post_sl_wait_uses_dpsignal_band() {
-        let mut state = EngineState::default();
-        state.exit_memory = crate::model::ExitMemory {
-            side: PositionState::Long,
-            kind: Some(ExitKind::StopLoss),
-            price: 100.0,
-            take_profit: 102.0,
-            stop_loss: 95.0,
-            reliable: true,
-            tick: 10,
-        };
-        let mut snapshot = IndicatorSnapshot::default();
-        snapshot.tf1m.candle = crate::model::Candle {
-            open: 99.0,
-            high: 99.4,
-            low: 98.7,
-            close: 99.1,
-        };
-        snapshot.tf1m.dp_zee = 101.0;
-        snapshot.tf1m.dp_zee1 = 100.5;
-        snapshot.tf1m.mrc = crate::model::MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 0.0,
-        };
-        snapshot.tf5m = snapshot.tf1m;
-        snapshot.tf15m = snapshot.tf1m;
-        snapshot.tf1h = snapshot.tf1m;
-
-        let result = evaluate(
-            &input(),
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
     }
 
     #[test]
@@ -2211,7 +2117,6 @@ mod tests {
                         current_cross: 0.0,
                         mean_line_slope: 0.0,
                     },
-                    dp_dir: 0,
                     zz_dir: 0,
                     zz_buy_price: Some(95.0),
                     zz_sell_price: Some(110.0),

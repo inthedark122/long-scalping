@@ -272,10 +272,7 @@ fn build_timeframe(
         candle,
         mrc,
         mrc_signal: mrc::analyze(&mrc, close),
-        dp_dir: read_dir(history, timeframe, IndicatorKey::DPSignal),
         zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
-        dp_zee: read_raw_float(raw, timeframe, "dpsignal", "Zee")?,
-        dp_zee1: read_raw_float(raw, timeframe, "dpsignal", "Zee1")?,
         // Zigzag BuyPrice/SellPrice are empty when no local bottom/top exists
         // in the processing window, so preserve that absence as None.
         zz_buy_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
@@ -339,7 +336,7 @@ pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), S
         ("1h", &snapshot.tf1h),
     ] {
         let mut missing = Vec::new();
-        if tf.dp_dir == 0 && tf.zz_dir == 0 {
+        if tf.zz_dir == 0 {
             missing.push("direction");
         }
         if tf.candle.close <= 0.0 {
@@ -350,14 +347,11 @@ pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), S
         }
         if !missing.is_empty() {
             problems.push(format!(
-                "{} missing={} dp={} zz={} close={:.6} zee1={:.6} zee={:.6} mean={:.6}",
+                "{} missing={} zz={} close={:.6} mean={:.6}",
                 label,
                 missing.join(","),
-                tf.dp_dir,
                 tf.zz_dir,
                 tf.candle.close,
-                tf.dp_zee1,
-                tf.dp_zee,
                 tf.mrc.mean_line,
             ));
         }
@@ -440,17 +434,6 @@ mod tests {
                 ]),
             );
             candle.insert(
-                "dpsignal".to_string(),
-                HashMap::from([
-                    (
-                        "Direction".to_string(),
-                        ModuleIndicatorValue::Direction(Direction::Long),
-                    ),
-                    ("Zee".to_string(), ModuleIndicatorValue::Float(99.0)),
-                    ("Zee1".to_string(), ModuleIndicatorValue::Float(98.0)),
-                ]),
-            );
-            candle.insert(
                 "zigzagtrend".to_string(),
                 HashMap::from([
                     (
@@ -489,12 +472,10 @@ mod tests {
     }
 
     #[test]
-    fn dp_and_zz_mapping_is_timeframe_local() {
+    fn zigzag_mapping_is_timeframe_local() {
         let (history, raw) = mk_history();
         let snap =
             build_indicator_snapshot(&history, &raw).expect("indicator snapshot should build");
-        assert_eq!(snap.tf1m.dp_dir, 1);
-        assert_eq!(snap.tf5m.dp_dir, 1);
         assert_eq!(snap.tf15m.zz_dir, -1);
         assert_eq!(snap.tf1h.zz_dir, -1);
     }

@@ -56,8 +56,6 @@ pub enum LevelKind {
     MrcDownSmall,
     MrcDownInner,
     MrcDownOuter,
-    DpZee,
-    DpZee1,
     ZzSellPrice,
     ZzBreakPrice,
 }
@@ -72,8 +70,6 @@ impl LevelKind {
             Self::MrcDownSmall => "mrc_down_small",
             Self::MrcDownInner => "mrc_down_inner",
             Self::MrcDownOuter => "mrc_down_outer",
-            Self::DpZee => "dp_zee",
-            Self::DpZee1 => "dp_zee1",
             Self::ZzSellPrice => "zz_sell",
             Self::ZzBreakPrice => "zz_break",
         }
@@ -353,24 +349,6 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 value: tf.mrc.down_outer,
             },
         );
-        push_level(
-            &mut above,
-            LevelPoint {
-                source,
-                kind: LevelKind::DpZee,
-                side: LevelSide::Above,
-                value: tf.dp_zee,
-            },
-        );
-        push_level(
-            &mut above,
-            LevelPoint {
-                source,
-                kind: LevelKind::DpZee1,
-                side: LevelSide::Above,
-                value: tf.dp_zee1,
-            },
-        );
         push_optional_level(
             &mut above,
             source,
@@ -394,24 +372,6 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 kind: LevelKind::MrcMean,
                 side: LevelSide::Below,
                 value: tf.mrc.mean_line,
-            },
-        );
-        push_level(
-            &mut below,
-            LevelPoint {
-                source,
-                kind: LevelKind::DpZee,
-                side: LevelSide::Below,
-                value: tf.dp_zee,
-            },
-        );
-        push_level(
-            &mut below,
-            LevelPoint {
-                source,
-                kind: LevelKind::DpZee1,
-                side: LevelSide::Below,
-                value: tf.dp_zee1,
             },
         );
         push_optional_level(
@@ -538,8 +498,6 @@ mod tests {
                 current_cross: 0.0,
                 mean_line_slope: 0.0,
             },
-            dp_zee: close - offset * 0.5,
-            dp_zee1: close + offset * 0.5,
             zz_buy_price: Some(close - offset * 0.75),
             zz_sell_price: Some(close + offset * 0.75),
             zz_break_price: close + offset * 1.25,

@@ -188,7 +188,6 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
     let ind = current.get("indicators").unwrap_or(&Value::Null);
     let candle = ind.get("candle").unwrap_or(&Value::Null);
     let mrc = ind.get("mrc_200").unwrap_or(&Value::Null);
-    let dp = ind.get("dpsignal").unwrap_or(&Value::Null);
     let zz = ind.get("zigzagtrend").unwrap_or(&Value::Null);
     let _signal = ind.get("signal").unwrap_or(&Value::Null);
     let volume_50 = ind.get("volume_50").unwrap_or(&Value::Null);
@@ -240,10 +239,7 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
             },
             close,
         ),
-        dp_dir: dir_to_int(dp.get("Direction")),
         zz_dir: dir_to_int(zz.get("Direction")),
-        dp_zee: f64_key(dp, "Zee")?,
-        dp_zee1: f64_key(dp, "Zee1")?,
         // Zigzag extrema are absent when no local bottom/top exists in the
         // processing window; keep those fields as None instead of failing.
         zz_buy_price: f64_key(zz, "BuyPrice"),
@@ -491,7 +487,6 @@ fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
                     }
                     EntryWaitSolution::WaitForConfirmation { price, .. } => return *price,
                     EntryWaitSolution::ReclaimLevel { level, .. } => return *level,
-                    EntryWaitSolution::ReclaimDpsignal { anchor, .. } => return *anchor,
                     EntryWaitSolution::FastCandle { .. } => {}
                     EntryWaitSolution::WaitForSamples { .. } => {}
                 }
@@ -551,13 +546,6 @@ fn directional_break_level(
                         candidates.push(candidate);
                     }
                 }
-                EntryWaitSolution::ReclaimDpsignal { anchor, .. } => {
-                    if let Some(candidate) =
-                        break_candidate(current_price, side, *anchor, "dpsignal")
-                    {
-                        candidates.push(candidate);
-                    }
-                }
                 EntryWaitSolution::FastCandle { .. } => {}
                 EntryWaitSolution::WaitForSamples { .. } => {}
             }
@@ -569,8 +557,6 @@ fn directional_break_level(
     let tf5_candidates = match side {
         PositionState::Long => [
             (tf5.zz_break_price, "5m-zz-break"),
-            (tf5.dp_zee1, "5m-dp-zee1"),
-            (tf5.dp_zee, "5m-dp-zee"),
             (tf5.mrc.down_outer, "5m-down-outer"),
             (tf5.mrc.down_big, "5m-down-big"),
             (
@@ -583,8 +569,6 @@ fn directional_break_level(
         ],
         PositionState::Short => [
             (tf5.zz_break_price, "5m-zz-break"),
-            (tf5.dp_zee1, "5m-dp-zee1"),
-            (tf5.dp_zee, "5m-dp-zee"),
             (tf5.mrc.up_outer, "5m-up-outer"),
             (tf5.mrc.up_big, "5m-up-big"),
             (
@@ -722,13 +706,10 @@ fn trade_recommendation(
 
 fn tf_line(name: &str, tf: &TimeframeSnapshot) -> String {
     format!(
-        "{} close={:.6} dp={} zz={} zee1={:.6} above_zee1={} mrc_zone={} slope={} bull={} bear={} pzone={:.2} mean={:.6} down_outer={:.6} up_inner={:.6} up_outer={:.6}",
+        "{} close={:.6} zz={} mrc_zone={} slope={} bull={} bear={} pzone={:.2} mean={:.6} down_outer={:.6} up_inner={:.6} up_outer={:.6}",
         name,
         tf.candle.close,
-        tf.dp_dir,
         tf.zz_dir,
-        tf.dp_zee1,
-        tf.dp_zee1 > 0.0 && tf.candle.close >= tf.dp_zee1,
         tf.mrc_signal.zone,
         tf.mrc_signal.slope_sign,
         tf.mrc_signal.bullish_structure,

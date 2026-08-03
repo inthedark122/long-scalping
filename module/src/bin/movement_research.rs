@@ -99,10 +99,7 @@ struct CandleRow {
     high: f64,
     low: f64,
     close: f64,
-    dp_dir: i8,
     zz_dir: i8,
-    dp_zee: f64,
-    dp_zee1: f64,
     zz_break_price: f64,
     gain: f64,
     ntps: i64,
@@ -1204,7 +1201,6 @@ fn parse_candle(item: &Value) -> CandleRow {
     // The full indicator endpoint nests candle data; the chart fast path asks
     // for indicator_name=candle and returns the candle fields directly.
     let candle = ind.get("candle").unwrap_or(ind);
-    let dp = ind.get("dpsignal").unwrap_or(&Value::Null);
     let zz = ind.get("zigzagtrend").unwrap_or(&Value::Null);
     let signal = ind.get("signal").unwrap_or(&Value::Null);
     let volume_50 = ind.get("volume_50").unwrap_or(&Value::Null);
@@ -1215,10 +1211,7 @@ fn parse_candle(item: &Value) -> CandleRow {
         high: f64_or(candle, "High", "high"),
         low: f64_or(candle, "Low", "low"),
         close: f64_or(candle, "Close", "close"),
-        dp_dir: dir_to_int(dp.get("Direction")),
         zz_dir: dir_to_int(zz.get("Direction")),
-        dp_zee: f64_or(dp, "Zee", "zee"),
-        dp_zee1: f64_or(dp, "Zee1", "zee1"),
         zz_break_price: f64_or(zz, "BreakPrice", "break_price"),
         gain: f64_or(volume_50, "Gain", "gain"),
         ntps: get_i64(signal, "ntps"),
@@ -1226,20 +1219,12 @@ fn parse_candle(item: &Value) -> CandleRow {
 }
 
 fn confirmed_direction(row: &CandleRow) -> i8 {
-    if row.dp_dir != 0 && row.dp_dir == row.zz_dir {
-        row.dp_dir
-    } else {
-        0
-    }
+    row.zz_dir
 }
 
 fn fallback_break_price(row: &CandleRow) -> f64 {
     if row.zz_break_price > 0.0 {
         row.zz_break_price
-    } else if row.dp_zee1 > 0.0 {
-        row.dp_zee1
-    } else if row.dp_zee > 0.0 {
-        row.dp_zee
     } else {
         row.close
     }
@@ -1501,13 +1486,12 @@ fn simulate(
         }
         refresh_direction_lock(&mut lock, cur);
         traces.push(format!(
-            "{} lock={} broken={} break_line={} pending={} dpzz={}/{} break={:.4} confirmed={} reason={}",
+            "{} lock={} broken={} break_line={} pending={} zz={} break={:.4} confirmed={} reason={}",
             fmt_time(cur.time_ms),
             lock_label(&lock),
             lock_broken(&lock, cur),
             lock_break_label(&lock),
             pending_label(&pending),
-            cur.dp_dir,
             cur.zz_dir,
             lock.break_price,
             confirmed_direction(cur),
@@ -1747,10 +1731,7 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
             high: f64_or(candle, "max", "high"),
             low: f64_or(candle, "min", "low"),
             close: f64_or(candle, "exit", "close"),
-            dp_dir: 0,
             zz_dir: 0,
-            dp_zee: 0.0,
-            dp_zee1: 0.0,
             zz_break_price: 0.0,
             gain: f64_or(indicator, "ntps", "ntps"),
             ntps: get_i64(indicator, "ntps"),

@@ -38,7 +38,7 @@ pub fn render(
     // Direction debug: base/final are the regime and final refined direction;
     // src identifies the actual decision stage that supplied the final value.
     // For the base regime, why=5m[...]|15m[...] uses L/S for Long/Short and
-    // m/a/z for failed MRC, dp_zee1 anchor, and ZigZag conditions. If a later
+    // m/z for failed MRC and ZigZag conditions. If a later
     // stage changes direction, why is replaced by that stage's runtime values.
     let mut parts = vec![
         format!("t={}", state.ticks),
@@ -215,20 +215,6 @@ fn format_entry_wait_solution(
             "reclaim:{}:{}[{}..{}]",
             source,
             fmt_price_tick(*level, tick_size),
-            fmt_price_tick(*band_low, tick_size),
-            fmt_price_tick(*band_high, tick_size)
-        ),
-        crate::model::EntryWaitSolution::ReclaimDpsignal {
-            source,
-            anchor,
-            distance_pct,
-            band_low,
-            band_high,
-        } => format!(
-            "dpsignal:{}:{} dist={:.2}% [{}..{}]",
-            source,
-            fmt_price_tick(*anchor, tick_size),
-            distance_pct,
             fmt_price_tick(*band_low, tick_size),
             fmt_price_tick(*band_high, tick_size)
         ),
@@ -556,7 +542,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
-            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
+            stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: Some(EntryReason::SugInfoScalp { price: 100.0 }),
@@ -659,7 +645,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
-            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
+            stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
@@ -690,7 +676,7 @@ mod tests {
             trough_price: 99.0,
             take_profit: 101.0,
             stop_loss: 99.0,
-            stop_loss_reason: "structural:1m:below:dp_zee".to_string(),
+            stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
