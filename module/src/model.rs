@@ -158,6 +158,20 @@ impl MrcBands {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SmcSnapshot {
+    pub direction: i8,
+    pub direction_swing: i8,
+    pub fp: Option<f64>,
+    pub high_price: Option<f64>,
+    pub low_price: Option<f64>,
+    pub break_price: Option<f64>,
+    pub ob_direction: i8,
+    pub ob_high: Option<f64>,
+    pub ob_low: Option<f64>,
+    pub sbp: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct TimeframeSnapshot {
     pub candle: Candle,
     pub mrc: MrcBands,
@@ -167,6 +181,8 @@ pub struct TimeframeSnapshot {
     pub zz_buy_price: Option<f64>,
     pub zz_sell_price: Option<f64>,
     pub zz_break_price: f64,
+    #[serde(default)]
+    pub smc: SmcSnapshot,
     pub volume_gain: f64,
     pub volume_gain_min: f64,
     pub volume_gain_max: f64,

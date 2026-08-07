@@ -12,7 +12,7 @@ This is the limit-entry release for the structural scalping module.
 
 ## Inputs
 - `MRC`
-- `DPSignal`
+- `SMC`
 - `ZigZagTrend`
 - Candle OHLC
 - Live price

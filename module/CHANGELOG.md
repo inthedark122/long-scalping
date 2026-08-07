@@ -397,7 +397,7 @@ WASM entrypoint safety release.
 Long direction probe release.
 
 - Added a standalone Rust probe binary to inspect direction, entry readiness, and expected exit levels.
-- Reworked the long regime to accept price above frozen `Zee1` with `ZigZag` `BOTH` as valid bullish confirmation.
+- Reworked the long regime to accept price above the frozen structural anchor with `ZigZag` `BOTH` as valid bullish confirmation.
 - Kept the strategy long-only while preserving the 1m cascade and sug-info entry stack.
 
 ## 1.0.20
@@ -582,5 +582,5 @@ Fresh baseline reset.
   - `execution.rs`
   - `debug.rs`
   - `engine.rs`
-- Strategy inputs are now limited to `MRC`, `DPSignal`, `ZigZagTrend`, candle OHLC, and live price.
+- Strategy inputs are now limited to `MRC`, `SMC`, `ZigZagTrend`, candle OHLC, and live price.
 - Trading behavior is deterministic: exactly one market state, exactly one open position at a time, hard stop first, TP on pullback second, regime invalidation last.

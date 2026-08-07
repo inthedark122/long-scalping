@@ -9,7 +9,7 @@ Use three pieces together:
 
 - `MeanLine` angle
 - current position inside the MRC band stack
-- `DPSignal` `Zee` / `Zee1` to see where price was and where it is now
+- SMC structural direction and local price levels
 
 ## MeanLine angle
 
@@ -61,24 +61,23 @@ For long analysis:
 - price already far above `MeanLine` while angle is still rising fast = avoid buying the spike
 - price hugging `UpSmall` / `UpInner` and refusing to break = a good place to trail entries and scale out into the next band
 
-## Using `DPSignal` for context
+## Using SMC for context
 
-`DPSignal` helps answer two questions:
+SMC provides the local structural map around the MRC channel:
 
-- where we are now
-- where we were before
-
-Use:
-
-- `Zee1` as the main signal anchor
-- `Zee` as the live moving edge
+- `Direction` = current structural bias
+- `DirectionSwing` = broader swing bias
+- `LowPrice` / `HighPrice` = local structural bounds
+- `BreakPrice` / `SBP` = structural break levels
+- `OBLow` / `OBHigh` = order-block boundaries
+- `FP` = current structural focus price
 
 ### Long-side interpretation
 
-- if price is close to `MeanLine` and `Zee1` is close to current price, the market is in a decision zone
-- if price is above `MeanLine` and `Zee1` is still below or far behind, the trend has room and can keep grinding up
-- if price is already far above `Zee1`, the move is stretched and the next leg is less attractive
-- if price is near the upper MRC lines but `Zee` is also far above the anchor, expect slower continuation and watch for exhaustion
+- if price is close to `MeanLine` and SMC levels are close to current price, the market is in a decision zone
+- if price is above `MeanLine` and SMC direction agrees, the trend can continue toward the next structural high
+- if price is already far above the SMC focus or high, the move is extended and the next leg is less attractive
+- if price is near the upper MRC lines and an SMC order-block high, expect slower continuation and watch for exhaustion
 
 ## Prediction rules
 
@@ -103,7 +102,7 @@ Meaning:
 
 - the move has structure
 - the trend is controlled
-- long is valid if price does not get far ahead of the signal
+- long is valid if price does not get far ahead of the SMC structural levels
 - do not buy a spike; buy continuation / pullback
 
 This is the best long environment when the channel is still orderly.
@@ -150,28 +149,28 @@ Planned volume interpretation:
 - `MeanLine` angle tells you whether the channel is flat, controlled, or stretched
 - `MeanLine` location tells you whether you are in decision, trend, or extreme zone
 - MRC bands can act as trailing support / resistance shelves
-- `Zee1` tells you the prior signal anchor
-- `Zee` tells you the live edge
+- SMC direction tells you whether local structure confirms the MRC read
+- SMC high, low, order-block, and break levels define the nearby reaction zones
 - use the combination to judge whether the move still has room or is already late
 
 ## Live 5m examples
 
 Date: 2026-07-05
 
-| Symbol | MRC Dir | CurrentCross | Close vs MeanLine | DP Dir | Close vs Zee1 | Read |
-|---|---|---:|---:|---|---:|---|
-| ETH | LONG | -1 | -0.16% | SHORT | -2.48% | Slightly below mean, but still structurally long; DP says the move is stretched and cooling. |
-| HYPE | SHORT | -1 | -0.38% | LONG | +0.59% | Below mean with short structure, but DP is still leaning up, so this is a mixed transition zone. |
-| LAB | SHORT | 0 | +1.57% | LONG | +6.76% | Above mean, but DP is far ahead of the anchor, so the move is more extended and less fresh. |
+| Symbol | MRC Dir | CurrentCross | Close vs MeanLine | Read |
+|---|---|---:|---:|---|
+| ETH | LONG | -1 | -0.16% | Slightly below mean, but still structurally long; wait for local structural confirmation. |
+| HYPE | SHORT | -1 | -0.38% | Below mean with short structure; treat the area as a transition zone until the local structure confirms. |
+| LAB | SHORT | 0 | +1.57% | Above mean inside short structure; the move is extended and can slow down or reverse. |
 
 ### What these examples show
 
-- ETH: structure is still long, but DP says the live push is late.
-- HYPE: MRC and DP disagree, so expect chop or a decision break.
-- LAB: price is above mean, but DP is already far from `Zee1`, which usually means the move has run and can slow down or reverse.
+- ETH: structure is still long, but local levels decide whether the pullback continues.
+- HYPE: MRC is short, so a conflicting local read should be treated as chop or a decision break.
+- LAB: price is above mean inside short structure, which usually means the move has run and can slow down or reverse.
 
 ## Notes
 
 - This is a long-first interpretation.
 - For short, reverse the direction and mirror the bands.
-- For best results, compare the MRC read against `DPSignal` and later add `volume_50` as an exhaustion / continuation filter.
+- For best results, compare the MRC read against SMC structure and add `volume_50` as an exhaustion / continuation filter.

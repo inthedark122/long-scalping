@@ -13,28 +13,29 @@ EXCHANGE#SYMBOL#INST_TYPE
 Example:
 
 ```bash
-curl -s 'https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=1800&indicator_name=dpsignal&limit=1'
+curl -s 'https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=1800&indicator_name=smc&limit=1'
 ```
 
 Rules:
 
 - URL-encode `#` as `%23`
-- use `indicator_name=dpsignal`
+- use `indicator_name=smc`
 - use `timeframe=60` for 1m
 - use `timeframe=300` for 5m
 - use `timeframe=1800` for 30m
 - use `timeframe=3600` for 1h
 
-## How to read `DPSignal`
+## How to read `SMC`
 
-See [dp-signal.md](./dp-signal.md) for the full interpretation.
+Use the SMC fields for directional structure and local price levels.
 
 Short version:
 
-- `Zee1` is the signal anchor
-- `Zee` is the live moving edge
-- distance from `Zee1` tells you stretch
-- proximity to `Zee` tells you whether price is near the turn zone
+- `Direction` confirms directional bias
+- `DirectionSwing` shows the broader swing direction
+- `LowPrice` / `HighPrice` provide local structural bounds
+- `BreakPrice` and `SBP` identify structural break levels
+- `OBLow` / `OBHigh` provide the active order-block range
 - 1m + 5m agreement is cleaner for timing
 - 30m + 1h is better for direction context and exit management
 

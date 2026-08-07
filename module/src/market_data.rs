@@ -1,6 +1,6 @@
 use crate::detection::mrc;
 use crate::model::{
-    Candle, FastCandleSnapshot, IndicatorSnapshot, MrcBands, SignalIndicatorSnapshot,
+    Candle, FastCandleSnapshot, IndicatorSnapshot, MrcBands, SignalIndicatorSnapshot, SmcSnapshot,
 };
 use crate::model::{SugInfoSnapshot, TimeframeSnapshot};
 use lte_strategy_bridge::abi::{Direction, ModuleIndicatorValue};
@@ -77,8 +77,6 @@ fn read_dir(history: &IndicatorHistory, timeframe: TimeframeSec, indicator: Indi
     }) {
         Some(ModuleIndicatorValue::Direction(Direction::Long)) => 1,
         Some(ModuleIndicatorValue::Direction(Direction::Short)) => -1,
-        Some(ModuleIndicatorValue::String(value)) if value.eq_ignore_ascii_case("LONG") => 1,
-        Some(ModuleIndicatorValue::String(value)) if value.eq_ignore_ascii_case("SHORT") => -1,
         _ => 0,
     }
 }
@@ -138,7 +136,7 @@ fn read_raw_float(
                 indicator,
                 field
             )
-    })
+        })
 }
 
 fn read_optional_raw_float(
@@ -148,6 +146,24 @@ fn read_optional_raw_float(
     field: &str,
 ) -> Option<f64> {
     read_raw_float(indicators, timeframe, indicator, field).ok()
+}
+
+fn read_optional_raw_direction(
+    indicators: &RawIndicators,
+    timeframe: TimeframeSec,
+    indicator: &str,
+    field: &str,
+) -> i8 {
+    match indicators
+        .get(&timeframe.as_i64())
+        .and_then(|candles| candles.first())
+        .and_then(|by_ind| by_ind.get(indicator))
+        .and_then(|fields| fields.get(field))
+    {
+        Some(ModuleIndicatorValue::Direction(Direction::Long)) => 1,
+        Some(ModuleIndicatorValue::Direction(Direction::Short)) => -1,
+        _ => 0,
+    }
 }
 
 fn build_timeframe(
@@ -185,6 +201,18 @@ fn build_timeframe(
             0,
         )?,
         close,
+    };
+    let smc = SmcSnapshot {
+        direction: read_dir(history, timeframe, IndicatorKey::Smc),
+        direction_swing: read_optional_raw_direction(raw, timeframe, "smc", "DirectionSwing"),
+        fp: read_optional_raw_float(raw, timeframe, "smc", "FP"),
+        high_price: read_optional_raw_float(raw, timeframe, "smc", "HighPrice"),
+        low_price: read_optional_raw_float(raw, timeframe, "smc", "LowPrice"),
+        break_price: read_optional_raw_float(raw, timeframe, "smc", "BreakPrice"),
+        ob_direction: read_optional_raw_direction(raw, timeframe, "smc", "OBDirection"),
+        ob_high: read_optional_raw_float(raw, timeframe, "smc", "OBHigh"),
+        ob_low: read_optional_raw_float(raw, timeframe, "smc", "OBLow"),
+        sbp: read_optional_raw_float(raw, timeframe, "smc", "SBP"),
     };
     let mean_line = read_float(
         history,
@@ -278,6 +306,7 @@ fn build_timeframe(
         zz_buy_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
         zz_sell_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
         zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice")?,
+        smc,
         volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
         volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
         volume_gain_max: read_raw_float(raw, timeframe, "volume_50", "GainMax")?,

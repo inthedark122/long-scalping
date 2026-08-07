@@ -27,14 +27,13 @@ Use the docs as a stack:
 
 1. Read the indicator rules in [`docs/indicators/README.md`](/home/dev/strategies/long-scalping/docs/indicators/README.md)
 2. Apply the specific indicator notes:
-   - [`docs/indicators/dp-signal.md`](/home/dev/strategies/long-scalping/docs/indicators/dp-signal.md)
    - [`docs/indicators/mrc-prediction.md`](/home/dev/strategies/long-scalping/docs/indicators/mrc-prediction.md)
    - [`docs/indicators/zigzag.md`](/home/dev/strategies/long-scalping/docs/indicators/zigzag.md)
 3. Combine them with the strategy summary in [`docs/solutions/trend-prediction.md`](/home/dev/strategies/long-scalping/docs/solutions/trend-prediction.md)
 4. Turn the stack into one tradeable conclusion:
    - structure
    - swing direction
-   - stretch
+   - local structural bounds
    - exhaustion / acceleration
    - base TF
    - local TP versus runner extension
@@ -121,14 +120,14 @@ Read indicator data directly from the API URL pattern the user provided.
 Required format:
 
 ```text
-https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=EXCHANGE%23SYMBOL%23INST_TYPE&timeframe=...&indicator_name=dpsignal&limit=1
+https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=EXCHANGE%23SYMBOL%23INST_TYPE&timeframe=...&indicator_name=smc&limit=1
 ```
 
 Rules:
 
 - use full `symbol_key`
 - URL-encode `#` as `%23`
-- use `indicator_name=dpsignal`
+- use `indicator_name=smc` when requesting SMC specifically
 - use `timeframe=60` for 1m
 - use `timeframe=300` for 5m
 - use `timeframe=1800` for 30m
@@ -136,18 +135,23 @@ Rules:
 
 ## Reading rules
 
-From `DPSignal`:
+From `SMC`:
 
-- `Zee1` = signal anchor / base for distance
-- `Zee` = live edge / turning area
-- `Direction` = current bias
+- `Direction` = current structural bias
+- `DirectionSwing` = broader swing bias
+- `LowPrice` / `HighPrice` = local structural bounds
+- `BreakPrice` / `SBP` = break and continuation levels
+- `OBLow` / `OBHigh` = order-block boundaries
+- `FP` = current structural focus price
 
 Interpretation:
 
-- far from `Zee1` = stretched / out of range
-- close to `Zee` = near the turn zone
-- 1m + 5m agreement = cleaner timing
-- 30m + 1h = higher-timeframe direction context
+- agreement between `Direction` and `DirectionSwing` = cleaner structure
+- price near `LowPrice` or `OBLow` = support/reaction area
+- price near `HighPrice` or `OBHigh` = resistance/reaction area
+- break beyond `BreakPrice` or `SBP` = continuation must be confirmed with ZigZag and MRC
+- 1m + 5m agreement is cleaner timing
+- 30m + 1h is higher-timeframe direction context
 
 ## Response format
 

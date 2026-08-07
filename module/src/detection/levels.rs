@@ -58,6 +58,9 @@ pub enum LevelKind {
     MrcDownOuter,
     ZzSellPrice,
     ZzBreakPrice,
+    SmcHighPrice,
+    SmcLowPrice,
+    SmcBreakPrice,
 }
 
 impl LevelKind {
@@ -72,6 +75,9 @@ impl LevelKind {
             Self::MrcDownOuter => "mrc_down_outer",
             Self::ZzSellPrice => "zz_sell",
             Self::ZzBreakPrice => "zz_break",
+            Self::SmcHighPrice => "smc_high",
+            Self::SmcLowPrice => "smc_low",
+            Self::SmcBreakPrice => "smc_break",
         }
     }
 }
@@ -390,6 +396,15 @@ pub fn structural_levels(snapshot: &IndicatorSnapshot) -> LevelBook {
                 value: tf.zz_break_price,
             },
         );
+
+        for (kind, value) in [
+            (LevelKind::SmcHighPrice, tf.smc.high_price),
+            (LevelKind::SmcLowPrice, tf.smc.low_price),
+            (LevelKind::SmcBreakPrice, tf.smc.break_price),
+        ] {
+            push_optional_level(&mut above, source, kind, LevelSide::Above, value);
+            push_optional_level(&mut below, source, kind, LevelSide::Below, value);
+        }
     }
 
     sort_levels(&mut above);
@@ -542,6 +557,33 @@ mod tests {
             book.nearest_above_point_excluding(100.0, &[above]),
             Some(above)
         );
+    }
+
+    #[test]
+    fn structural_levels_include_smc_prices() {
+        let snapshot = IndicatorSnapshot {
+            tf1m: TimeframeSnapshot {
+                smc: crate::model::SmcSnapshot {
+                    high_price: Some(110.0),
+                    low_price: Some(90.0),
+                    ob_high: Some(106.0),
+                    ob_low: Some(104.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let levels = structural_levels(&snapshot);
+        assert!(levels
+            .above
+            .iter()
+            .any(|level| level.kind == LevelKind::SmcHighPrice && level.value == 110.0));
+        assert!(levels
+            .below
+            .iter()
+            .any(|level| level.kind == LevelKind::SmcLowPrice && level.value == 90.0));
     }
 
     #[test]

@@ -54,13 +54,13 @@ def print_snapshot(symbol: str):
         candle = cur.get("candle", {})
         mrc = cur.get("mrc_200", {})
         mrc_prev = prev.get("mrc_200", {})
-        dp = cur.get("dpsignal", {})
+        smc = cur.get("smc", {})
         zz = cur.get("zigzagtrend", {})
         ts = data[0].get("time", 0)
         stamp = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%H:%M:%S") if ts else "?"
         print(
             f"{tf:>4}s  {stamp}  close={fmt(candle.get('Close'))} "
-            f"dp={direction(dp):>5} zz={direction(zz):>5} "
+            f"smc={direction(smc):>5} zz={direction(zz):>5} "
             f"ml={fmt(mrc.get('MeanLine'))} slope={slope(mrc.get('MeanLine'), mrc_prev.get('MeanLine'))} "
             f"cross={mrc.get('CurrentCross', 'n/a')}"
         )

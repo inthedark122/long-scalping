@@ -23,7 +23,7 @@ The intended stack is:
 1. regime / structure for direction context
 2. completed 1m movement for continuation / reversal timing
 3. `sug_info.candle` for the live scalp entry / exit price path
-4. ZigZag + DPSignal for direction lock and break confirmation
+4. ZigZag + SMC for direction lock and break confirmation
 
 ## 1m overlay on top of `sug_info`
 
@@ -37,14 +37,14 @@ The working model is:
 
 - 1m movement decides whether the move is starting, building, or late
 - `sug_info.candle` supplies the live scalp price path
-- ZigZag + DPSignal define a frozen direction bias
+- ZigZag + SMC define a frozen direction bias
 - the frozen direction stays active until the ZigZag break level is broken and DP still agrees with the flip
 
 This gives us a simple rule:
 
 - trade continuation while 1m movement and frozen direction agree
 - wait when 1m movement flips but ZigZag has not broken yet
-- allow reversal only after the ZigZag break is confirmed by DPSignal
+- allow reversal only after the ZigZag break is confirmed by SMC
 
 ## Original research plan
 
@@ -72,7 +72,7 @@ For the new overlay pass, the target symbol to inspect is:
 Use it to compare:
 
 - raw 1m movement direction
-- frozen ZigZag + DPSignal direction
+- frozen ZigZag + SMC direction
 - live `sug_info` movement behavior
 
 ## What we verified
@@ -162,7 +162,7 @@ cargo run --locked --features movement-research --bin movement_research -- \
 What remains open is mostly threshold tuning:
 
 - compare `1.2x`, `1.3x`, and `1.5x` reverse thresholds
-- compare how long the ZigZag + DPSignal direction lock should remain sticky before the next break
+- compare how long the ZigZag + SMC direction lock should remain sticky before the next break
 - compare continuation entry quality across symbols
 - rerun LAB with a longer wait or a more resilient fetch path
 - compare how often the 1m overlay beats the pure `sug_info` scalp path on live trading

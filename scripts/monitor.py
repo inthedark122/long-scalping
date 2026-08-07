@@ -37,11 +37,11 @@ def tf_line(tf: int) -> str:
     ind = snap.get("indicators", {})
     candle = ind.get("candle", {})
     mrc = ind.get("mrc_200", {})
-    dp = ind.get("dpsignal", {})
+    smc = ind.get("smc", {})
     zz = ind.get("zigzagtrend", {})
     return (
         f"{tf:>4}s close={fmt(candle.get('Close'))} "
-        f"dp={dp.get('Direction', 'NEUTRAL'):>5} "
+        f"smc={smc.get('Direction', 'NEUTRAL'):>5} "
         f"zz={zz.get('Direction', 'NEUTRAL'):>5} "
         f"ml={fmt(mrc.get('MeanLine'))} "
         f"cross={mrc.get('CurrentCross', 'n/a')}"

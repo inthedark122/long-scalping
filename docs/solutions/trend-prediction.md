@@ -6,7 +6,7 @@ Goal:
 
 - use `mrc_200` for structure and regime
 - use `zigzagtrend` for swing direction and reversal zones
-- use `dpsignal` for stretch and live-edge context
+- use `smc` for structural direction, local bounds, and order blocks
 - use `volume_50` later for movement start/end and exhaustion
 
 The strategy should not treat these as separate signals. They should be read as a stack.
@@ -15,14 +15,14 @@ The strategy should not treat these as separate signals. They should be read as 
 
 1. `mrc_200`
 2. `zigzagtrend`
-3. `dpsignal`
+3. `smc`
 4. `volume_50` and `ntps`
 
 That order answers:
 
 - where the market is inside the channel
 - which swing direction is active
-- whether the move is stretched or still has room
+- where the local structural boundaries and reaction zones are
 - whether the move is ending or accelerating
 
 ## What each indicator contributes
@@ -77,27 +77,32 @@ Strategy role:
 - order placement near structural levels
 - break-fail counting
 
-### 3. DPSignal (`dpsignal`)
+### 3. SMC (`smc`)
 
-Use DP for stretch and live-edge context.
+Use SMC for local structural direction, bounds, and order-block context.
 
 It tells you:
 
-- how far the move has already run
-- where the live edge is
-- whether price is close to the turn zone
+- whether current structure agrees with the regime
+- where the local high and low are
+- where the current order block sits
+- where structure may break or continue
 
 Best use:
 
-- `Zee1` = anchor price
-- `Zee` = live edge / turning area
-- `Direction` = short-term bias
+- `Direction` = current structural bias
+- `DirectionSwing` = broader swing bias
+- `LowPrice` / `HighPrice` = structural support / resistance bounds
+- `BreakPrice` / `SBP` = break and continuation levels
+- `OBLow` / `OBHigh` = order-block boundaries
+- `FP` = current structural focus price
 
 Strategy role:
 
-- confirmation that a move still has room
-- warning that a move is late
-- out-of-range vs in-range classification
+- structural direction confirmation
+- local TP/SL level selection
+- order-block reaction detection
+- local range and breakout filtering
 
 ### 4. Volume (`volume_50`)
 
@@ -144,12 +149,12 @@ Think of the strategy in layers:
 - which swing direction is active?
 - where is the break / reaction level?
 
-### Layer 3: Stretch
+### Layer 3: Local structure
 
-`dpsignal`
+`smc`
 
-- is price still close to its anchor?
-- is the move in range or already extended?
+- does local structure confirm the regime?
+- where are the current high, low, order block, and break levels?
 
 ### Layer 4: Exhaustion / acceleration
 
@@ -172,7 +177,7 @@ If MRC `MeanLine` angle is near zero and price sits near the mean:
 
 - do not force a trade
 - wait for high-TF agreement or a break
-- use ZigZag / DP for confirmation, not prediction
+- use ZigZag / SMC for confirmation, not prediction
 
 ### 2. Controlled trend
 
@@ -180,19 +185,19 @@ If MeanLine angle is gently rising and ZigZag `EndDirection=LONG`:
 
 - prefer long continuation
 - buy pullbacks, not spikes
-- keep TP light if DP is already far from `Zee1`
+- keep TP light if price is already close to an SMC high or order-block ceiling
 
 ### 3. Extended trend
 
-If MRC is steep, DP is far from `Zee1`, and ZigZag is still long:
+If MRC is steep, price is far beyond the local SMC focus/high, and ZigZag is still long:
 
 - trend may continue, but it is late
 - prefer trailing stop
-- avoid chasing into `UpBig`
+- avoid chasing into `UpBig` or an SMC order-block high
 
 ### 4. Reaction zone
 
-If price reaches `BreakPrice` or `SellPrice`:
+If price reaches `BreakPrice`, `SellPrice`, or an SMC structural high:
 
 - expect either continuation or rejection
 - count repeated failures to break

@@ -219,4 +219,4 @@ For 5m / 15m / 30m / 1h:
 
 - The indicator is useful for both trend direction and structural prediction.
 - It is not a guarantee. It is a structural map for continuation and reversal zones.
-- For the best result, combine it with `DPSignal` later to compare direction against stretch.
+- For the best result, combine it with `SMC` to compare swing direction against structural levels.

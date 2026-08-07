@@ -11,10 +11,12 @@ pub enum OneMConfirmation {
 fn classify(tf: &TimeframeSnapshot) -> MarketState {
     let zigzag_allows_long = tf.zz_dir >= 0;
     let zigzag_allows_short = tf.zz_dir <= 0;
+    let smc_allows_long = tf.smc.direction >= 0;
+    let smc_allows_short = tf.smc.direction <= 0;
 
-    if tf.mrc_signal.bullish_structure && zigzag_allows_long {
+    if tf.mrc_signal.bullish_structure && zigzag_allows_long && smc_allows_long {
         MarketState::Long
-    } else if tf.mrc_signal.bearish_structure && zigzag_allows_short {
+    } else if tf.mrc_signal.bearish_structure && zigzag_allows_short && smc_allows_short {
         MarketState::Short
     } else {
         MarketState::Sideways
@@ -80,11 +82,11 @@ fn timeframe_reason(timeframe: &TimeframeSnapshot) -> String {
 
     let long_fail = direction_failures(
         timeframe.mrc_signal.bullish_structure,
-        timeframe.zz_dir >= 0,
+        timeframe.zz_dir >= 0 && timeframe.smc.direction >= 0,
     );
     let short_fail = direction_failures(
         timeframe.mrc_signal.bearish_structure,
-        timeframe.zz_dir <= 0,
+        timeframe.zz_dir <= 0 && timeframe.smc.direction <= 0,
     );
     format!("L-{}:S-{}", long_fail, short_fail)
 }
@@ -205,5 +207,26 @@ mod tests {
 
         let neutral = classify_confirmation(MarketState::Short, &tf(0, 1.0, 111.0, 100.0));
         assert_eq!(neutral, OneMConfirmation::Countertrend);
+    }
+
+    #[test]
+    fn smc_direction_confirms_or_blocks_regime() {
+        let long = TimeframeSnapshot {
+            smc: crate::model::SmcSnapshot {
+                direction: 1,
+                ..Default::default()
+            },
+            ..tf(1, 1.0, 111.0, 100.0)
+        };
+        let short_smc = TimeframeSnapshot {
+            smc: crate::model::SmcSnapshot {
+                direction: -1,
+                ..Default::default()
+            },
+            ..long
+        };
+
+        assert_eq!(classify(&long), MarketState::Long);
+        assert_eq!(classify(&short_smc), MarketState::Sideways);
     }
 }
