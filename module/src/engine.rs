@@ -683,7 +683,7 @@ fn process_realtime(
         snapshot.tf1m.mrc.lines(),
         input.price,
         state.ticks,
-        sug_info.system_time as u64,
+        sug_info.time as u64,
     );
     let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
     let candle = crate::model::Candle {
@@ -694,12 +694,9 @@ fn process_realtime(
     };
     let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
     let sideway = sideways::analyze(state, &snapshot.tf1m);
-    state.mrc_risk.observe(
-        &snapshot,
-        &sug_snapshot,
-        input.price,
-        sug_info.system_time as u64,
-    );
+    state
+        .mrc_risk
+        .observe(&snapshot, &sug_snapshot, input.price, sug_info.time as u64);
 
     let mrc_observation = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
         Some(mrc_reclaim::observe(
@@ -707,7 +704,7 @@ fn process_realtime(
             &mrc_events,
             snapshot.tf1m.mrc.lines(),
             input.price,
-            sug_info.system_time as u64,
+            sug_info.time as u64,
             snapshot.tf1m.buy_sell_gain,
         ))
     } else {
@@ -763,11 +760,9 @@ fn process_realtime(
             entry: entry_gate,
         },
     );
-    state.direction_history.observe(
-        decision.market_state,
-        input.price,
-        sug_info.system_time as u64,
-    );
+    state
+        .direction_history
+        .observe(decision.market_state, input.price, sug_info.time as u64);
 
     let execution =
         execution::evaluate_with_cascade(input, state, &snapshot, &sug_snapshot, &decision);

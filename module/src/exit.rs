@@ -564,11 +564,7 @@ fn record_tp_reprice(
     virtual_sl_hit: bool,
     extra: String,
 ) {
-    let Some(detected_at_ms) = input
-        .sug_info
-        .as_ref()
-        .map(|sug_info| sug_info.system_time as u64)
-    else {
+    let Some(detected_at_ms) = input.sug_info.as_ref().map(|sug_info| sug_info.time as u64) else {
         return;
     };
     state.tp_reprice_history.observe(
