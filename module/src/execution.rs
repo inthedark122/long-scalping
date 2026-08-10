@@ -354,7 +354,37 @@ pub fn evaluate_with_cascade(
     }
 
     let reason = entry_reason(decision).cloned();
+    let mrc_entry = matches!(reason.as_ref(), Some(EntryReason::MrcReclaim { .. }));
+    if let Some(EntryReason::MrcReclaim {
+        target_price,
+        stop_price,
+        ..
+    }) = reason.as_ref()
+    {
+        let direction = match entry_side {
+            PositionState::Long => 1,
+            PositionState::Short => -1,
+            PositionState::Flat => 0,
+        };
+        if !crate::detection::mrc_reclaim::valid_price_levels(
+            direction,
+            input.price,
+            *target_price,
+            *stop_price,
+            Some(input.symbol_info.price_tick_size),
+        ) {
+            return Some(ExecutionResult {
+                constraint: Some("mrc-invalid-exit-levels".to_string()),
+                ..Default::default()
+            });
+        }
+    }
     state.position.entry_reason = reason;
+    // The signal has now been consumed. If the LIMIT order remains unfilled,
+    // the reason must not be reopened on a later tick as a fresh entry.
+    if mrc_entry {
+        state.mrc_reclaim.pending_entry = None;
+    }
     let entry_price = entry_reason(decision)
         .map(|reason| reason.price())
         .unwrap_or(input.price);
@@ -415,7 +445,7 @@ pub fn evaluate_with_cascade(
     }
 
     let order_price = order_entry_price(input, entry_side, entry_price);
-    let market_mrc_entry = matches!(entry_reason(decision), Some(EntryReason::MrcReclaim { .. }));
+    let market_mrc_entry = mrc_entry;
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
             open_positions: vec![if market_mrc_entry {

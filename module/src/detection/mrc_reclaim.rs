@@ -181,6 +181,11 @@ pub fn observe_with_context(
     }
     let previous_price = state.last_price.replace(price);
     let mut observation = Observation::default();
+    // A reclaim is an event-driven signal. Do not carry an unfilled entry
+    // reason into a later tick: its MRC line and direction belong to the
+    // crossing that created it. A resting order keeps its reason in
+    // EngineState::position.entry_reason after submission/fill.
+    state.pending_entry = None;
     let small_ntps = ntps.is_some_and(|(value, range)| {
         range.is_some_and(|(min, max)| {
             value <= min || value as f64 <= min as f64 + (max - min) as f64 / 3.0
@@ -404,6 +409,25 @@ pub fn market_state(direction: i8) -> MarketState {
     }
 }
 
+/// Return the trade direction encoded by an MRC source -> target transition.
+/// This is deliberately derived from the reason itself, not from the latest
+/// crossing, because a pending order may outlive the crossing that created it.
+pub fn reason_direction(reason: &EntryReason) -> i8 {
+    let EntryReason::MrcReclaim {
+        source_line,
+        target_line,
+        ..
+    } = reason
+    else {
+        return 0;
+    };
+    match target_line.cmp(source_line) {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
 pub fn pending(state: &MrcReclaimState) -> Option<EntryReason> {
     state.pending_entry.clone()
 }
@@ -584,5 +608,44 @@ mod tests {
         state.transitions[4][5].count = 2;
         state.transitions[4][3].count = 1;
         assert_eq!(warmup_samples(&state), 2);
+    }
+
+    #[test]
+    fn reason_direction_comes_from_source_to_target_transition() {
+        let long = EntryReason::MrcReclaim {
+            price: 100.0,
+            target_price: 104.0,
+            stop_price: 96.0,
+            source_line: 4,
+            target_line: 5,
+            probability: 0.5,
+            estimated_time_ms: 0.0,
+        };
+        let short = EntryReason::MrcReclaim {
+            price: 100.0,
+            target_price: 96.0,
+            stop_price: 104.0,
+            source_line: 4,
+            target_line: 3,
+            probability: 0.5,
+            estimated_time_ms: 0.0,
+        };
+        assert_eq!(reason_direction(&long), 1);
+        assert_eq!(reason_direction(&short), -1);
+    }
+
+    #[test]
+    fn pending_entry_expires_without_a_new_crossing() {
+        let mut state = MrcReclaimState::default();
+        state.transitions[4][5].count = REQUIRED_SAMPLES;
+        let lines = [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0];
+
+        let first = observe(&mut state, &[event(4, 1, 1)], lines, 100.0, 1, 0.0);
+        assert!(first.entry.is_some());
+        assert!(state.pending_entry.is_some());
+
+        let second = observe(&mut state, &[], lines, 101.0, 2, 0.0);
+        assert!(second.entry.is_none());
+        assert!(state.pending_entry.is_none());
     }
 }

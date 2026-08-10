@@ -47,6 +47,11 @@ pub fn render(
             "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
         ),
+        format!(
+            "position={:?}@{}",
+            state.position.side,
+            fmt_price_tick(state.position.entry_price, tick_size)
+        ),
         format!("5m={:?}", regime.primary),
         format!("15m={:?}", regime.fallback),
         format!("15m_fb={}", regime.fallback_used),

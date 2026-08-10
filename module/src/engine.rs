@@ -714,8 +714,22 @@ fn process_realtime(
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     state.direction_source = "regime".to_string();
     state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
+    let mrc_reason_direction = mrc_observation
+        .as_ref()
+        .and_then(|observation| observation.entry.as_ref())
+        .map(mrc_reclaim::reason_direction)
+        .or_else(|| {
+            state
+                .mrc_reclaim
+                .pending_entry
+                .as_ref()
+                .map(mrc_reclaim::reason_direction)
+        });
     let entry_direction = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
-        mrc_reclaim::market_state(state.mrc_reclaim.last_direction)
+        mrc_reason_direction
+            .filter(|direction| *direction != 0)
+            .map(mrc_reclaim::market_state)
+            .unwrap_or_else(|| mrc_reclaim::market_state(state.mrc_reclaim.last_direction))
     } else {
         regime.confirmed
     };
