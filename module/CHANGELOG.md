@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.78
+
+MRC Reclaim exit validation release.
+
+- Migrate the MRC crossing research target/stop direction guard into the live strategy.
+- Reject MRC Reclaim entries whose TP or SL collapses to the entry after exchange tick normalization.
+- Keep invalid exit-level setups waiting instead of opening unprotected or zero-distance trades.
+
 # 1.0.77
 
 Event-time and volume resilience release.
