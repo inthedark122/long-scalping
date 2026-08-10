@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.73
+
+Universal virtual-trading and research release.
+
+- Consolidate MRC and movement research simulations on the shared virtual-trade simulator.
+- Add configurable limit/market fees, net PnL, drawdown, and position-level reporting.
+- Add MRC crossing analysis, volume analysis, and HTML research reports.
+
 # 1.0.72
 
 Zigzag data handling and crossed-entry pricing release.
