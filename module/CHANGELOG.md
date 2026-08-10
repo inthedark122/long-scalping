@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.77
+
+Event-time and volume resilience release.
+
+- Use market event time for strategy timing instead of processing/system time.
+- Treat missing `volume_50` fields as neutral values so incomplete volume data does not block indicator snapshots.
+
 # 1.0.76
 
 Indicator event recovery release.
