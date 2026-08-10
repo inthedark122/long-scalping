@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.76
+
+Indicator event recovery release.
+
+- Decode string and typed direction values consistently for ZigZag and SMC indicators.
+- Keep incremental timeframe updates from triggering extraction of unavailable timeframes when the cached snapshot is missing.
+- Preserve full initialization errors while preventing misleading higher-timeframe cascades.
+
 # 1.0.75
 
 Indicator extraction diagnostics release.
