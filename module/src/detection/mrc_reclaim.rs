@@ -118,6 +118,33 @@ fn target_for(
         .max_by_key(|(_, count)| *count)
 }
 
+/// Return the strongest learned transition from the current source line.
+/// MRC Reclaim needs one specific source -> target transition to reach the
+/// required sample count; total line crossings are not interchangeable with
+/// that value.
+pub fn warmup_samples(state: &MrcReclaimState) -> u32 {
+    let Some(source) = state
+        .last_line
+        .map(usize::from)
+        .filter(|source| *source < 9)
+    else {
+        return 0;
+    };
+    let use_scenario = state.last_event_small_ntps
+        && state.last_event_frequent_nearest
+        && state.scenario_source_counts[source] > 0;
+    let matrix = if use_scenario {
+        &state.scenario_transitions
+    } else {
+        &state.transitions
+    };
+    matrix[source]
+        .iter()
+        .map(|stats| stats.count)
+        .max()
+        .unwrap_or(0)
+}
+
 fn push_recent(state: &mut MrcReclaimState, line: u8, now_ms: u64) {
     if state.recent_len == state.recent_lines.len() {
         state.recent_lines.copy_within(1.., 0);
@@ -284,7 +311,7 @@ pub fn observe_with_context(
         let use_scenario =
             small_ntps && frequent_nearest_crossings && state.scenario_source_counts[source] > 0;
         let Some((target, count)) = target_for(state, source, event.direction, use_scenario) else {
-            observation.samples = state.source_counts[source];
+            observation.samples = warmup_samples(state);
             observation.wait_reason = Some("mrc-warmup".to_string());
             observation.events.push(ReclaimEvent {
                 line_idx: event.line_idx,
@@ -546,5 +573,16 @@ mod tests {
             Some(0.0001),
         ));
         assert!(valid_price_levels(1, 0.1182, 0.1183, 0.1181, Some(0.0001),));
+    }
+
+    #[test]
+    fn warmup_samples_reports_the_strongest_current_transition() {
+        let mut state = MrcReclaimState {
+            last_line: Some(4),
+            ..Default::default()
+        };
+        state.transitions[4][5].count = 2;
+        state.transitions[4][3].count = 1;
+        assert_eq!(warmup_samples(&state), 2);
     }
 }

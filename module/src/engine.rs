@@ -735,13 +735,13 @@ fn process_realtime(
                 };
                 let valid = match reason {
                     crate::model::EntryReason::MrcReclaim {
-                        price,
+                        price: _,
                         target_price,
                         stop_price,
                         ..
                     } => mrc_reclaim::valid_price_levels(
                         direction,
-                        price,
+                        input.price,
                         target_price,
                         stop_price,
                         Some(input.symbol_info.price_tick_size),
@@ -767,7 +767,10 @@ fn process_realtime(
             } else if let Some(wait_reason) = observation.wait_reason {
                 gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
                     reason: wait_reason,
-                    solutions: Vec::new(),
+                    solutions: vec![crate::model::EntryWaitSolution::WaitForSamples {
+                        required: mrc_reclaim::REQUIRED_SAMPLES,
+                        current: mrc_reclaim::warmup_samples(&state.mrc_reclaim),
+                    }],
                     notes: vec!["MRC transition history is not entry-ready".to_string()],
                 });
             }

@@ -34,7 +34,7 @@ pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
         reason: "mrc-warmup".to_string(),
         solutions: vec![EntryWaitSolution::WaitForSamples {
             required: crate::detection::mrc_reclaim::REQUIRED_SAMPLES,
-            current: 0,
+            current: crate::detection::mrc_reclaim::warmup_samples(&state.mrc_reclaim),
         }],
         notes: vec!["waiting for learned MRC line transitions".to_string()],
     })

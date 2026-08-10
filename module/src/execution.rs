@@ -7,7 +7,7 @@ use crate::model::SugInfoSnapshot;
 use crate::model::{
     EntryGate, EntryReason, ExitMode, MarketState, PositionState, TpControl, TradeDecision,
 };
-use crate::orders::{close, limit_open, tp_mark, update_position};
+use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState, MartingaleRuntime};
 use lte_strategy_bridge::abi::{
@@ -415,39 +415,74 @@ pub fn evaluate_with_cascade(
     }
 
     let order_price = order_entry_price(input, entry_side, entry_price);
+    let market_mrc_entry = matches!(entry_reason(decision), Some(EntryReason::MrcReclaim { .. }));
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
-            open_positions: vec![limit_open(
-                Direction::Long,
-                amount,
-                order_price,
-                &open_note(
+            open_positions: vec![if market_mrc_entry {
+                market_open(
+                    Direction::Long,
+                    amount,
+                    input.price,
+                    &open_note(
+                        Direction::Long,
+                        amount,
+                        input.price,
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )
+            } else {
+                limit_open(
                     Direction::Long,
                     amount,
                     order_price,
-                    input.price,
-                    tick_size(input),
-                    decision,
-                    state,
-                ),
-            )],
+                    &open_note(
+                        Direction::Long,
+                        amount,
+                        order_price,
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )
+            }],
             ..Default::default()
         }),
         MarketState::Short => Some(ExecutionResult {
-            open_positions: vec![limit_open(
-                Direction::Short,
-                amount,
-                order_price,
-                &open_note(
+            open_positions: vec![if market_mrc_entry {
+                market_open(
+                    Direction::Short,
+                    amount,
+                    input.price,
+                    &open_note(
+                        Direction::Short,
+                        amount,
+                        input.price,
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )
+            } else {
+                limit_open(
                     Direction::Short,
                     amount,
                     order_price,
-                    input.price,
-                    tick_size(input),
-                    decision,
-                    state,
-                ),
-            )],
+                    &open_note(
+                        Direction::Short,
+                        amount,
+                        order_price,
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                    ),
+                )
+            }],
             ..Default::default()
         }),
         _ => None,
@@ -622,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn mrc_reclaim_uses_the_existing_two_tick_limit_entry_convention() {
+    fn mrc_reclaim_uses_market_entry() {
         let mut state = EngineState::default();
         let mut input = input();
         input.symbol_info.price_tick_size = 0.01;
@@ -635,7 +670,11 @@ mod tests {
         )
         .expect("MRC entry should be executable");
         assert_eq!(result.open_positions.len(), 1);
-        assert_eq!(result.open_positions[0].enter_price, Some(99.98));
+        assert_eq!(
+            result.open_positions[0].order_type,
+            lte_strategy_bridge::abi::ModuleOrderType::Market
+        );
+        assert_eq!(result.open_positions[0].enter_price, Some(100.0));
         assert!(result.open_positions[0]
             .note
             .contains("strategy=mrc-reclaim"));
