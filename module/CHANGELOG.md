@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.75
+
+Indicator extraction diagnostics release.
+
+- Collect all required indicator errors across fields and timeframes before returning the extraction failure.
+- Preserve valid `Direction::Both` as zero without confusing it with missing data.
+- Require SMC direction and swing direction while preserving genuinely optional fields as absent values.
+
 # 1.0.73
 
 Universal virtual-trading and research release.

@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.73",
+          "module_version": "1.0.75",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.73"
+              "module_version": "1.0.75"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.73 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim uses learned MRC line transitions with single-order execution and adjacent-line TP/SL.",
+          "description": "Start the 1.0.75 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim uses learned MRC line transitions with single-order execution and adjacent-line TP/SL.",
           "name": "Start",
           "params": [
             {
@@ -116,12 +116,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.73",
+          "module_version": "1.0.75",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.73"
+              "module_version": "1.0.75"
             }
           }
         }
@@ -129,7 +129,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.73 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim uses learned MRC line transitions with single-order execution and adjacent-line TP/SL.",
+          "description": "Start the 1.0.75 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim uses learned MRC line transitions with single-order execution and adjacent-line TP/SL.",
           "name": "Start",
           "params": [
             {
