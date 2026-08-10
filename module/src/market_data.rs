@@ -25,6 +25,12 @@ fn timeframe_from_secs(timeframe: i64) -> Option<TimeframeSec> {
     }
 }
 
+fn has_all_timeframes(timeframes: &[i64]) -> bool {
+    [60, 300, 900, 3600]
+        .iter()
+        .all(|timeframe| timeframes.contains(timeframe))
+}
+
 fn read_float(
     history: &IndicatorHistory,
     timeframe: TimeframeSec,
@@ -601,6 +607,16 @@ pub fn merge_indicator_snapshot(
         if timeframes.is_empty() {
             return Err("missing-cached-snapshot no-timeframe-update".to_string());
         }
+        if !has_all_timeframes(timeframes) {
+            return Err(format!(
+                "missing-cached-snapshot incremental-indicators tfs=[{}]",
+                timeframes
+                    .iter()
+                    .map(|timeframe| timeframe.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
         return build_indicator_snapshot(history, raw);
     };
     let mut snapshot = *base;
@@ -795,6 +811,17 @@ mod tests {
                 assert!(err.contains("tf=3600"));
             }
         }
+    }
+
+    #[test]
+    fn incremental_update_does_not_extract_unavailable_timeframes_without_cache() {
+        let (history, raw) = mk_history();
+        let error = merge_indicator_snapshot(None, &history, &raw, &[60])
+            .expect_err("partial incremental update needs an existing snapshot");
+        assert_eq!(
+            error,
+            "missing-cached-snapshot incremental-indicators tfs=[60]"
+        );
     }
 
     #[test]
