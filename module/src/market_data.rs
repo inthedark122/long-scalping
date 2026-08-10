@@ -82,17 +82,31 @@ fn read_direction(
         Some(ModuleIndicatorValue::Direction(Direction::Long)) => Ok(1),
         Some(ModuleIndicatorValue::Direction(Direction::Short)) => Ok(-1),
         Some(ModuleIndicatorValue::Direction(Direction::Both)) => Ok(0),
-        Some(value) => Err(format!(
-            "invalid-direction tf={} indicator={} field=Direction value={:?}",
-            timeframe.as_i64(),
-            indicator.as_name(),
-            value
-        )),
+        Some(value) => decode_direction(value).map_err(|_| {
+            format!(
+                "invalid-direction tf={} indicator={} field=Direction value={:?}",
+                timeframe.as_i64(),
+                indicator.as_name(),
+                value
+            )
+        }),
         None => Err(format!(
             "missing-direction tf={} indicator={} field=Direction",
             timeframe.as_i64(),
             indicator.as_name()
         )),
+    }
+}
+
+fn decode_direction(value: &ModuleIndicatorValue) -> Result<i8, ()> {
+    match value {
+        ModuleIndicatorValue::Direction(Direction::Long) => Ok(1),
+        ModuleIndicatorValue::Direction(Direction::Short) => Ok(-1),
+        ModuleIndicatorValue::Direction(Direction::Both) => Ok(0),
+        ModuleIndicatorValue::String(value) if value.eq_ignore_ascii_case("LONG") => Ok(1),
+        ModuleIndicatorValue::String(value) if value.eq_ignore_ascii_case("SHORT") => Ok(-1),
+        ModuleIndicatorValue::String(value) if value.eq_ignore_ascii_case("BOTH") => Ok(0),
+        _ => Err(()),
     }
 }
 
@@ -220,16 +234,14 @@ fn read_optional_raw_direction(
         return Ok(None);
     };
 
-    match value {
-        ModuleIndicatorValue::Direction(Direction::Long) => Ok(Some(1)),
-        ModuleIndicatorValue::Direction(Direction::Short) => Ok(Some(-1)),
-        ModuleIndicatorValue::Direction(Direction::Both) => Ok(Some(0)),
-        other => Err(format!(
+    match decode_direction(value) {
+        Ok(direction) => Ok(Some(direction)),
+        Err(()) => Err(format!(
             "invalid-raw-direction tf={} indicator={} field={} value={:?}",
             timeframe.as_i64(),
             indicator,
             field,
-            other
+            value
         )),
     }
 }
@@ -254,16 +266,14 @@ fn read_raw_direction(
             )
         })?;
 
-    match value {
-        ModuleIndicatorValue::Direction(Direction::Long) => Ok(1),
-        ModuleIndicatorValue::Direction(Direction::Short) => Ok(-1),
-        ModuleIndicatorValue::Direction(Direction::Both) => Ok(0),
-        other => Err(format!(
+    match decode_direction(value) {
+        Ok(direction) => Ok(direction),
+        Err(()) => Err(format!(
             "invalid-raw-direction tf={} indicator={} field={} value={:?}",
             timeframe.as_i64(),
             indicator,
             field,
-            other
+            value
         )),
     }
 }
@@ -815,6 +825,50 @@ mod tests {
             }
             Err(error) => panic!("typed Both should be valid: {error}"),
         }
+    }
+
+    #[test]
+    fn string_directions_are_decoded() {
+        let (mut history, mut raw) = mk_history();
+        for candles in raw.values_mut() {
+            for candle in candles {
+                candle.insert(
+                    "zigzagtrend".to_string(),
+                    HashMap::from([
+                        (
+                            "Direction".to_string(),
+                            ModuleIndicatorValue::String("BOTH".to_string()),
+                        ),
+                        ("BreakPrice".to_string(), ModuleIndicatorValue::Float(100.0)),
+                    ]),
+                );
+                candle.insert(
+                    "smc".to_string(),
+                    HashMap::from([
+                        (
+                            "Direction".to_string(),
+                            ModuleIndicatorValue::String("LONG".to_string()),
+                        ),
+                        (
+                            "DirectionSwing".to_string(),
+                            ModuleIndicatorValue::String("SHORT".to_string()),
+                        ),
+                        (
+                            "OBDirection".to_string(),
+                            ModuleIndicatorValue::String("BOTH".to_string()),
+                        ),
+                    ]),
+                );
+            }
+        }
+        history.init(&raw);
+
+        let snapshot =
+            build_indicator_snapshot(&history, &raw).expect("string directions should be decoded");
+        assert_eq!(snapshot.tf1m.zz_dir, 0);
+        assert_eq!(snapshot.tf1m.smc.direction, 1);
+        assert_eq!(snapshot.tf1m.smc.direction_swing, -1);
+        assert_eq!(snapshot.tf1m.smc.ob_direction, Some(0));
     }
 
     #[test]
