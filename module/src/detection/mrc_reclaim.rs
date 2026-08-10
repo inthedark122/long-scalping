@@ -22,6 +22,44 @@ pub const LINE_LABELS: [&str; 9] = [
     "up_big",
 ];
 
+/// Check that a learned MRC setup has a usable target and stop on the
+/// correct side of the entry. When a tick size is supplied, compare the
+/// prices after exchange tick normalization as well; two distinct raw MRC
+/// lines can otherwise become the same executable price.
+pub fn valid_price_levels(
+    direction: i8,
+    entry_price: f64,
+    target_price: f64,
+    stop_price: f64,
+    tick_size: Option<f64>,
+) -> bool {
+    if !matches!(direction, 1 | -1)
+        || !entry_price.is_finite()
+        || !target_price.is_finite()
+        || !stop_price.is_finite()
+        || entry_price <= 0.0
+        || target_price <= 0.0
+        || stop_price <= 0.0
+    {
+        return false;
+    }
+
+    if let Some(tick_size) = tick_size.filter(|tick| tick.is_finite() && *tick > 0.0) {
+        let entry_ticks = (entry_price / tick_size).round();
+        let target_ticks = (target_price / tick_size).round();
+        let stop_ticks = (stop_price / tick_size).round();
+        if direction > 0 {
+            target_ticks > entry_ticks && stop_ticks < entry_ticks
+        } else {
+            target_ticks < entry_ticks && stop_ticks > entry_ticks
+        }
+    } else if direction > 0 {
+        target_price > entry_price && stop_price < entry_price
+    } else {
+        target_price < entry_price && stop_price > entry_price
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReclaimEvent {
     pub line_idx: u8,
@@ -488,5 +526,25 @@ mod tests {
         );
         assert!(result.wait_reason.is_none());
         assert_eq!(state.wait_direction, 0);
+    }
+
+    #[test]
+    fn price_levels_require_directional_separation() {
+        assert!(valid_price_levels(1, 100.0, 104.0, 96.0, None));
+        assert!(valid_price_levels(-1, 100.0, 96.0, 104.0, None));
+        assert!(!valid_price_levels(1, 100.0, 100.0, 96.0, None));
+        assert!(!valid_price_levels(-1, 100.0, 96.0, 100.0, None));
+    }
+
+    #[test]
+    fn price_levels_require_separation_after_tick_normalization() {
+        assert!(!valid_price_levels(
+            1,
+            0.1182,
+            0.11824,
+            0.11816,
+            Some(0.0001),
+        ));
+        assert!(valid_price_levels(1, 0.1182, 0.1183, 0.1181, Some(0.0001),));
     }
 }

@@ -171,15 +171,13 @@ impl Analyzer {
         let entry_price = lines[event.line];
         let target_price = lines[target_line];
         let stop_price = lines[stop_line];
-        let valid_prices = entry_price.is_finite()
-            && target_price.is_finite()
-            && stop_price.is_finite()
-            && if event.direction > 0 {
-                target_price > entry_price && stop_price < entry_price
-            } else {
-                target_price < entry_price && stop_price > entry_price
-            };
-        if !valid_prices {
+        if !mrc_reclaim::valid_price_levels(
+            event.direction,
+            entry_price,
+            target_price,
+            stop_price,
+            None,
+        ) {
             return;
         }
         self.trades.open(TradeSetup::with_levels(

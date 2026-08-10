@@ -728,13 +728,42 @@ fn process_realtime(
         let mut gate = prediction::mrc_reclaim_entry_gate(state);
         if let Some(observation) = mrc_observation {
             if let Some(reason) = observation.entry {
-                gate = crate::model::EntryGate::Open {
-                    notes: vec![
-                        "strategy=mrc-reclaim".to_string(),
-                        format!("samples={}", observation.samples),
-                    ],
-                    reason: crate::model::EntryOpenReason::Entry(reason),
+                let direction = match entry_direction {
+                    crate::model::MarketState::Long => 1,
+                    crate::model::MarketState::Short => -1,
+                    crate::model::MarketState::Sideways => 0,
                 };
+                let valid = match reason {
+                    crate::model::EntryReason::MrcReclaim {
+                        price,
+                        target_price,
+                        stop_price,
+                        ..
+                    } => mrc_reclaim::valid_price_levels(
+                        direction,
+                        price,
+                        target_price,
+                        stop_price,
+                        Some(input.symbol_info.price_tick_size),
+                    ),
+                    _ => false,
+                };
+                if valid {
+                    gate = crate::model::EntryGate::Open {
+                        notes: vec![
+                            "strategy=mrc-reclaim".to_string(),
+                            format!("samples={}", observation.samples),
+                        ],
+                        reason: crate::model::EntryOpenReason::Entry(reason),
+                    };
+                } else {
+                    state.mrc_reclaim.pending_entry = None;
+                    gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
+                        reason: "mrc-invalid-exit-levels".to_string(),
+                        solutions: Vec::new(),
+                        notes: vec!["MRC target/stop collapse to the entry tick".to_string()],
+                    });
+                }
             } else if let Some(wait_reason) = observation.wait_reason {
                 gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
                     reason: wait_reason,
