@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./bot-groups.schema.json",
+  "title": "LTE Bot Groups Release Configuration",
+  "description": "Schema for the project's tracked LTE bot-group release configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bot_groups"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "bot_groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/bot_group"
+      }
+    }
+  },
+  "$defs": {
+    "bot_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "settings", "signal_actions", "symbols", "release"],
+      "properties": {
+        "bot_group_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "settings": {
+          "$ref": "#/$defs/settings"
+        },
+        "signal_actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/signal_action"
+          }
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/symbol"
+          }
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy"],
+      "properties": {
+        "margin_mode": {
+          "type": "string"
+        },
+        "margin_leverage": {
+          "type": "number"
+        },
+        "signal": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "code": { "type": "string" },
+            "name": { "type": "string" },
+            "min_tf": { "type": "number" }
+          }
+        },
+        "strategy": {
+          "$ref": "#/$defs/strategy"
+        }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "max_open_amount", "module_id", "module_version", "name"],
+      "properties": {
+        "direction": { "type": "string" },
+        "max_open_amount": { "type": "number" },
+        "module_id": { "type": "string", "minLength": 1 },
+        "module_version": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "on_actions": {
+          "type": "array"
+        },
+        "professional": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dynamic_module"],
+          "properties": {
+            "dynamic_module": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["module_version"],
+              "properties": {
+                "module_version": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "signal_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "name", "description", "params"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["code", "name", "variant"],
+            "properties": {
+              "code": { "type": "string" },
+              "name": { "type": "string" },
+              "variant": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol_key"],
+      "properties": {
+        "symbol_key": { "type": "string", "minLength": 1 },
+        "leverage": { "type": ["number", "null"] }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "update_module_version",
+        "refresh_start_action_description",
+        "create_if_missing"
+      ],
+      "properties": {
+        "update_module_version": { "type": "boolean" },
+        "refresh_start_action_description": { "type": "boolean" },
+        "start_action_code": { "type": "string" },
+        "create_if_missing": { "type": "boolean" }
+      }
+    }
+  }
+}

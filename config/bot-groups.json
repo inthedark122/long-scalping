@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "description": "Tracked LTE bot-group settings used by the module release workflow.",
+  "bot_groups": [
+    {
+      "bot_group_id": 46,
+      "name": "[SIM] Structural scalping",
+      "settings": {
+        "margin_leverage": 100,
+        "margin_mode": "Cross",
+        "signal": {
+          "code": "start",
+          "min_tf": 60,
+          "name": "Action"
+        },
+        "strategy": {
+          "direction": "BOTH",
+          "max_open_amount": 1000,
+          "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
+          "module_version": "1.0.73",
+          "name": "DynamicModule",
+          "on_actions": [],
+          "professional": {
+            "dynamic_module": {
+              "module_version": "1.0.73"
+            }
+          }
+        }
+      },
+      "signal_actions": [
+        {
+          "code": "start",
+          "description": "Start the 1.0.73 release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. Missing zigzagtrend BuyPrice/SellPrice values are preserved as empty optional extrema when no local top or bottom exists in the processing window. Crossed entry prices use a two-tick offset from the current market while preserving the original entry reason.",
+          "name": "Start",
+          "params": [
+            {
+              "code": "cap_init",
+              "default": 2,
+              "description": "Percent of max_amount reserved for the internal trading budget.",
+              "name": "Initial budget %",
+              "variant": "Number"
+            },
+            {
+              "code": "trading_amount",
+              "default": 50,
+              "description": "Normal entry size as a percent of the deployable budget. Clamped to 10-100.",
+              "name": "Trading amount %",
+              "variant": "Number"
+            },
+            {
+              "code": "min_tp_percent",
+              "default": 0,
+              "description": "Minimum structural TP distance. The larger of this value and the cascade average is used.",
+              "name": "Minimum TP %",
+              "variant": "Number"
+            },
+            {
+              "code": "trade_mode",
+              "default": 0,
+              "description": "Choose single-order execution or martingale ladder execution.",
+              "name": "Trade mode",
+              "options": [
+                { "label": "Single", "value": 0 },
+                { "label": "Martingale", "value": 1 }
+              ],
+              "variant": "Select"
+            },
+            {
+              "code": "tp_control",
+              "default": 0,
+              "description": "Normal keeps the current TP behavior. Trailing stop uses only a favorable-only virtual SL and places a recovery TP two ticks beyond price after the SL is crossed.",
+              "name": "TP control",
+              "options": [
+                { "label": "Normal", "value": 0 },
+                { "label": "Trailing stop", "value": 1 }
+              ],
+              "variant": "Select"
+            }
+          ]
+        }
+      ],
+      "symbols": [
+        { "leverage": 10, "symbol_key": "OKX#BSB-USDT-SWAP#SWAP" },
+        { "leverage": 10, "symbol_key": "OKX#BILL-USDT-SWAP#SWAP" }
+      ],
+      "release": {
+        "update_module_version": true,
+        "refresh_start_action_description": true,
+        "start_action_code": "start",
+        "create_if_missing": false
+      }
+    },
+    {
+      "bot_group_id": 47,
+      "name": "[PROD] Structural scalping",
+      "settings": {
+        "margin_leverage": 100,
+        "margin_mode": "Cross",
+        "signal": {
+          "code": "start",
+          "min_tf": 60,
+          "name": "Action"
+        },
+        "strategy": {
+          "direction": "BOTH",
+          "max_open_amount": 500,
+          "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
+          "module_version": "1.0.73",
+          "name": "DynamicModule",
+          "on_actions": [],
+          "professional": {
+            "dynamic_module": {
+              "module_version": "1.0.73"
+            }
+          }
+        }
+      },
+      "signal_actions": [
+        {
+          "code": "start",
+          "description": "Start the 1.0.73 release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. Missing zigzagtrend BuyPrice/SellPrice values are preserved as empty optional extrema when no local top or bottom exists in the processing window. Crossed entry prices use a two-tick offset from the current market while preserving the original entry reason.",
+          "name": "Start",
+          "params": [
+            {
+              "code": "cap_init",
+              "default": 2,
+              "description": "Percent of max_amount reserved for the internal trading budget.",
+              "name": "Initial budget %",
+              "variant": "Number"
+            },
+            {
+              "code": "trading_amount",
+              "default": 50,
+              "description": "Normal entry size as a percent of the deployable budget. Clamped to 10-100.",
+              "name": "Trading amount %",
+              "variant": "Number"
+            },
+            {
+              "code": "min_tp_percent",
+              "default": 0,
+              "description": "Minimum structural TP distance. The larger of this value and the cascade average is used.",
+              "name": "Minimum TP %",
+              "variant": "Number"
+            },
+            {
+              "code": "trade_mode",
+              "default": 0,
+              "description": "Choose single-order execution or martingale ladder execution.",
+              "name": "Trade mode",
+              "options": [
+                { "label": "Single", "value": 0 },
+                { "label": "Martingale", "value": 1 }
+              ],
+              "variant": "Select"
+            },
+            {
+              "code": "tp_control",
+              "default": 0,
+              "description": "Normal keeps the current TP behavior. Trailing stop uses only a favorable-only virtual SL and places a recovery TP two ticks beyond price after the SL is crossed.",
+              "name": "TP control",
+              "options": [
+                { "label": "Normal", "value": 0 },
+                { "label": "Trailing stop", "value": 1 }
+              ],
+              "variant": "Select"
+            }
+          ]
+        }
+      ],
+      "symbols": [],
+      "release": {
+        "update_module_version": true,
+        "refresh_start_action_description": true,
+        "start_action_code": "start",
+        "create_if_missing": false
+      }
+    }
+  ]
+}
