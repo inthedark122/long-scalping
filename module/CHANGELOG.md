@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.80
+
+MRC Reclaim stale-entry protection release.
+
+- Consume MRC crossing entry reasons once instead of reusing unfilled signals on later ticks.
+- Derive entry direction from the stored source-to-target transition so stale signals cannot reverse TP/SL orientation.
+- Expose the internal position entry price in realtime debug output and keep final TP/SL validation at execution.
+
 # 1.0.78
 
 MRC Reclaim exit validation release.
