@@ -10,67 +10,21 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-#[path = "../builder/mod.rs"]
-mod builder;
-#[path = "../detection/cascade.rs"]
-mod cascade_impl;
-#[path = "../exit.rs"]
-mod exit_impl;
-#[path = "../format.rs"]
-mod format;
-#[path = "../detection/levels.rs"]
-mod levels_impl;
-#[path = "../martingale.rs"]
-mod martingale;
-#[path = "../model.rs"]
-mod model;
-#[path = "../detection/mrc.rs"]
-mod mrc_impl;
-#[path = "../observer/mod.rs"]
-mod observer;
-#[path = "../orders.rs"]
-mod orders;
-#[path = "../prediction.rs"]
-mod prediction_impl;
-#[path = "../risk_control.rs"]
-mod risk_control;
-#[path = "../detection/sideways.rs"]
-mod sideways_impl;
-#[path = "../state.rs"]
-mod state;
-#[path = "../stop_loss.rs"]
-mod stop_loss_impl;
-mod detection {
-    pub mod mrc {
-        pub use crate::mrc_impl::*;
-    }
-    pub mod levels {
-        pub use crate::levels_impl::*;
-    }
-    pub mod cascade {
-        pub use crate::cascade_impl::*;
-    }
-    pub mod sideways {
-        pub use crate::sideways_impl::*;
-    }
-}
-mod exit {
-    pub use crate::exit_impl::*;
-}
-mod prediction {
-    pub use crate::prediction_impl::*;
-}
-mod stop_loss {
-    pub use crate::stop_loss_impl::*;
-}
+use long_scalping::detection::cascade::{self, CascadeSignal, MovementPhase};
+use long_scalping::state::CascadeState;
 
-use detection::cascade::{self, CascadeSignal, MovementPhase};
-use model::Candle;
-use state::CascadeState;
+mod research;
 
-const BASE_URL: &str = "https://okx.tg.trading.sinvoid.me/api/indicators";
-const BASE_HOST: &str = "okx.tg.trading.sinvoid.me";
-const BASE_FALLBACK_IP: &str = "65.109.35.177";
+use research::data::{
+    f64_or, fetch_candle_history, fetch_full_history, fetch_history, get_i64, CandleRow,
+};
+use research::movement::{
+    block_pct, candle_pct, cascade_window, movement_signal, pct_range, to_candle,
+};
+use research::virtual_trade::{
+    setup_from_candle, TradeEvent, VirtualTradeResult, VirtualTradeSimulator, VirtualTradeSummary,
+};
+
 const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -92,19 +46,6 @@ fn install_sigint_handler() {
 
 #[cfg(not(unix))]
 fn install_sigint_handler() {}
-#[derive(Debug, Clone)]
-struct CandleRow {
-    time_ms: i64,
-    open: f64,
-    high: f64,
-    low: f64,
-    close: f64,
-    zz_dir: i8,
-    zz_break_price: f64,
-    gain: f64,
-    ntps: i64,
-}
-
 #[derive(Debug, Clone)]
 struct CascadeChartPoint {
     candle: CandleRow,
@@ -150,35 +91,6 @@ struct PendingEntry {
     reason: String,
 }
 
-#[derive(Debug, Clone)]
-struct VirtualTrade {
-    side: i8,
-    entry_pct: f64,
-    tp_pct: f64,
-    sl_pct: f64,
-    reason: String,
-    max_favorable_pct: f64,
-    max_adverse_pct: f64,
-}
-
-#[derive(Debug, Clone)]
-struct TradeResult {
-    side: i8,
-    pnl_pct: f64,
-    mfe_pct: f64,
-    mae_pct: f64,
-    reason: String,
-}
-
-#[derive(Debug, Clone)]
-struct TradeEvent {
-    kind: &'static str,
-    side: &'static str,
-    time_ms: i64,
-    reason: String,
-    pnl_pct: f64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidewaySource {
     OrderBlock,
@@ -216,14 +128,6 @@ struct SidewayProbe {
     breakout_dir: i8,
 }
 
-fn pct_range(lo: f64, hi: f64, price: f64) -> f64 {
-    if price <= 0.0 {
-        0.0
-    } else {
-        ((hi - lo).abs() / price) * 100.0
-    }
-}
-
 fn fmt_time(ms: i64) -> String {
     if ms <= 0 {
         return "?".to_string();
@@ -238,76 +142,6 @@ fn fmt_time(ms: i64) -> String {
         (rem % 3_600) / 60,
         rem % 60
     )
-}
-
-fn dir_to_int(value: Option<&Value>) -> i8 {
-    match value
-        .and_then(Value::as_str)
-        .map(|s| s.to_ascii_uppercase())
-    {
-        Some(s) if s == "LONG" => 1,
-        Some(s) if s == "SHORT" => -1,
-        _ => 0,
-    }
-}
-
-fn f64_or(obj: &Value, primary: &str, fallback: &str) -> f64 {
-    let parse = |v: &Value| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    };
-    obj.get(primary)
-        .and_then(parse)
-        .or_else(|| obj.get(fallback).and_then(parse))
-        .unwrap_or(0.0)
-}
-
-fn get_i64(map: &Value, key: &str) -> i64 {
-    map.get(key)
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-        })
-        .unwrap_or(0)
-}
-
-fn candle_pct(candle: &CandleRow) -> f64 {
-    pct_range(candle.low, candle.high, candle.close)
-}
-
-fn block_pct(size: f64, price: f64) -> f64 {
-    if price <= 0.0 {
-        0.0
-    } else {
-        (size.abs() / price) * 100.0
-    }
-}
-
-fn encode_symbol_key(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(ch),
-            _ => out.push_str(&format!("%{:02X}", ch as u32)),
-        }
-    }
-    out
-}
-
-fn resolve_host_ip() -> Option<String> {
-    let output = Command::new("getent")
-        .args(["hosts", BASE_HOST])
-        .output()
-        .ok();
-    let ip = output
-        .and_then(|out| {
-            if !out.status.success() {
-                return None;
-            }
-            String::from_utf8(out.stdout).ok()
-        })
-        .and_then(|text| text.split_whitespace().next().map(|ip| ip.to_string()));
-    Some(ip.unwrap_or_else(|| BASE_FALLBACK_IP.to_string()))
 }
 
 fn candle_range(row: &CandleRow) -> f64 {
@@ -653,28 +487,6 @@ fn print_sideway_summary(label: &str, probes: &[SidewayProbe]) {
         avg_short_mfe,
         avg_short_mae
     );
-}
-
-fn cascade_window(state: &CascadeState, price: f64) -> String {
-    let window = cascade::sample_window(state);
-    if window.is_empty() {
-        return "[]".to_string();
-    }
-
-    let values = window
-        .into_iter()
-        .map(|size| format!("{:.4}%", block_pct(size, price)))
-        .collect::<Vec<_>>();
-    format!("[{}]", values.join(", "))
-}
-
-fn to_candle(row: &CandleRow) -> Candle {
-    Candle {
-        open: row.open,
-        high: row.high,
-        low: row.low,
-        close: row.close,
-    }
 }
 
 fn chart_points(candles: &[CandleRow]) -> Vec<CascadeChartPoint> {
@@ -1080,144 +892,6 @@ fn render_cascade_svg(
     Ok(())
 }
 
-fn movement_signal(signal: &CascadeSignal) -> &'static str {
-    if signal.samples < 3 || signal.average_size <= 0.0 || signal.dir == 0 {
-        return if signal.phase == MovementPhase::Starting {
-            "start"
-        } else {
-            "building"
-        };
-    }
-    match signal.phase {
-        MovementPhase::Starting => "start",
-        MovementPhase::Reversal => "reverse-ready",
-        MovementPhase::Mature if signal.strength >= 1.3 => "reverse-ready",
-        MovementPhase::CounterMove if signal.strength <= 0.8 => "safe-continuation",
-        MovementPhase::CounterMove => "counter-move",
-        MovementPhase::Building => "building",
-        MovementPhase::Mature => "mature",
-        MovementPhase::Unknown => "building",
-    }
-}
-
-fn best_fill(candle: &CandleRow, side: i8) -> f64 {
-    if side > 0 {
-        candle.low
-    } else if side < 0 {
-        candle.high
-    } else {
-        candle.close
-    }
-}
-
-fn open_virtual_trade(
-    state: &CascadeState,
-    candle: &CandleRow,
-    side: i8,
-    reason: &str,
-    tp_mult: f64,
-    sl_mult: f64,
-) -> Option<VirtualTrade> {
-    let tp_base = cascade::cascade_take_profit_distance(state).unwrap_or(state.avg_size);
-    if side == 0 || tp_base <= 0.0 {
-        return None;
-    }
-    let entry_pct = best_fill(candle, side);
-    let (tp_pct, sl_pct) = if side > 0 {
-        (entry_pct + tp_base * tp_mult, entry_pct - tp_base * sl_mult)
-    } else {
-        (entry_pct - tp_base * tp_mult, entry_pct + tp_base * sl_mult)
-    };
-    Some(VirtualTrade {
-        side,
-        entry_pct,
-        tp_pct,
-        sl_pct,
-        reason: reason.to_string(),
-        max_favorable_pct: 0.0,
-        max_adverse_pct: 0.0,
-    })
-}
-
-fn finalize_trade(
-    trade: &VirtualTrade,
-    exit_pct: f64,
-    reason: &str,
-    _exit_time_ms: i64,
-) -> TradeResult {
-    let (pnl_pct, mfe_pct, mae_pct) = if trade.side > 0 {
-        (
-            ((exit_pct - trade.entry_pct) / trade.entry_pct) * 100.0,
-            ((trade.max_favorable_pct) / trade.entry_pct) * 100.0,
-            ((trade.max_adverse_pct.abs()) / trade.entry_pct) * 100.0,
-        )
-    } else {
-        (
-            ((trade.entry_pct - exit_pct) / trade.entry_pct) * 100.0,
-            ((trade.max_favorable_pct) / trade.entry_pct) * 100.0,
-            ((trade.max_adverse_pct.abs()) / trade.entry_pct) * 100.0,
-        )
-    };
-    TradeResult {
-        side: trade.side,
-        pnl_pct,
-        mfe_pct,
-        mae_pct,
-        reason: reason.to_string(),
-    }
-}
-
-fn summarize_results(results: &[TradeResult]) -> String {
-    if results.is_empty() {
-        return "no trades".to_string();
-    }
-    let wins: Vec<&TradeResult> = results.iter().filter(|r| r.pnl_pct > 0.0).collect();
-    let losses: Vec<&TradeResult> = results.iter().filter(|r| r.pnl_pct <= 0.0).collect();
-    let avg_win = if wins.is_empty() {
-        0.0
-    } else {
-        wins.iter().map(|r| r.pnl_pct).sum::<f64>() / wins.len() as f64
-    };
-    let avg_loss = if losses.is_empty() {
-        0.0
-    } else {
-        losses.iter().map(|r| r.pnl_pct).sum::<f64>() / losses.len() as f64
-    };
-    let avg_mfe = results.iter().map(|r| r.mfe_pct).sum::<f64>() / results.len() as f64;
-    let avg_mae = results.iter().map(|r| r.mae_pct).sum::<f64>() / results.len() as f64;
-    format!(
-        "trades={} win_rate={:.1}% avg_win={:.3}% avg_loss={:.3}% avg_mfe={:.3}% avg_mae={:.3}%",
-        results.len(),
-        wins.len() as f64 / results.len() as f64 * 100.0,
-        avg_win,
-        avg_loss,
-        avg_mfe,
-        avg_mae
-    )
-}
-
-fn parse_candle(item: &Value) -> CandleRow {
-    let ind = item.get("indicators").unwrap_or(&Value::Null);
-    // The full indicator endpoint nests candle data; the chart fast path asks
-    // for indicator_name=candle and returns the candle fields directly.
-    let candle = ind.get("candle").unwrap_or(ind);
-    let zz = ind.get("zigzagtrend").unwrap_or(&Value::Null);
-    let signal = ind.get("signal").unwrap_or(&Value::Null);
-    let volume_50 = ind.get("volume_50").unwrap_or(&Value::Null);
-
-    CandleRow {
-        time_ms: get_i64(item, "time"),
-        open: f64_or(candle, "Open", "open"),
-        high: f64_or(candle, "High", "high"),
-        low: f64_or(candle, "Low", "low"),
-        close: f64_or(candle, "Close", "close"),
-        zz_dir: dir_to_int(zz.get("Direction")),
-        zz_break_price: f64_or(zz, "BreakPrice", "break_price"),
-        gain: f64_or(volume_50, "Gain", "gain"),
-        ntps: get_i64(signal, "ntps"),
-    }
-}
-
 fn confirmed_direction(row: &CandleRow) -> i8 {
     row.zz_dir
 }
@@ -1324,74 +998,12 @@ fn candidate_entry(lock: &DirectionLock, signal: &CascadeSignal) -> Option<(i8, 
     }
 }
 
-fn fetch_history_with_indicator(
-    symbol_key: &str,
-    limit: usize,
-    indicator_name: Option<&str>,
-) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    let indicator_query = indicator_name
-        .map(|name| format!("&indicator_name={name}"))
-        .unwrap_or_default();
-    let url = format!(
-        "{}?symbol_key={}&timeframe=60&limit={}{}",
-        BASE_URL,
-        encode_symbol_key(symbol_key),
-        limit,
-        indicator_query
-    );
-    let mut cmd = Command::new("curl");
-    cmd.args(["-fsSL", "--max-time", "180"]);
-    if let Some(ip) = resolve_host_ip() {
-        cmd.args(["--resolve", &format!("{}:443:{}", BASE_HOST, ip)]);
-    }
-    let output = cmd.arg(&url).output()?;
-    if !output.status.success() {
-        return Err(format!("curl fetch failed for {symbol_key}").into());
-    }
-    let payload: Value = serde_json::from_slice(&output.stdout)?;
-    let mut rows = Vec::new();
-    if let Some(data) = payload.get("data").and_then(Value::as_array) {
-        for item in data {
-            rows.push(parse_candle(item));
-        }
-    }
-    rows.sort_by_key(|row| row.time_ms);
-    Ok(rows)
-}
-
-fn fetch_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    fetch_history_with_indicator(symbol_key, limit, None)
-}
-
-fn fetch_candle_history(symbol_key: &str, limit: usize) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    fetch_history_with_indicator(symbol_key, limit, Some("candle"))
-}
-
-fn fetch_full_history(
-    symbol_key: &str,
-    seed_limit: usize,
-) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    let mut limit = seed_limit.max(200);
-    let mut best = Vec::new();
-    while limit <= 5_000 {
-        let rows = fetch_history(symbol_key, limit)?;
-        if rows.len() > best.len() {
-            best = rows;
-        }
-        if best.len() < limit {
-            break;
-        }
-        limit = (limit * 2).min(5_000);
-    }
-    Ok(best)
-}
-
 fn simulate(
     candles: &[CandleRow],
     tp_mult: f64,
     sl_mult: f64,
 ) -> (
-    Vec<TradeResult>,
+    Vec<VirtualTradeResult>,
     Vec<String>,
     Vec<TradeEvent>,
     Vec<SidewayProbe>,
@@ -1401,7 +1013,7 @@ fn simulate(
     let mut trades = Vec::new();
     let mut events = Vec::new();
     let mut probes = Vec::new();
-    let mut active: Option<VirtualTrade> = None;
+    let mut simulator = VirtualTradeSimulator::default();
     let mut lock = DirectionLock {
         dir: 0,
         break_price: 0.0,
@@ -1511,11 +1123,17 @@ fn simulate(
             ));
         }
 
-        if active.is_none() {
+        if simulator.active().is_none() {
             if let Some((side, reason)) = candidate_entry(&lock, &signal) {
                 if let Some(p) = pending.as_ref() {
                     if p.side == side && cur.time_ms > p.armed_tick {
-                        active = open_virtual_trade(&state, cur, side, &reason, tp_mult, sl_mult);
+                        let tp_base =
+                            cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size);
+                        if let Some(setup) =
+                            setup_from_candle(cur, side, &reason, tp_base, tp_mult, sl_mult)
+                        {
+                            simulator.open(setup);
+                        }
                         pending = None;
                     }
                 } else {
@@ -1529,7 +1147,7 @@ fn simulate(
                 pending = None;
             }
 
-            if let Some(trade) = active.as_ref() {
+            if let Some(trade) = simulator.active() {
                 events.push(TradeEvent {
                     kind: "enter",
                     side: if trade.side > 0 { "LONG" } else { "SHORT" },
@@ -1540,59 +1158,17 @@ fn simulate(
             }
         }
 
-        if let Some(trade) = active.as_mut() {
-            if trade.side > 0 {
-                trade.max_favorable_pct = trade.max_favorable_pct.max(cur.high - trade.entry_pct);
-                trade.max_adverse_pct = trade.max_adverse_pct.min(cur.low - trade.entry_pct);
-                if cur.low <= trade.sl_pct {
-                    let result = finalize_trade(trade, trade.sl_pct, "sl", cur.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "LONG",
-                        time_ms: cur.time_ms,
-                        reason: "sl".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    trades.push(result);
-                    active = None;
-                } else if cur.high >= trade.tp_pct {
-                    let result = finalize_trade(trade, trade.tp_pct, "tp", cur.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "LONG",
-                        time_ms: cur.time_ms,
-                        reason: "tp".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    trades.push(result);
-                    active = None;
-                }
-            } else {
-                trade.max_favorable_pct = trade.max_favorable_pct.max(trade.entry_pct - cur.low);
-                trade.max_adverse_pct = trade.max_adverse_pct.min(trade.entry_pct - cur.high);
-                if cur.high >= trade.sl_pct {
-                    let result = finalize_trade(trade, trade.sl_pct, "sl", cur.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "SHORT",
-                        time_ms: cur.time_ms,
-                        reason: "sl".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    trades.push(result);
-                    active = None;
-                } else if cur.low <= trade.tp_pct {
-                    let result = finalize_trade(trade, trade.tp_pct, "tp", cur.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "SHORT",
-                        time_ms: cur.time_ms,
-                        reason: "tp".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    trades.push(result);
-                    active = None;
-                }
+        let completed_before = simulator.completed_count();
+        simulator.update(cur);
+        if simulator.completed_count() > completed_before {
+            if let Some(result) = simulator.last_completed() {
+                events.push(TradeEvent {
+                    kind: "exit",
+                    side: if result.side > 0 { "LONG" } else { "SHORT" },
+                    time_ms: result.closed_at,
+                    reason: result.exit_reason.clone(),
+                    pnl_pct: result.pnl_pct,
+                });
             }
         }
         if idx == 0 {
@@ -1610,10 +1186,8 @@ fn simulate(
         }
     }
 
-    if let Some(trade) = active {
-        let last = candles.last().unwrap();
-        trades.push(finalize_trade(&trade, last.close, "eod", last.time_ms));
-    }
+    simulator.finish(candles.last().unwrap());
+    trades = simulator.completed();
 
     (trades, traces, events, probes)
 }
@@ -1621,7 +1195,7 @@ fn simulate(
 fn print_replay(
     symbol_key: &str,
     candles: &[CandleRow],
-    results: &[TradeResult],
+    results: &[VirtualTradeResult],
     traces: &[String],
     events: &[TradeEvent],
     sideway_probes: &[SidewayProbe],
@@ -1664,7 +1238,23 @@ fn print_replay(
         print_sideway_summary("order_block", &ob);
         print_sideway_summary("line_cross", &lc);
     }
-    println!("{}", summarize_results(results));
+    println!("{}", format_trade_summary(results));
+}
+
+fn format_trade_summary(results: &[VirtualTradeResult]) -> String {
+    if results.is_empty() {
+        return "no trades".to_string();
+    }
+    let summary = VirtualTradeSummary::from_trades(results);
+    format!(
+        "trades={} win_rate={:.1}% avg_win={:.3}% avg_loss={:.3}% avg_mfe={:.3}% avg_mae={:.3}%",
+        summary.trades,
+        summary.win_rate_pct,
+        summary.average_win_pnl_pct,
+        summary.average_loss_pnl_pct,
+        summary.average_mfe_pct,
+        summary.average_mae_pct,
+    )
 }
 
 fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Error>> {
@@ -1702,9 +1292,8 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
         break_price: 0.0,
         reason: "na",
     };
-    let mut active: Option<VirtualTrade> = None;
+    let mut simulator = VirtualTradeSimulator::default();
     let mut last_row: Option<CandleRow> = None;
-    let mut trades: Vec<TradeResult> = Vec::new();
     let mut events: Vec<TradeEvent> = Vec::new();
 
     while Instant::now() < deadline && !INTERRUPTED.load(Ordering::SeqCst) {
@@ -1734,7 +1323,9 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
             zz_dir: 0,
             zz_break_price: 0.0,
             gain: f64_or(indicator, "ntps", "ntps"),
+            buy_sell_gain: 0.0,
             ntps: get_i64(indicator, "ntps"),
+            mrc: Default::default(),
         };
         let signal = cascade::update_from_candle(&mut state, &to_candle(&row));
         refresh_direction_lock(&mut lock, &row);
@@ -1764,9 +1355,17 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
                 lock_break_label(&lock)
             );
 
-        if active.is_none() && movement_signal(&signal) == "reverse-ready" && signal.dir != 0 {
-            active = open_virtual_trade(&state, &row, -signal.dir, "reverse-entry", 1.0, 0.8);
-            if let Some(trade) = active.as_ref() {
+        if simulator.active().is_none()
+            && movement_signal(&signal) == "reverse-ready"
+            && signal.dir != 0
+        {
+            let tp_base = cascade::cascade_take_profit_distance(&state).unwrap_or(state.avg_size);
+            if let Some(setup) =
+                setup_from_candle(&row, -signal.dir, "reverse-entry", tp_base, 1.0, 0.8)
+            {
+                simulator.open(setup);
+            }
+            if let Some(trade) = simulator.active() {
                 events.push(TradeEvent {
                     kind: "enter",
                     side: if trade.side > 0 { "LONG" } else { "SHORT" },
@@ -1783,118 +1382,57 @@ fn live_trace(symbol: &str, duration_s: u64, raw: bool) -> Result<(), Box<dyn Er
             }
         }
 
-        if let Some(trade) = active.as_mut() {
-            if trade.side > 0 {
-                trade.max_favorable_pct = trade.max_favorable_pct.max(row.high - trade.entry_pct);
-                trade.max_adverse_pct = trade.max_adverse_pct.min(row.low - trade.entry_pct);
-                if row.low <= trade.sl_pct {
-                    let result = finalize_trade(trade, trade.sl_pct, "sl", row.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "LONG",
-                        time_ms: row.time_ms,
-                        reason: "sl".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    println!(
-                        "{} EXIT LONG pnl={:.3}% reason=sl",
-                        fmt_time(row.time_ms),
-                        result.pnl_pct
-                    );
-                    trades.push(result);
-                    active = None;
-                } else if row.high >= trade.tp_pct {
-                    let result = finalize_trade(trade, trade.tp_pct, "tp", row.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "LONG",
-                        time_ms: row.time_ms,
-                        reason: "tp".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    println!(
-                        "{} EXIT LONG pnl={:.3}% reason=tp",
-                        fmt_time(row.time_ms),
-                        result.pnl_pct
-                    );
-                    trades.push(result);
-                    active = None;
-                }
-            } else {
-                trade.max_favorable_pct = trade.max_favorable_pct.max(trade.entry_pct - row.low);
-                trade.max_adverse_pct = trade.max_adverse_pct.min(trade.entry_pct - row.high);
-                if row.high >= trade.sl_pct {
-                    let result = finalize_trade(trade, trade.sl_pct, "sl", row.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "SHORT",
-                        time_ms: row.time_ms,
-                        reason: "sl".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    println!(
-                        "{} EXIT SHORT pnl={:.3}% reason=sl",
-                        fmt_time(row.time_ms),
-                        result.pnl_pct
-                    );
-                    trades.push(result);
-                    active = None;
-                } else if row.low <= trade.tp_pct {
-                    let result = finalize_trade(trade, trade.tp_pct, "tp", row.time_ms);
-                    events.push(TradeEvent {
-                        kind: "exit",
-                        side: "SHORT",
-                        time_ms: row.time_ms,
-                        reason: "tp".to_string(),
-                        pnl_pct: result.pnl_pct,
-                    });
-                    println!(
-                        "{} EXIT SHORT pnl={:.3}% reason=tp",
-                        fmt_time(row.time_ms),
-                        result.pnl_pct
-                    );
-                    trades.push(result);
-                    active = None;
-                }
+        let completed_before = simulator.completed_count();
+        simulator.update(&row);
+        if simulator.completed_count() > completed_before {
+            if let Some(result) = simulator.last_completed() {
+                events.push(TradeEvent {
+                    kind: "exit",
+                    side: if result.side > 0 { "LONG" } else { "SHORT" },
+                    time_ms: result.closed_at,
+                    reason: result.exit_reason.clone(),
+                    pnl_pct: result.pnl_pct,
+                });
+                println!(
+                    "{} EXIT {} pnl={:.3}% reason={}",
+                    fmt_time(result.closed_at),
+                    if result.side > 0 { "LONG" } else { "SHORT" },
+                    result.pnl_pct,
+                    result.exit_reason,
+                );
             }
         }
 
         last_row = Some(row);
     }
 
-    if let Some(active_trade) = active {
+    if simulator.active().is_some() {
         if let Some(last) = last_row {
-            let result = finalize_trade(&active_trade, last.close, "interrupt", last.time_ms);
-            events.push(TradeEvent {
-                kind: "exit",
-                side: if active_trade.side > 0 {
-                    "LONG"
-                } else {
-                    "SHORT"
-                },
-                time_ms: last.time_ms,
-                reason: "interrupt".to_string(),
-                pnl_pct: result.pnl_pct,
-            });
-            println!(
-                "{} EXIT {} pnl={:.3}% reason=interrupt",
-                fmt_time(last.time_ms),
-                if active_trade.side > 0 {
-                    "LONG"
-                } else {
-                    "SHORT"
-                },
-                result.pnl_pct
-            );
-            trades.push(result);
+            simulator.close_active(last.close, last.time_ms, "interrupt", "market");
+            if let Some(result) = simulator.last_completed() {
+                events.push(TradeEvent {
+                    kind: "exit",
+                    side: if result.side > 0 { "LONG" } else { "SHORT" },
+                    time_ms: result.closed_at,
+                    reason: result.exit_reason.clone(),
+                    pnl_pct: result.pnl_pct,
+                });
+                println!(
+                    "{} EXIT {} pnl={:.3}% reason=interrupt",
+                    fmt_time(result.closed_at),
+                    if result.side > 0 { "LONG" } else { "SHORT" },
+                    result.pnl_pct
+                );
+            }
         }
     }
 
     if INTERRUPTED.load(Ordering::SeqCst) {
         println!("\nInterrupted.");
     }
+    let trades = simulator.completed();
     if !trades.is_empty() {
-        println!("{}", summarize_results(&trades));
+        println!("{}", format_trade_summary(&trades));
     }
     if !events.is_empty() {
         println!("events:");
@@ -2074,7 +1612,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     result.pnl_pct,
                     result.mfe_pct,
                     result.mae_pct,
-                    result.reason
+                    result.exit_reason
                 ));
             }
         }

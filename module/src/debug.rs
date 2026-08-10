@@ -42,6 +42,7 @@ pub fn render(
     // stage changes direction, why is replaced by that stage's runtime values.
     let mut parts = vec![
         format!("t={}", state.ticks),
+        format!("strategy={}", state.cfg.strategy_mode.as_str()),
         format!(
             "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)

@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.72 release using compiled defaults or cap_init/trading_amount/min_tp_percent/trade_mode/tp_control overrides. Missing zigzagtrend BuyPrice/SellPrice values are preserved as empty optional extrema when no local top or bottom exists in the processing window. Crossed entry prices use a two-tick offset from the current market while preserving the original entry reason.",
+      "description": "Start the 1.0.72 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim uses learned MRC line transitions with single-order execution and adjacent-line TP/SL.",
       "params": [
         {
           "code": "cap_init",
@@ -54,6 +54,23 @@
           "description": "Minimum structural TP distance. The larger of this value and the cascade average is used.",
           "default": 0.0,
           "variant": "Number"
+        },
+        {
+          "code": "strategy_mode",
+          "name": "Strategy",
+          "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start; MRC Reclaim requires Single trade mode.",
+          "default": 0,
+          "variant": "Select",
+          "options": [
+            {
+              "label": "Stairs",
+              "value": 0.0
+            },
+            {
+              "label": "MRC Reclaim",
+              "value": 1.0
+            }
+          ]
         },
         {
           "code": "trade_mode",

@@ -1,5 +1,14 @@
 use crate::state::{MrcCrossingState, VLineState};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MrcCrossEvent {
+    pub line_idx: u8,
+    pub line: f64,
+    pub direction: i8,
+    pub tick: u64,
+    pub now_ms: u64,
+}
+
 fn record_cross(
     vlines: &mut [VLineState; 9],
     crossing: &mut MrcCrossingState,
@@ -10,12 +19,12 @@ fn record_cross(
     direction: i8,
     tick: u64,
     now_ms: u64,
-) {
+) -> Option<MrcCrossEvent> {
     // Ignore repeated touches of the current line. A line becomes a new
     // sequence event only after another line has been crossed, which keeps
     // A -> B -> A meaningful.
     if crossing.last_line == Some(line_idx as u8) {
-        return;
+        return None;
     }
 
     let tracker = &mut vlines[line_idx];
@@ -55,6 +64,13 @@ fn record_cross(
     crossing.movement_low = price;
     crossing.movement_extreme = price;
     crossing.movement_direction = direction;
+    Some(MrcCrossEvent {
+        line_idx: line_idx as u8,
+        line,
+        direction,
+        tick,
+        now_ms,
+    })
 }
 
 pub fn update(
@@ -65,8 +81,19 @@ pub fn update(
     tick: u64,
     now_ms: u64,
 ) {
+    let _ = update_with_events(vlines, crossing, lines, price, tick, now_ms);
+}
+
+pub fn update_with_events(
+    vlines: &mut [VLineState; 9],
+    crossing: &mut MrcCrossingState,
+    lines: [f64; 9],
+    price: f64,
+    tick: u64,
+    now_ms: u64,
+) -> Vec<MrcCrossEvent> {
     if !price.is_finite() || price <= 0.0 {
-        return;
+        return Vec::new();
     }
 
     let previous_price = crossing.last_price.replace(price);
@@ -76,7 +103,7 @@ pub fn update(
                 tracker.was_above = Some(price >= line);
             }
         }
-        return;
+        return Vec::new();
     };
 
     let upward = price > previous_price;
@@ -110,6 +137,7 @@ pub fn update(
         }
     });
 
+    let mut events = Vec::new();
     for (line_idx, line) in crossed {
         let direction = if upward { 1 } else { -1 };
         let next_line = if direction > 0 {
@@ -119,7 +147,7 @@ pub fn update(
                 .checked_sub(1)
                 .and_then(|idx| lines.get(idx).copied())
         };
-        record_cross(
+        if let Some(event) = record_cross(
             vlines,
             crossing,
             line_idx,
@@ -129,7 +157,9 @@ pub fn update(
             direction,
             tick,
             now_ms,
-        );
+        ) {
+            events.push(event);
+        }
     }
 
     if crossing.movement_direction > 0 {
@@ -153,6 +183,7 @@ pub fn update(
             crossing.movement_extreme.min(price)
         };
     }
+    events
 }
 
 #[cfg(test)]

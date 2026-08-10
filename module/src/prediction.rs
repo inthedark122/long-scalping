@@ -7,6 +7,39 @@ use crate::model::{
 };
 use crate::state::EngineState;
 
+pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
+    if state.cfg.trade_mode == crate::model::TradeMode::Martingale {
+        return EntryGate::Wait(EntryWait {
+            reason: "mrc-reclaim-single-only".to_string(),
+            solutions: Vec::new(),
+            notes: vec!["select Single trade mode for MRC Reclaim".to_string()],
+        });
+    }
+    if let Some(reason) = crate::detection::mrc_reclaim::pending(&state.mrc_reclaim) {
+        return EntryGate::Open {
+            notes: vec![
+                "strategy=mrc-reclaim".to_string(),
+                format!(
+                    "probability={:.3}",
+                    match &reason {
+                        EntryReason::MrcReclaim { probability, .. } => *probability,
+                        _ => 0.0,
+                    }
+                ),
+            ],
+            reason: EntryOpenReason::Entry(reason),
+        };
+    }
+    EntryGate::Wait(EntryWait {
+        reason: "mrc-warmup".to_string(),
+        solutions: vec![EntryWaitSolution::WaitForSamples {
+            required: crate::detection::mrc_reclaim::REQUIRED_SAMPLES,
+            current: 0,
+        }],
+        notes: vec!["waiting for learned MRC line transitions".to_string()],
+    })
+}
+
 fn candle_range_pct(candle: &crate::model::Candle) -> f64 {
     if candle.close <= 0.0 {
         return 0.0;
@@ -21,14 +54,7 @@ fn candidate_exit_plan(
     price: f64,
     side: PositionState,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::compute(
-        snapshot,
-        sug_snapshot,
-        cascade,
-        price,
-        side,
-        false,
-    )
+    exit::compute(snapshot, sug_snapshot, cascade, price, side, false)
 }
 
 fn signal_candle<'a>(

@@ -1,11 +1,11 @@
 use crate::builder;
 use crate::debug;
-use crate::detection::{cascade, regime, sideways, vlines};
+use crate::detection::{cascade, mrc_reclaim, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
 use crate::martingale;
-use crate::model::{ExitMode, TpControl, TradeMode};
+use crate::model::{ExitMode, StrategyMode, TpControl, TradeMode};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
@@ -127,6 +127,7 @@ fn handle_signal(
         state.allowed_direction = *direction;
         state.trade_budget = 0.0;
         state.movement_entry_pending = None;
+        state.mrc_reclaim.pending_entry = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -143,6 +144,13 @@ fn handle_signal(
                 TradeMode::Single
             };
         }
+        if let Some(strategy_mode) = values.get("strategy_mode").and_then(|v| v.as_f64()) {
+            state.cfg.strategy_mode = if strategy_mode >= 1.0 {
+                StrategyMode::MrcReclaim
+            } else {
+                StrategyMode::Stairs
+            };
+        }
         if let Some(tp_control) = values.get("tp_control").and_then(|v| v.as_f64()) {
             state.cfg.tp_control = if tp_control >= 1.0 {
                 TpControl::TrailingStop
@@ -150,12 +158,26 @@ fn handle_signal(
                 TpControl::Normal
             };
         }
+        if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
+            state.mrc_reclaim = crate::state::MrcReclaimState::default();
+            state.vlines = [crate::state::VLineState::default(); 9];
+            state.mrc_crossing = crate::state::MrcCrossingState::default();
+            mrc_reclaim::seed_from_history(
+                &mut state.mrc_reclaim,
+                &mut state.vlines,
+                &mut state.mrc_crossing,
+                &state.history,
+                state.ticks.max(1).saturating_mul(60_000),
+            );
+            state.mrc_reclaim.pending_entry = None;
+        }
         state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
+                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
                 state.allowed_direction,
+                state.cfg.strategy_mode.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
@@ -204,6 +226,7 @@ fn handle_new_position(
         entry_reason: state.position.entry_reason.clone(),
         martingale: state.position.martingale.clone(),
     };
+    state.mrc_reclaim.pending_entry = None;
 
     let side = dir_to_position(direction);
     state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
@@ -219,8 +242,19 @@ fn handle_new_position(
             };
         }
     };
-    let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop;
-    let plan = if strategy.is_martingale() {
+    let mrc_entry = matches!(
+        state.position.entry_reason,
+        Some(crate::model::EntryReason::MrcReclaim { .. })
+    );
+    let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop && !mrc_entry;
+    let plan = if let Some(crate::model::EntryReason::MrcReclaim {
+        target_price,
+        stop_price,
+        ..
+    }) = state.position.entry_reason.as_ref()
+    {
+        exit::mrc_reclaim_plan(*target_price, *stop_price)
+    } else if strategy.is_martingale() {
         martingale::exit_plan(
             &snapshot,
             side,
@@ -373,6 +407,28 @@ mod tests {
             sug_info: None,
             state: None,
         }
+    }
+
+    #[test]
+    fn start_selects_mrc_reclaim_without_changing_stairs_default() {
+        let mut state = EngineState::default();
+        let mut values = std::collections::HashMap::new();
+        values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
+        values.insert("trade_mode".to_string(), serde_json::json!(0.0));
+        let output = run(
+            &input(ModuleEvent::Signal {
+                direction: Direction::Both,
+                code: "start".to_string(),
+                values,
+            }),
+            &mut state,
+        );
+        assert!(output.debug.contains("strategy=mrc-reclaim"));
+        assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcReclaim);
+        assert_eq!(
+            EngineState::default().cfg.strategy_mode,
+            StrategyMode::Stairs
+        );
     }
 
     #[test]
@@ -621,7 +677,7 @@ fn process_realtime(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     let strategy = builder::ensure_runtime_builder(state);
-    vlines::update(
+    let mrc_events = vlines::update_with_events(
         &mut state.vlines,
         &mut state.mrc_crossing,
         snapshot.tf1m.mrc.lines(),
@@ -645,16 +701,55 @@ fn process_realtime(
         sug_info.system_time as u64,
     );
 
+    let mrc_observation = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
+        Some(mrc_reclaim::observe(
+            &mut state.mrc_reclaim,
+            &mrc_events,
+            snapshot.tf1m.mrc.lines(),
+            input.price,
+            sug_info.system_time as u64,
+            snapshot.tf1m.buy_sell_gain,
+        ))
+    } else {
+        None
+    };
+
     let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
     state.direction_source = "regime".to_string();
     state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
-    let entry_direction = regime.confirmed;
+    let entry_direction = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
+        mrc_reclaim::market_state(state.mrc_reclaim.last_direction)
+    } else {
+        regime.confirmed
+    };
     let entry_side = match entry_direction {
         crate::model::MarketState::Long => crate::model::PositionState::Long,
         crate::model::MarketState::Short => crate::model::PositionState::Short,
         crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
     };
-    let entry_gate = prediction::entry_gate(&snapshot, &sug_snapshot, &cas_tf, state, entry_side);
+    let entry_gate = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
+        let mut gate = prediction::mrc_reclaim_entry_gate(state);
+        if let Some(observation) = mrc_observation {
+            if let Some(reason) = observation.entry {
+                gate = crate::model::EntryGate::Open {
+                    notes: vec![
+                        "strategy=mrc-reclaim".to_string(),
+                        format!("samples={}", observation.samples),
+                    ],
+                    reason: crate::model::EntryOpenReason::Entry(reason),
+                };
+            } else if let Some(wait_reason) = observation.wait_reason {
+                gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
+                    reason: wait_reason,
+                    solutions: Vec::new(),
+                    notes: vec!["MRC transition history is not entry-ready".to_string()],
+                });
+            }
+        }
+        gate
+    } else {
+        prediction::entry_gate(&snapshot, &sug_snapshot, &cas_tf, state, entry_side)
+    };
     let decision = strategy.refine_realtime_decision(
         state,
         &snapshot,

@@ -61,6 +61,22 @@ fn open_note(
                 EntryReason::Structural { price } => {
                     format!("{} price={:.4}", reason.label(), price)
                 }
+                EntryReason::MrcReclaim {
+                    price,
+                    target_price,
+                    stop_price,
+                    probability,
+                    estimated_time_ms,
+                    ..
+                } => format!(
+                    "{} price={:.4} target={:.4} stop={:.4} probability={:.3} eta_ms={:.0}",
+                    reason.label(),
+                    price,
+                    target_price,
+                    stop_price,
+                    probability,
+                    estimated_time_ms
+                ),
             })
             .unwrap_or_else(|| "none".to_string()),
         EntryGate::Wait(_) => "none".to_string(),
@@ -554,6 +570,24 @@ mod tests {
         }
     }
 
+    fn mrc_decision(market_state: MarketState) -> TradeDecision {
+        TradeDecision {
+            market_state,
+            entry: EntryGate::Open {
+                notes: vec!["strategy=mrc-reclaim".to_string()],
+                reason: crate::model::EntryOpenReason::Entry(EntryReason::MrcReclaim {
+                    price: 101.0,
+                    target_price: 104.0,
+                    stop_price: 96.0,
+                    source_line: 4,
+                    target_line: 5,
+                    probability: 0.75,
+                    estimated_time_ms: 12_000.0,
+                }),
+            },
+        }
+    }
+
     fn sug_info(system_time: i64) -> lte_strategy_bridge::SuggestionInfo {
         lte_strategy_bridge::SuggestionInfo {
             time: system_time,
@@ -585,6 +619,34 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(result.as_ref().unwrap().open_positions.is_empty());
+    }
+
+    #[test]
+    fn mrc_reclaim_uses_the_existing_two_tick_limit_entry_convention() {
+        let mut state = EngineState::default();
+        let mut input = input();
+        input.symbol_info.price_tick_size = 0.01;
+        let result = evaluate(
+            &input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &mrc_decision(MarketState::Long),
+        )
+        .expect("MRC entry should be executable");
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].enter_price, Some(99.98));
+        assert!(result.open_positions[0]
+            .note
+            .contains("strategy=mrc-reclaim"));
+        assert!(matches!(
+            state.position.entry_reason,
+            Some(EntryReason::MrcReclaim {
+                target_price: 104.0,
+                stop_price: 96.0,
+                ..
+            })
+        ));
     }
 
     #[test]

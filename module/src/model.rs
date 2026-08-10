@@ -26,6 +26,22 @@ pub enum TradeMode {
     Martingale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StrategyMode {
+    #[default]
+    Stairs,
+    MrcReclaim,
+}
+
+impl StrategyMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stairs => "stairs",
+            Self::MrcReclaim => "mrc-reclaim",
+        }
+    }
+}
+
 impl TradeMode {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -62,6 +78,8 @@ pub struct Config {
     #[serde(default)]
     pub trade_mode: TradeMode,
     #[serde(default)]
+    pub strategy_mode: StrategyMode,
+    #[serde(default)]
     pub tp_control: TpControl,
 }
 
@@ -80,6 +98,7 @@ impl Default for Config {
             trading_amount: default_trading_amount(),
             min_tp_percent: 0.0,
             trade_mode: TradeMode::default(),
+            strategy_mode: StrategyMode::default(),
             tp_control: TpControl::default(),
         }
     }
@@ -251,6 +270,15 @@ pub enum EntryReason {
     Structural {
         price: f64,
     },
+    MrcReclaim {
+        price: f64,
+        target_price: f64,
+        stop_price: f64,
+        source_line: u8,
+        target_line: u8,
+        probability: f64,
+        estimated_time_ms: f64,
+    },
 }
 
 impl EntryReason {
@@ -260,6 +288,7 @@ impl EntryReason {
             Self::SugInfoMovement { price, .. } => *price,
             Self::SidewayScalp { price, .. } => *price,
             Self::Structural { price } => *price,
+            Self::MrcReclaim { price, .. } => *price,
         }
     }
 
@@ -269,6 +298,7 @@ impl EntryReason {
             Self::SugInfoMovement { .. } => "sug-info-movement",
             Self::SidewayScalp { .. } => "sideway-scalp",
             Self::Structural { .. } => "structural",
+            Self::MrcReclaim { .. } => "mrc-reclaim",
         }
     }
 }
@@ -455,6 +485,17 @@ mod tests {
             close: 105.05,
         });
         assert_eq!(cooling, FastCandlePhase::Cooling);
+    }
+
+    #[test]
+    fn strategy_mode_defaults_to_stairs_and_round_trips() {
+        assert_eq!(Config::default().strategy_mode, StrategyMode::Stairs);
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "strategy_mode": "MrcReclaim"
+        }))
+        .expect("strategy mode should deserialize from Start state");
+        assert_eq!(config.strategy_mode, StrategyMode::MrcReclaim);
+        assert_eq!(config.strategy_mode.as_str(), "mrc-reclaim");
     }
 }
 

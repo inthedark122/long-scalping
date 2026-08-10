@@ -31,6 +31,9 @@ pub enum StopLoss {
         distance: f64,
         price: f64,
     },
+    MrcReclaim {
+        price: f64,
+    },
 }
 
 impl StopLoss {
@@ -39,6 +42,7 @@ impl StopLoss {
             Self::Structural { level } => level.value,
             Self::Sideway { price } | Self::SupportBreak { price } => price,
             Self::Martingale { break_price, .. } => break_price,
+            Self::MrcReclaim { price } => price,
         }
     }
 
@@ -66,6 +70,7 @@ impl StopLoss {
                 distance,
                 ..
             } => format!("martingale:support-break@{break_price:.4}:distance={distance:.4}"),
+            Self::MrcReclaim { .. } => "mrc-reclaim:adjacent-line".to_string(),
         }
     }
 }
@@ -76,15 +81,17 @@ pub enum TakeProfit {
     Movement { price: f64 },
     Sideway { price: f64 },
     Martingale { price: f64 },
+    MrcReclaim { price: f64 },
 }
 
 impl TakeProfit {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Movement { price } | Self::Sideway { price } | Self::Martingale { price } => {
-                price
-            }
+            Self::Movement { price }
+            | Self::Sideway { price }
+            | Self::Martingale { price }
+            | Self::MrcReclaim { price } => price,
         }
     }
 
@@ -94,6 +101,7 @@ impl TakeProfit {
             Self::Movement { .. } => "movement",
             Self::Sideway { .. } => "sideway",
             Self::Martingale { .. } => "martingale",
+            Self::MrcReclaim { .. } => "mrc-reclaim",
         }
     }
 
@@ -103,6 +111,23 @@ impl TakeProfit {
             take_profit => format!("tp:{}", take_profit.source_label()),
         }
     }
+}
+
+pub fn mrc_reclaim_plan(target_price: f64, stop_price: f64) -> Option<ExitPlan> {
+    if !target_price.is_finite()
+        || !stop_price.is_finite()
+        || target_price <= 0.0
+        || stop_price <= 0.0
+    {
+        return None;
+    }
+    Some(ExitPlan {
+        take_profit: TakeProfit::MrcReclaim {
+            price: target_price,
+        },
+        stop_loss: StopLoss::MrcReclaim { price: stop_price },
+        tp_reliable: true,
+    })
 }
 
 fn structural_plan(
@@ -799,7 +824,12 @@ pub(crate) fn ensure_active_exit_order(
     if side == PositionState::Flat {
         return (Vec::new(), Vec::new());
     }
-    if state.cfg.tp_control == TpControl::TrailingStop {
+    if state.cfg.tp_control == TpControl::TrailingStop
+        && !matches!(
+            state.position.entry_reason,
+            Some(crate::model::EntryReason::MrcReclaim { .. })
+        )
+    {
         return ensure_trailing_exit_order(input, state, snapshot, sug_snapshot, side, builder);
     }
 
@@ -812,6 +842,37 @@ pub(crate) fn ensure_active_exit_order(
     let qty = position_qty(input, side);
     if qty <= 0.0 {
         return (Vec::new(), Vec::new());
+    }
+    if let Some(crate::model::EntryReason::MrcReclaim {
+        target_price,
+        stop_price,
+        ..
+    }) = state.position.entry_reason.as_ref()
+    {
+        if let Some(plan) = mrc_reclaim_plan(*target_price, *stop_price) {
+            if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
+                state.position.take_profit = plan.take_profit.price();
+                state.position.exit_tp_reliable = true;
+                set_stop_loss(state, plan.stop_loss);
+                let direction = match side {
+                    PositionState::Long => Direction::Long,
+                    PositionState::Short => Direction::Short,
+                    PositionState::Flat => Direction::Both,
+                };
+                let mark = tp_mark(direction);
+                return (
+                    vec![tp_limit_order(
+                        direction,
+                        qty,
+                        plan.take_profit.price(),
+                        &mark,
+                        Some(&plan.take_profit.order_note()),
+                    )],
+                    Vec::new(),
+                );
+            }
+            return (Vec::new(), Vec::new());
+        }
     }
     let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
@@ -992,15 +1053,7 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = compute(
-            &snapshot,
-            &sug,
-            &cascade,
-            100.0,
-            PositionState::Long,
-            false,
-        )
-        .unwrap();
+        let plan = compute(&snapshot, &sug, &cascade, 100.0, PositionState::Long, false).unwrap();
         assert!(plan.take_profit.price() > 100.0);
         assert!(plan.stop_loss.price() < 100.0);
     }
@@ -1102,15 +1155,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(compute(
-            &snapshot,
-            &sug,
-            &cascade,
-            100.0,
-            PositionState::Long,
-            true,
-        )
-        .is_none());
+        assert!(compute(&snapshot, &sug, &cascade, 100.0, PositionState::Long, true,).is_none());
     }
 
     #[test]
@@ -1161,4 +1206,12 @@ mod tests {
         assert_eq!(configured_minimum_plan.take_profit.price(), 110.0);
     }
 
+    #[test]
+    fn mrc_reclaim_plan_keeps_learned_target_and_adjacent_stop() {
+        let plan = mrc_reclaim_plan(104.0, 96.0).expect("valid MRC plan");
+        assert_eq!(plan.take_profit.price(), 104.0);
+        assert_eq!(plan.stop_loss.price(), 96.0);
+        assert_eq!(plan.take_profit.source_label(), "mrc-reclaim");
+        assert_eq!(plan.stop_loss.reason(), "mrc-reclaim:adjacent-line");
+    }
 }

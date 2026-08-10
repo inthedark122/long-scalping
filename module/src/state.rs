@@ -61,6 +61,63 @@ pub struct MrcCrossingState {
     pub movement_direction: i8,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MrcTransitionStats {
+    pub count: u32,
+    pub duration_sum_ms: u64,
+}
+
+impl MrcTransitionStats {
+    pub fn average_duration_ms(self) -> Option<f64> {
+        (self.count > 0).then_some(self.duration_sum_ms as f64 / self.count as f64)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MrcReclaimState {
+    pub first_seen_ms: [u64; 9],
+    pub last_cross_ms: [u64; 9],
+    pub source_counts: [u32; 9],
+    pub transitions: [[MrcTransitionStats; 9]; 9],
+    pub scenario_source_counts: [u32; 9],
+    pub scenario_transitions: [[MrcTransitionStats; 9]; 9],
+    pub recent_lines: [u8; 32],
+    pub recent_line_times_ms: [u64; 32],
+    pub recent_len: usize,
+    pub last_event_small_ntps: bool,
+    pub last_event_frequent_nearest: bool,
+    pub last_line: Option<u8>,
+    pub last_direction: i8,
+    pub last_event_ms: u64,
+    pub last_price: Option<f64>,
+    pub wait_direction: i8,
+    pub pending_entry: Option<EntryReason>,
+}
+
+impl Default for MrcReclaimState {
+    fn default() -> Self {
+        Self {
+            first_seen_ms: [0; 9],
+            last_cross_ms: [0; 9],
+            source_counts: [0; 9],
+            transitions: [[MrcTransitionStats::default(); 9]; 9],
+            scenario_source_counts: [0; 9],
+            scenario_transitions: [[MrcTransitionStats::default(); 9]; 9],
+            recent_lines: [0; 32],
+            recent_line_times_ms: [0; 32],
+            recent_len: 0,
+            last_event_small_ntps: false,
+            last_event_frequent_nearest: false,
+            last_line: None,
+            last_direction: 0,
+            last_event_ms: 0,
+            last_price: None,
+            wait_direction: 0,
+            pending_entry: None,
+        }
+    }
+}
+
 impl Default for MrcCrossingState {
     fn default() -> Self {
         Self {
@@ -147,6 +204,7 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
+    pub mrc_reclaim: MrcReclaimState,
     pub structural_stop_loss: Option<LevelPoint>,
     pub processed_structural_stop_losses: Vec<LevelPoint>,
     pub volume_gain: VolumeGainTracker,
@@ -177,6 +235,7 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
+            mrc_reclaim: MrcReclaimState::default(),
             structural_stop_loss: None,
             processed_structural_stop_losses: Vec::new(),
             volume_gain: VolumeGainTracker::default(),

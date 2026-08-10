@@ -21,6 +21,8 @@ mod martingale;
 mod model;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
+#[path = "../detection/mrc_reclaim.rs"]
+mod mrc_reclaim_impl;
 #[path = "../observer/mod.rs"]
 mod observer;
 #[path = "../orders.rs"]
@@ -37,6 +39,8 @@ mod sideways_impl;
 mod state;
 #[path = "../stop_loss.rs"]
 mod stop_loss_impl;
+#[path = "../detection/vlines.rs"]
+mod vlines_impl;
 
 mod detection {
     pub mod cascade {
@@ -48,11 +52,17 @@ mod detection {
     pub mod mrc {
         pub use crate::mrc_impl::*;
     }
+    pub mod mrc_reclaim {
+        pub use crate::mrc_reclaim_impl::*;
+    }
     pub mod regime {
         pub use crate::regime_impl::*;
     }
     pub mod sideways {
         pub use crate::sideways_impl::*;
+    }
+    pub mod vlines {
+        pub use crate::vlines_impl::*;
     }
 }
 
@@ -71,8 +81,8 @@ mod stop_loss {
 use detection::cascade::{self, CascadeSignal};
 use detection::{mrc, regime, sideways};
 use model::{
-    Candle, EntryGate, EntryWaitSolution, IndicatorSnapshot, MarketState,
-    PositionState, SugInfoSnapshot, TimeframeSnapshot,
+    Candle, EntryGate, EntryWaitSolution, IndicatorSnapshot, MarketState, PositionState,
+    SugInfoSnapshot, TimeframeSnapshot,
 };
 use state::{CascadeState, EngineState};
 
@@ -239,6 +249,7 @@ fn parse_timeframe(rows: &[Value], live_price: Option<f64>) -> Option<LiveFrame>
             },
             close,
         ),
+        smc: Default::default(),
         zz_dir: dir_to_int(zz.get("Direction")),
         // Zigzag extrema are absent when no local bottom/top exists in the
         // processing window; keep those fields as None instead of failing.
