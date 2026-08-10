@@ -184,10 +184,20 @@ pub struct SmcSnapshot {
     pub high_price: Option<f64>,
     pub low_price: Option<f64>,
     pub break_price: Option<f64>,
-    pub ob_direction: i8,
+    pub ob_direction: Option<i8>,
     pub ob_high: Option<f64>,
     pub ob_low: Option<f64>,
     pub sbp: Option<f64>,
+}
+
+impl SmcSnapshot {
+    pub fn allows_long(&self) -> bool {
+        self.direction >= 0
+    }
+
+    pub fn allows_short(&self) -> bool {
+        self.direction <= 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

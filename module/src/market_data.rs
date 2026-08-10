@@ -69,15 +69,30 @@ fn read_float(
     }
 }
 
-fn read_dir(history: &IndicatorHistory, timeframe: TimeframeSec, indicator: IndicatorKey) -> i8 {
+fn read_direction(
+    history: &IndicatorHistory,
+    timeframe: TimeframeSec,
+    indicator: IndicatorKey,
+) -> Result<i8, String> {
     match history.get(IndicatorFieldKey {
         timeframe,
         indicator,
         field: IndicatorField::Direction,
     }) {
-        Some(ModuleIndicatorValue::Direction(Direction::Long)) => 1,
-        Some(ModuleIndicatorValue::Direction(Direction::Short)) => -1,
-        _ => 0,
+        Some(ModuleIndicatorValue::Direction(Direction::Long)) => Ok(1),
+        Some(ModuleIndicatorValue::Direction(Direction::Short)) => Ok(-1),
+        Some(ModuleIndicatorValue::Direction(Direction::Both)) => Ok(0),
+        Some(value) => Err(format!(
+            "invalid-direction tf={} indicator={} field=Direction value={:?}",
+            timeframe.as_i64(),
+            indicator.as_name(),
+            value
+        )),
+        None => Err(format!(
+            "missing-direction tf={} indicator={} field=Direction",
+            timeframe.as_i64(),
+            indicator.as_name()
+        )),
     }
 }
 
@@ -119,16 +134,11 @@ fn read_raw_float(
     indicator: &str,
     field: &str,
 ) -> Result<f64, String> {
-    indicators
+    let value = indicators
         .get(&timeframe.as_i64())
         .and_then(|candles| candles.first())
         .and_then(|by_ind| by_ind.get(indicator))
         .and_then(|fields| fields.get(field))
-        .and_then(|value| match value {
-            ModuleIndicatorValue::Float(v) => Some(*v),
-            ModuleIndicatorValue::String(v) => v.parse::<f64>().ok(),
-            _ => None,
-        })
         .ok_or_else(|| {
             format!(
                 "missing-raw tf={} indicator={} field={}",
@@ -136,7 +146,27 @@ fn read_raw_float(
                 indicator,
                 field
             )
-        })
+        })?;
+
+    match value {
+        ModuleIndicatorValue::Float(value) => Ok(*value),
+        ModuleIndicatorValue::String(value) => value.parse::<f64>().map_err(|_| {
+            format!(
+                "invalid-raw-float tf={} indicator={} field={} value={}",
+                timeframe.as_i64(),
+                indicator,
+                field,
+                value
+            )
+        }),
+        other => Err(format!(
+            "invalid-raw-value tf={} indicator={} field={} value={:?}",
+            timeframe.as_i64(),
+            indicator,
+            field,
+            other
+        )),
+    }
 }
 
 fn read_optional_raw_float(
@@ -144,8 +174,35 @@ fn read_optional_raw_float(
     timeframe: TimeframeSec,
     indicator: &str,
     field: &str,
-) -> Option<f64> {
-    read_raw_float(indicators, timeframe, indicator, field).ok()
+) -> Result<Option<f64>, String> {
+    let Some(value) = indicators
+        .get(&timeframe.as_i64())
+        .and_then(|candles| candles.first())
+        .and_then(|by_ind| by_ind.get(indicator))
+        .and_then(|fields| fields.get(field))
+    else {
+        return Ok(None);
+    };
+
+    match value {
+        ModuleIndicatorValue::Float(value) => Ok(Some(*value)),
+        ModuleIndicatorValue::String(value) => value.parse::<f64>().map(Some).map_err(|_| {
+            format!(
+                "invalid-raw-float tf={} indicator={} field={} value={}",
+                timeframe.as_i64(),
+                indicator,
+                field,
+                value
+            )
+        }),
+        other => Err(format!(
+            "invalid-raw-value tf={} indicator={} field={} value={:?}",
+            timeframe.as_i64(),
+            indicator,
+            field,
+            other
+        )),
+    }
 }
 
 fn read_optional_raw_direction(
@@ -153,17 +210,72 @@ fn read_optional_raw_direction(
     timeframe: TimeframeSec,
     indicator: &str,
     field: &str,
-) -> i8 {
-    match indicators
+) -> Result<Option<i8>, String> {
+    let Some(value) = indicators
         .get(&timeframe.as_i64())
         .and_then(|candles| candles.first())
         .and_then(|by_ind| by_ind.get(indicator))
         .and_then(|fields| fields.get(field))
-    {
-        Some(ModuleIndicatorValue::Direction(Direction::Long)) => 1,
-        Some(ModuleIndicatorValue::Direction(Direction::Short)) => -1,
-        _ => 0,
+    else {
+        return Ok(None);
+    };
+
+    match value {
+        ModuleIndicatorValue::Direction(Direction::Long) => Ok(Some(1)),
+        ModuleIndicatorValue::Direction(Direction::Short) => Ok(Some(-1)),
+        ModuleIndicatorValue::Direction(Direction::Both) => Ok(Some(0)),
+        other => Err(format!(
+            "invalid-raw-direction tf={} indicator={} field={} value={:?}",
+            timeframe.as_i64(),
+            indicator,
+            field,
+            other
+        )),
     }
+}
+
+fn read_raw_direction(
+    indicators: &RawIndicators,
+    timeframe: TimeframeSec,
+    indicator: &str,
+    field: &str,
+) -> Result<i8, String> {
+    let value = indicators
+        .get(&timeframe.as_i64())
+        .and_then(|candles| candles.first())
+        .and_then(|by_ind| by_ind.get(indicator))
+        .and_then(|fields| fields.get(field))
+        .ok_or_else(|| {
+            format!(
+                "missing-raw-direction tf={} indicator={} field={}",
+                timeframe.as_i64(),
+                indicator,
+                field
+            )
+        })?;
+
+    match value {
+        ModuleIndicatorValue::Direction(Direction::Long) => Ok(1),
+        ModuleIndicatorValue::Direction(Direction::Short) => Ok(-1),
+        ModuleIndicatorValue::Direction(Direction::Both) => Ok(0),
+        other => Err(format!(
+            "invalid-raw-direction tf={} indicator={} field={} value={:?}",
+            timeframe.as_i64(),
+            indicator,
+            field,
+            other
+        )),
+    }
+}
+
+fn take_extracted<T>(value: Option<T>, timeframe: TimeframeSec, field: &str) -> Result<T, String> {
+    value.ok_or_else(|| {
+        format!(
+            "extractor-internal-missing tf={} field={}",
+            timeframe.as_i64(),
+            field
+        )
+    })
 }
 
 fn build_timeframe(
@@ -171,128 +283,234 @@ fn build_timeframe(
     raw: &RawIndicators,
     timeframe: TimeframeSec,
 ) -> Result<TimeframeSnapshot, String> {
-    let close = read_float(
+    let mut errors = Vec::new();
+    macro_rules! required {
+        ($expression:expr) => {
+            match $expression {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    errors.push(error);
+                    None
+                }
+            }
+        };
+    }
+
+    macro_rules! optional {
+        ($expression:expr) => {
+            match $expression {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(error);
+                    None
+                }
+            }
+        };
+    }
+
+    let open = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Candle,
+        IndicatorField::Open,
+        0,
+    ));
+    let high = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Candle,
+        IndicatorField::High,
+        0,
+    ));
+    let low = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Candle,
+        IndicatorField::Low,
+        0,
+    ));
+    let close = required!(read_float(
         history,
         timeframe,
         IndicatorKey::Candle,
         IndicatorField::Close,
         0,
-    )?;
-    let candle = Candle {
-        open: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Candle,
-            IndicatorField::Open,
-            0,
-        )?,
-        high: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Candle,
-            IndicatorField::High,
-            0,
-        )?,
-        low: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Candle,
-            IndicatorField::Low,
-            0,
-        )?,
-        close,
-    };
-    let smc = SmcSnapshot {
-        direction: read_dir(history, timeframe, IndicatorKey::Smc),
-        direction_swing: read_optional_raw_direction(raw, timeframe, "smc", "DirectionSwing"),
-        fp: read_optional_raw_float(raw, timeframe, "smc", "FP"),
-        high_price: read_optional_raw_float(raw, timeframe, "smc", "HighPrice"),
-        low_price: read_optional_raw_float(raw, timeframe, "smc", "LowPrice"),
-        break_price: read_optional_raw_float(raw, timeframe, "smc", "BreakPrice"),
-        ob_direction: read_optional_raw_direction(raw, timeframe, "smc", "OBDirection"),
-        ob_high: read_optional_raw_float(raw, timeframe, "smc", "OBHigh"),
-        ob_low: read_optional_raw_float(raw, timeframe, "smc", "OBLow"),
-        sbp: read_optional_raw_float(raw, timeframe, "smc", "SBP"),
-    };
-    let mean_line = read_float(
+    ));
+    let mean_line = required!(read_float(
         history,
         timeframe,
         IndicatorKey::Mrc200,
         IndicatorField::MeanLine,
         0,
-    )?;
-    let prev_mean = read_float(
+    ));
+    let prev_mean = required!(read_float(
         history,
         timeframe,
         IndicatorKey::Mrc200,
         IndicatorField::MeanLine,
         1,
-    )?;
+    ));
+    let down_big = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::DownBig,
+        0,
+    ));
+    let down_outer = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::DownOuter,
+        0,
+    ));
+    let down_small = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::DownSmall,
+        0,
+    ));
+    let down_inner = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::DownInner,
+        0,
+    ));
+    let up_inner = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::UpInner,
+        0,
+    ));
+    let up_small = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::UpSmall,
+        0,
+    ));
+    let up_outer = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::UpOuter,
+        0,
+    ));
+    let up_big = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::UpBig,
+        0,
+    ));
+    let current_cross = required!(read_float(
+        history,
+        timeframe,
+        IndicatorKey::Mrc200,
+        IndicatorField::CurrentCross,
+        0,
+    ));
+    let zz_dir = required!(read_direction(
+        history,
+        timeframe,
+        IndicatorKey::ZigZagTrend
+    ));
+    let zz_break_price = required!(read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice"));
+    let volume_gain = required!(read_raw_float(raw, timeframe, "volume_50", "Gain"));
+    let volume_gain_min = required!(read_raw_float(raw, timeframe, "volume_50", "GainMin"));
+    let volume_gain_max = required!(read_raw_float(raw, timeframe, "volume_50", "GainMax"));
+    let buy_sell_gain = required!(read_raw_float(raw, timeframe, "volume_50", "BuySellGain"));
+
+    let smc_direction = required!(read_direction(history, timeframe, IndicatorKey::Smc));
+    let smc_direction_swing =
+        required!(read_raw_direction(raw, timeframe, "smc", "DirectionSwing"));
+    let smc_fp = optional!(read_optional_raw_float(raw, timeframe, "smc", "FP"));
+    let smc_high_price = optional!(read_optional_raw_float(raw, timeframe, "smc", "HighPrice"));
+    let smc_low_price = optional!(read_optional_raw_float(raw, timeframe, "smc", "LowPrice"));
+    let smc_break_price = optional!(read_optional_raw_float(raw, timeframe, "smc", "BreakPrice"));
+    let smc_ob_direction = optional!(read_optional_raw_direction(
+        raw,
+        timeframe,
+        "smc",
+        "OBDirection"
+    ));
+    let smc_ob_high = optional!(read_optional_raw_float(raw, timeframe, "smc", "OBHigh"));
+    let smc_ob_low = optional!(read_optional_raw_float(raw, timeframe, "smc", "OBLow"));
+    let smc_sbp = optional!(read_optional_raw_float(raw, timeframe, "smc", "SBP"));
+    let zz_buy_price = optional!(read_optional_raw_float(
+        raw,
+        timeframe,
+        "zigzagtrend",
+        "BuyPrice"
+    ));
+    let zz_sell_price = optional!(read_optional_raw_float(
+        raw,
+        timeframe,
+        "zigzagtrend",
+        "SellPrice"
+    ));
+
+    if !errors.is_empty() {
+        return Err(format!("tf={} {}", timeframe.as_i64(), errors.join(" | ")));
+    }
+
+    let open = take_extracted(open, timeframe, "candle.open")?;
+    let high = take_extracted(high, timeframe, "candle.high")?;
+    let low = take_extracted(low, timeframe, "candle.low")?;
+    let close = take_extracted(close, timeframe, "candle.close")?;
+    let mean_line = take_extracted(mean_line, timeframe, "mrc_200.mean_line")?;
+    let prev_mean = take_extracted(prev_mean, timeframe, "mrc_200.prev_mean_line")?;
+    let down_big = take_extracted(down_big, timeframe, "mrc_200.down_big")?;
+    let down_outer = take_extracted(down_outer, timeframe, "mrc_200.down_outer")?;
+    let down_small = take_extracted(down_small, timeframe, "mrc_200.down_small")?;
+    let down_inner = take_extracted(down_inner, timeframe, "mrc_200.down_inner")?;
+    let up_inner = take_extracted(up_inner, timeframe, "mrc_200.up_inner")?;
+    let up_small = take_extracted(up_small, timeframe, "mrc_200.up_small")?;
+    let up_outer = take_extracted(up_outer, timeframe, "mrc_200.up_outer")?;
+    let up_big = take_extracted(up_big, timeframe, "mrc_200.up_big")?;
+    let current_cross = take_extracted(current_cross, timeframe, "mrc_200.current_cross")?;
+    let zz_dir = take_extracted(zz_dir, timeframe, "zigzagtrend.direction")?;
+    let zz_break_price = take_extracted(zz_break_price, timeframe, "zigzagtrend.break_price")?;
+    let volume_gain = take_extracted(volume_gain, timeframe, "volume_50.gain")?;
+    let volume_gain_min = take_extracted(volume_gain_min, timeframe, "volume_50.gain_min")?;
+    let volume_gain_max = take_extracted(volume_gain_max, timeframe, "volume_50.gain_max")?;
+    let buy_sell_gain = take_extracted(buy_sell_gain, timeframe, "volume_50.buy_sell_gain")?;
+    let smc_direction = take_extracted(smc_direction, timeframe, "smc.direction")?;
+    let smc_direction_swing =
+        take_extracted(smc_direction_swing, timeframe, "smc.direction_swing")?;
+
+    let candle = Candle {
+        open,
+        high,
+        low,
+        close,
+    };
+    let smc = SmcSnapshot {
+        direction: smc_direction,
+        direction_swing: smc_direction_swing,
+        fp: smc_fp,
+        high_price: smc_high_price,
+        low_price: smc_low_price,
+        break_price: smc_break_price,
+        ob_direction: smc_ob_direction,
+        ob_high: smc_ob_high,
+        ob_low: smc_ob_low,
+        sbp: smc_sbp,
+    };
     let mrc = MrcBands {
-        down_big: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::DownBig,
-            0,
-        )?,
-        down_outer: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::DownOuter,
-            0,
-        )?,
-        down_small: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::DownSmall,
-            0,
-        )?,
-        down_inner: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::DownInner,
-            0,
-        )?,
+        down_big,
+        down_outer,
+        down_small,
+        down_inner,
         mean_line,
-        up_inner: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::UpInner,
-            0,
-        )?,
-        up_small: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::UpSmall,
-            0,
-        )?,
-        up_outer: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::UpOuter,
-            0,
-        )?,
-        up_big: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::UpBig,
-            0,
-        )?,
-        current_cross: read_float(
-            history,
-            timeframe,
-            IndicatorKey::Mrc200,
-            IndicatorField::CurrentCross,
-            0,
-        )?,
+        up_inner,
+        up_small,
+        up_outer,
+        up_big,
+        current_cross,
         mean_line_slope: mean_line - prev_mean,
     };
 
@@ -300,17 +518,17 @@ fn build_timeframe(
         candle,
         mrc,
         mrc_signal: mrc::analyze(&mrc, close),
-        zz_dir: read_dir(history, timeframe, IndicatorKey::ZigZagTrend),
+        zz_dir,
         // Zigzag BuyPrice/SellPrice are empty when no local bottom/top exists
         // in the processing window, so preserve that absence as None.
-        zz_buy_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "BuyPrice"),
-        zz_sell_price: read_optional_raw_float(raw, timeframe, "zigzagtrend", "SellPrice"),
-        zz_break_price: read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice")?,
+        zz_buy_price,
+        zz_sell_price,
+        zz_break_price,
         smc,
-        volume_gain: read_raw_float(raw, timeframe, "volume_50", "Gain")?,
-        volume_gain_min: read_raw_float(raw, timeframe, "volume_50", "GainMin")?,
-        volume_gain_max: read_raw_float(raw, timeframe, "volume_50", "GainMax")?,
-        buy_sell_gain: read_raw_float(raw, timeframe, "volume_50", "BuySellGain").unwrap_or(0.0),
+        volume_gain,
+        volume_gain_min,
+        volume_gain_max,
+        buy_sell_gain,
     })
 }
 
@@ -318,11 +536,47 @@ pub fn build_indicator_snapshot(
     history: &IndicatorHistory,
     raw: &RawIndicators,
 ) -> Result<IndicatorSnapshot, String> {
+    let results = [
+        ("1m", build_timeframe(history, raw, TF_1M)),
+        ("5m", build_timeframe(history, raw, TF_5M)),
+        ("15m", build_timeframe(history, raw, TF_15M)),
+        ("1h", build_timeframe(history, raw, TF_1H)),
+    ];
+    let mut errors = Vec::new();
+    let mut snapshots = Vec::new();
+    for (label, result) in results {
+        match result {
+            Ok(snapshot) => snapshots.push((label, snapshot)),
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!("indicator-extraction {}", errors.join(" | ")));
+    }
+
+    let mut snapshots = snapshots.into_iter();
+    let tf1m = snapshots
+        .next()
+        .map(|(_, snapshot)| snapshot)
+        .ok_or_else(|| "indicator-extraction internal=missing-1m-result".to_string())?;
+    let tf5m = snapshots
+        .next()
+        .map(|(_, snapshot)| snapshot)
+        .ok_or_else(|| "indicator-extraction internal=missing-5m-result".to_string())?;
+    let tf15m = snapshots
+        .next()
+        .map(|(_, snapshot)| snapshot)
+        .ok_or_else(|| "indicator-extraction internal=missing-15m-result".to_string())?;
+    let tf1h = snapshots
+        .next()
+        .map(|(_, snapshot)| snapshot)
+        .ok_or_else(|| "indicator-extraction internal=missing-1h-result".to_string())?;
+
     Ok(IndicatorSnapshot {
-        tf1m: build_timeframe(history, raw, TF_1M)?,
-        tf5m: build_timeframe(history, raw, TF_5M)?,
-        tf15m: build_timeframe(history, raw, TF_15M)?,
-        tf1h: build_timeframe(history, raw, TF_1H)?,
+        tf1m,
+        tf5m,
+        tf15m,
+        tf1h,
         ..Default::default()
     })
 }
@@ -333,16 +587,29 @@ pub fn merge_indicator_snapshot(
     raw: &RawIndicators,
     timeframes: &[i64],
 ) -> Result<IndicatorSnapshot, String> {
-    let mut snapshot = base.copied().unwrap_or_default();
+    let Some(base) = base else {
+        if timeframes.is_empty() {
+            return Err("missing-cached-snapshot no-timeframe-update".to_string());
+        }
+        return build_indicator_snapshot(history, raw);
+    };
+    let mut snapshot = *base;
     if timeframes.is_empty() {
         return Ok(snapshot);
     }
 
+    let mut errors = Vec::new();
     for timeframe in timeframes {
         let Some(tf) = timeframe_from_secs(*timeframe) else {
             continue;
         };
-        let tf_snapshot = build_timeframe(history, raw, tf)?;
+        let tf_snapshot = match build_timeframe(history, raw, tf) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
         match tf {
             TF_1M => snapshot.tf1m = tf_snapshot,
             TF_5M => snapshot.tf5m = tf_snapshot,
@@ -350,6 +617,10 @@ pub fn merge_indicator_snapshot(
             TF_1H => snapshot.tf1h = tf_snapshot,
             _ => {}
         }
+    }
+
+    if !errors.is_empty() {
+        return Err(format!("indicator-extraction {}", errors.join(" | ")));
     }
 
     Ok(snapshot)
@@ -365,9 +636,6 @@ pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), S
         ("1h", &snapshot.tf1h),
     ] {
         let mut missing = Vec::new();
-        if tf.zz_dir == 0 {
-            missing.push("direction");
-        }
         if tf.candle.close <= 0.0 {
             missing.push("close");
         }
@@ -475,6 +743,19 @@ mod tests {
                 ]),
             );
             candle.insert(
+                "smc".to_string(),
+                HashMap::from([
+                    (
+                        "Direction".to_string(),
+                        ModuleIndicatorValue::Direction(Direction::Long),
+                    ),
+                    (
+                        "DirectionSwing".to_string(),
+                        ModuleIndicatorValue::Direction(Direction::Long),
+                    ),
+                ]),
+            );
+            candle.insert(
                 "volume_50".to_string(),
                 HashMap::from([
                     ("Gain".to_string(), ModuleIndicatorValue::Float(12.5)),
@@ -496,7 +777,122 @@ mod tests {
         let raw = BTreeMap::new();
         match build_indicator_snapshot(&history, &raw) {
             Ok(_) => panic!("expected missing raw indicator error"),
-            Err(err) => assert!(err.contains("missing-value")),
+            Err(err) => {
+                assert!(err.contains("missing-value"));
+                assert!(err.contains("tf=60"));
+                assert!(err.contains("tf=300"));
+                assert!(err.contains("tf=900"));
+                assert!(err.contains("tf=3600"));
+            }
+        }
+    }
+
+    #[test]
+    fn typed_both_direction_is_valid() {
+        let (mut history, raw) = mk_history();
+        let mut init = raw.clone();
+        for candles in init.values_mut() {
+            for candle in candles {
+                candle.insert(
+                    "zigzagtrend".to_string(),
+                    HashMap::from([
+                        (
+                            "Direction".to_string(),
+                            ModuleIndicatorValue::Direction(Direction::Both),
+                        ),
+                        ("BreakPrice".to_string(), ModuleIndicatorValue::Float(100.0)),
+                    ]),
+                );
+            }
+        }
+        history.init(&init);
+
+        let result = build_indicator_snapshot(&history, &raw);
+        match result {
+            Ok(snapshot) => {
+                assert_eq!(snapshot.tf1m.zz_dir, 0);
+                assert!(validate_indicator_snapshot(&snapshot).is_ok());
+            }
+            Err(error) => panic!("typed Both should be valid: {error}"),
+        }
+    }
+
+    #[test]
+    fn smc_direction_requires_direction_and_accepts_both() {
+        let (mut history, raw) = mk_history();
+        let mut missing = raw.clone();
+        for candles in missing.values_mut() {
+            for candle in candles {
+                candle
+                    .get_mut("smc")
+                    .expect("smc test indicator")
+                    .remove("Direction");
+            }
+        }
+        history.init(&missing);
+        let error = build_indicator_snapshot(&history, &raw)
+            .expect_err("missing SMC direction should be reported");
+        assert!(error.contains("missing-direction tf=60 indicator=smc"));
+
+        let mut with_both = raw.clone();
+        for candles in with_both.values_mut() {
+            for candle in candles {
+                candle.get_mut("smc").expect("smc test indicator").insert(
+                    "Direction".to_string(),
+                    ModuleIndicatorValue::Direction(Direction::Both),
+                );
+            }
+        }
+        history.init(&with_both);
+        let snapshot = build_indicator_snapshot(&history, &raw)
+            .expect("typed Both SMC direction should be allowed");
+        assert_eq!(snapshot.tf1m.smc.direction, 0);
+    }
+
+    #[test]
+    fn invalid_smc_direction_is_reported() {
+        let (mut history, raw) = mk_history();
+        let mut init = raw.clone();
+        for candles in init.values_mut() {
+            for candle in candles {
+                candle.insert(
+                    "smc".to_string(),
+                    HashMap::from([(
+                        "Direction".to_string(),
+                        ModuleIndicatorValue::String("not-a-direction".to_string()),
+                    )]),
+                );
+            }
+        }
+        history.init(&init);
+
+        let error = build_indicator_snapshot(&history, &raw)
+            .expect_err("invalid SMC direction should be reported");
+        assert!(error.contains("invalid-direction tf=60 indicator=smc"));
+        assert!(error.contains("invalid-direction tf=3600 indicator=smc"));
+    }
+
+    #[test]
+    fn missing_direction_is_reported_as_extraction_error() {
+        let (mut history, raw) = mk_history();
+        let mut init = raw.clone();
+        for candles in init.values_mut() {
+            for candle in candles {
+                candle
+                    .get_mut("zigzagtrend")
+                    .expect("zigzag test indicator")
+                    .remove("Direction");
+            }
+        }
+        history.init(&init);
+
+        let result = build_indicator_snapshot(&history, &raw);
+        match result {
+            Ok(_) => panic!("missing direction should fail extraction"),
+            Err(error) => {
+                assert!(error.contains("missing-direction tf=60 indicator=zigzagtrend"));
+                assert!(error.contains("missing-direction tf=3600 indicator=zigzagtrend"));
+            }
         }
     }
 

@@ -11,8 +11,8 @@ pub enum OneMConfirmation {
 fn classify(tf: &TimeframeSnapshot) -> MarketState {
     let zigzag_allows_long = tf.zz_dir >= 0;
     let zigzag_allows_short = tf.zz_dir <= 0;
-    let smc_allows_long = tf.smc.direction >= 0;
-    let smc_allows_short = tf.smc.direction <= 0;
+    let smc_allows_long = tf.smc.allows_long();
+    let smc_allows_short = tf.smc.allows_short();
 
     if tf.mrc_signal.bullish_structure && zigzag_allows_long && smc_allows_long {
         MarketState::Long
@@ -82,11 +82,11 @@ fn timeframe_reason(timeframe: &TimeframeSnapshot) -> String {
 
     let long_fail = direction_failures(
         timeframe.mrc_signal.bullish_structure,
-        timeframe.zz_dir >= 0 && timeframe.smc.direction >= 0,
+        timeframe.zz_dir >= 0 && timeframe.smc.allows_long(),
     );
     let short_fail = direction_failures(
         timeframe.mrc_signal.bearish_structure,
-        timeframe.zz_dir <= 0 && timeframe.smc.direction <= 0,
+        timeframe.zz_dir <= 0 && timeframe.smc.allows_short(),
     );
     format!("L-{}:S-{}", long_fail, short_fail)
 }
