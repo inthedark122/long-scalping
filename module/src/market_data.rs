@@ -435,10 +435,31 @@ fn build_timeframe(
         IndicatorKey::ZigZagTrend
     ));
     let zz_break_price = required!(read_raw_float(raw, timeframe, "zigzagtrend", "BreakPrice"));
-    let volume_gain = required!(read_raw_float(raw, timeframe, "volume_50", "Gain"));
-    let volume_gain_min = required!(read_raw_float(raw, timeframe, "volume_50", "GainMin"));
-    let volume_gain_max = required!(read_raw_float(raw, timeframe, "volume_50", "GainMax"));
-    let buy_sell_gain = required!(read_raw_float(raw, timeframe, "volume_50", "BuySellGain"));
+    // Volume is an optional enhancement. Missing fields become neutral zeroes
+    // so a partial volume feed cannot invalidate the complete market snapshot.
+    let volume_gain =
+        optional!(read_optional_raw_float(raw, timeframe, "volume_50", "Gain")).unwrap_or_default();
+    let volume_gain_min = optional!(read_optional_raw_float(
+        raw,
+        timeframe,
+        "volume_50",
+        "GainMin"
+    ))
+    .unwrap_or_default();
+    let volume_gain_max = optional!(read_optional_raw_float(
+        raw,
+        timeframe,
+        "volume_50",
+        "GainMax"
+    ))
+    .unwrap_or_default();
+    let buy_sell_gain = optional!(read_optional_raw_float(
+        raw,
+        timeframe,
+        "volume_50",
+        "BuySellGain"
+    ))
+    .unwrap_or_default();
 
     let smc_direction = required!(read_direction(history, timeframe, IndicatorKey::Smc));
     let smc_direction_swing =
@@ -490,10 +511,6 @@ fn build_timeframe(
     let current_cross = take_extracted(current_cross, timeframe, "mrc_200.current_cross")?;
     let zz_dir = take_extracted(zz_dir, timeframe, "zigzagtrend.direction")?;
     let zz_break_price = take_extracted(zz_break_price, timeframe, "zigzagtrend.break_price")?;
-    let volume_gain = take_extracted(volume_gain, timeframe, "volume_50.gain")?;
-    let volume_gain_min = take_extracted(volume_gain_min, timeframe, "volume_50.gain_min")?;
-    let volume_gain_max = take_extracted(volume_gain_max, timeframe, "volume_50.gain_max")?;
-    let buy_sell_gain = take_extracted(buy_sell_gain, timeframe, "volume_50.buy_sell_gain")?;
     let smc_direction = take_extracted(smc_direction, timeframe, "smc.direction")?;
     let smc_direction_swing =
         take_extracted(smc_direction_swing, timeframe, "smc.direction_swing")?;
@@ -811,6 +828,25 @@ mod tests {
                 assert!(err.contains("tf=3600"));
             }
         }
+    }
+
+    #[test]
+    fn missing_volume_fields_degrade_to_neutral_without_blocking_snapshot() {
+        let (history, mut raw) = mk_history();
+        for candles in raw.values_mut() {
+            for candle in candles {
+                candle.remove("volume_50");
+            }
+        }
+
+        let snapshot = build_indicator_snapshot(&history, &raw)
+            .expect("missing volume should not block snapshot processing");
+        assert_eq!(snapshot.tf1m.volume_gain, 0.0);
+        assert_eq!(snapshot.tf1m.volume_gain_min, 0.0);
+        assert_eq!(snapshot.tf1m.volume_gain_max, 0.0);
+        assert_eq!(snapshot.tf1m.buy_sell_gain, 0.0);
+        assert_eq!(snapshot.tf1m.gain_zone(), crate::model::GainZone::Weak);
+        assert!(validate_indicator_snapshot(&snapshot).is_ok());
     }
 
     #[test]
