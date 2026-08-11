@@ -136,6 +136,11 @@ fn handle_signal(
         if let Some(min_tp_percent) = values.get("min_tp_percent").and_then(|v| v.as_f64()) {
             state.cfg.min_tp_percent = min_tp_percent.max(0.0);
         }
+        if let Some(risk_target_percent) =
+            values.get("risk_target_percent").and_then(|v| v.as_f64())
+        {
+            state.cfg.risk_target_percent = risk_target_percent.max(0.0);
+        }
         if let Some(strategy_mode) = values.get("strategy_mode").and_then(|v| v.as_f64()) {
             state.cfg.strategy_mode = if strategy_mode >= 1.0 {
                 StrategyMode::MrcReclaim
@@ -180,13 +185,14 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% required_samples={} exit={:?}",
+                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% risk_target_percent={:.2}% required_samples={} exit={:?}",
                 state.allowed_direction,
                 state.cfg.strategy_mode.as_str(),
                 state.cfg.entry_type.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
+                state.cfg.risk_target_percent(),
                 state.cfg.required_samples(),
                 exit_type_for_strategy(state.cfg.strategy_mode)
             ),
@@ -374,6 +380,7 @@ mod tests {
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
         values.insert("entry_type".to_string(), serde_json::json!(0.0));
         values.insert("required_samples".to_string(), serde_json::json!(5.0));
+        values.insert("risk_target_percent".to_string(), serde_json::json!(1.25));
         let output = run(
             &input(ModuleEvent::Signal {
                 direction: Direction::Both,
@@ -386,7 +393,9 @@ mod tests {
         assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcReclaim);
         assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
+        assert_eq!(state.cfg.risk_target_percent(), 1.25);
         assert!(output.debug.contains("required_samples=5"));
+        assert!(output.debug.contains("risk_target_percent=1.25%"));
         assert!(output.debug.contains("entry=market"));
         assert_eq!(
             EngineState::default().cfg.strategy_mode,

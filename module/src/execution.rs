@@ -2,11 +2,9 @@ use crate::exit;
 use crate::format::{fmt_price_tick, tick_size};
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{
-    EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision,
-};
+use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
-use crate::risk::entry_budget;
+use crate::risk::{entry_budget, EntrySizing};
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
@@ -34,6 +32,7 @@ fn open_note(
     tick_size: f64,
     decision: &TradeDecision,
     state: &EngineState,
+    sizing: EntrySizing,
 ) -> String {
     let side = match side {
         Direction::Long => "long",
@@ -80,7 +79,7 @@ fn open_note(
         .map(EntryReason::price)
         .unwrap_or(market_price);
     format!(
-        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4} {}",
         side,
         entry_note,
         state.cfg.entry_type.as_str(),
@@ -91,7 +90,38 @@ fn open_note(
         amount,
         state.cfg.cap_init,
         state.cfg.trading_amount,
-        state.trade_budget
+        state.trade_budget,
+        sizing.diagnostics()
+    )
+}
+
+fn pre_entry_exit_plan(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    sug_snapshot: &SugInfoSnapshot,
+    reason: Option<&EntryReason>,
+    reference_price: f64,
+    side: PositionState,
+) -> Option<exit::ExitPlan> {
+    if let Some(EntryReason::MrcReclaim {
+        target_price,
+        stop_price,
+        ..
+    }) = reason
+    {
+        return exit::mrc_reclaim_plan(*target_price, *stop_price);
+    }
+
+    exit::compute_with_excluded_stop_losses_and_minimum(
+        snapshot,
+        sug_snapshot,
+        &state.cascade_tf,
+        reference_price,
+        side,
+        exit::ExitPlanContext::Entry,
+        state.cfg.required_samples(),
+        &[],
+        state.cfg.min_tp_percent(),
     )
 }
 
@@ -405,16 +435,16 @@ pub fn evaluate_with_cascade(
         return None;
     }
 
-    let amount = entry_budget(input, state);
+    let base_amount = entry_budget(input, state);
     let leverage = (input.leverage as f64).max(1.0);
-    if amount <= 0.0 {
+    if base_amount <= 0.0 {
         return Some(ExecutionResult {
             constraint: Some("budget-too-small".to_string()),
             ..Default::default()
         });
     }
     if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
-        if amount * leverage < min_notional {
+        if base_amount * leverage < min_notional {
             return Some(ExecutionResult {
                 constraint: Some("budget-too-small".to_string()),
                 ..Default::default()
@@ -448,7 +478,7 @@ pub fn evaluate_with_cascade(
             });
         }
     }
-    state.position.entry_reason = reason;
+    state.position.entry_reason = reason.clone();
     // The signal has now been consumed. If the LIMIT order remains unfilled,
     // the reason must not be reopened on a later tick as a fresh entry.
     if mrc_entry {
@@ -481,6 +511,54 @@ pub fn evaluate_with_cascade(
     }
 
     let order_price = order_entry_price(input, entry_side, entry_price);
+    let sizing_reference_price = match state.cfg.entry_type {
+        EntryType::Market => input.price,
+        EntryType::Limit => order_price,
+    };
+    let projected_stop_loss = if state.cfg.risk_target_percent() > 0.0 {
+        pre_entry_exit_plan(
+            state,
+            snapshot,
+            sug_snapshot,
+            reason.as_ref(),
+            sizing_reference_price,
+            entry_side,
+        )
+        .map(|plan| plan.stop_loss.price())
+    } else {
+        None
+    };
+    let sizing = match crate::risk::size_entry(
+        input,
+        state,
+        entry_side,
+        base_amount,
+        sizing_reference_price,
+        projected_stop_loss,
+    ) {
+        Ok(sizing) => sizing,
+        Err(constraint) => {
+            return Some(ExecutionResult {
+                constraint: Some(constraint.to_string()),
+                ..Default::default()
+            });
+        }
+    };
+    let amount = sizing.amount;
+    if amount <= 0.0 {
+        return Some(ExecutionResult {
+            constraint: Some("risk-adjusted-size-too-small".to_string()),
+            ..Default::default()
+        });
+    }
+    if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
+        if amount * leverage < min_notional {
+            return Some(ExecutionResult {
+                constraint: Some("risk-adjusted-below-min-notional".to_string()),
+                ..Default::default()
+            });
+        }
+    }
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
             open_positions: vec![match state.cfg.entry_type {
@@ -496,6 +574,7 @@ pub fn evaluate_with_cascade(
                         tick_size(input),
                         decision,
                         state,
+                        sizing,
                     ),
                 ),
                 EntryType::Limit => limit_open(
@@ -510,6 +589,7 @@ pub fn evaluate_with_cascade(
                         tick_size(input),
                         decision,
                         state,
+                        sizing,
                     ),
                 ),
             }],
@@ -529,6 +609,7 @@ pub fn evaluate_with_cascade(
                         tick_size(input),
                         decision,
                         state,
+                        sizing,
                     ),
                 ),
                 EntryType::Limit => limit_open(
@@ -543,6 +624,7 @@ pub fn evaluate_with_cascade(
                         tick_size(input),
                         decision,
                         state,
+                        sizing,
                     ),
                 ),
             }],
@@ -699,6 +781,120 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn risk_target_reduces_entry_by_projected_stop_distance() {
+        let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Market;
+        state.cfg.risk_target_percent = 1.0;
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &mrc_decision(MarketState::Long),
+        )
+        .expect("protected MRC entry should be executable");
+
+        assert_eq!(result.open_positions.len(), 1);
+        assert!((result.open_positions[0].amount.unwrap() - 0.25).abs() < f64::EPSILON);
+        assert!(result.open_positions[0]
+            .note
+            .contains("risk_target=1.0000% sl_pct=4.0000% risk_factor=0.2500"));
+    }
+
+    #[test]
+    fn protected_entry_rejects_when_no_stop_loss_can_be_projected() {
+        let mut state = EngineState::default();
+        state.cfg.risk_target_percent = 1.0;
+        let result = evaluate(
+            &input(),
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        )
+        .expect("protected entry should return a constraint");
+
+        assert!(result.open_positions.is_empty());
+        assert_eq!(
+            result.constraint.as_deref(),
+            Some("risk-adjustment-invalid-stop-loss")
+        );
+    }
+
+    #[test]
+    fn protected_entry_rejects_adjusted_amount_below_minimum_notional() {
+        let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Market;
+        state.cfg.risk_target_percent = 1.0;
+        let mut inp = input();
+        inp.symbol_info.min_notional = Some(8.0);
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &mrc_decision(MarketState::Long),
+        )
+        .expect("protected entry should return a constraint");
+
+        assert!(result.open_positions.is_empty());
+        assert_eq!(
+            result.constraint.as_deref(),
+            Some("risk-adjusted-below-min-notional")
+        );
+    }
+
+    #[test]
+    fn aggregate_risk_sizing_subtracts_existing_same_side_margin() {
+        let mut state = EngineState::default();
+        state.cfg.risk_target_percent = 1.0;
+        let mut inp = input();
+        inp.positions.long = Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 2.0,
+            pnl: 0.0,
+            qty: 0.02,
+        });
+
+        let sizing =
+            crate::risk::size_entry(&inp, &state, PositionState::Long, 1.0, 100.0, Some(96.0))
+                .expect("aggregate sizing should be valid");
+        assert!((sizing.amount - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn risk_target_uses_directional_price_distance_not_leverage() {
+        let mut state = EngineState::default();
+        state.cfg.risk_target_percent = 1.0;
+        let mut low_leverage = input();
+        low_leverage.leverage = 2;
+        let mut high_leverage = input();
+        high_leverage.leverage = 100;
+
+        let low = crate::risk::size_entry(
+            &low_leverage,
+            &state,
+            PositionState::Short,
+            1.0,
+            100.0,
+            Some(104.0),
+        )
+        .expect("short sizing should be valid");
+        let high = crate::risk::size_entry(
+            &high_leverage,
+            &state,
+            PositionState::Short,
+            1.0,
+            100.0,
+            Some(104.0),
+        )
+        .expect("short sizing should be valid");
+
+        assert!((low.amount - 0.25).abs() < f64::EPSILON);
+        assert!((high.amount - low.amount).abs() < f64::EPSILON);
     }
 
     #[test]

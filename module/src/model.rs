@@ -108,6 +108,8 @@ pub struct Config {
     #[serde(default)]
     pub min_tp_percent: f64,
     #[serde(default)]
+    pub risk_target_percent: f64,
+    #[serde(default)]
     pub strategy_mode: StrategyMode,
     #[serde(default)]
     pub entry_type: EntryType,
@@ -133,6 +135,7 @@ impl Default for Config {
             cap_init: default_cap_init(),
             trading_amount: default_trading_amount(),
             min_tp_percent: 0.0,
+            risk_target_percent: 0.0,
             strategy_mode: StrategyMode::default(),
             entry_type: EntryType::default(),
             required_samples: default_required_samples(),
@@ -152,6 +155,14 @@ impl Config {
     pub fn min_tp_percent(&self) -> f64 {
         if self.min_tp_percent.is_finite() {
             self.min_tp_percent.max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn risk_target_percent(&self) -> f64 {
+        if self.risk_target_percent.is_finite() {
+            self.risk_target_percent.max(0.0)
         } else {
             0.0
         }
