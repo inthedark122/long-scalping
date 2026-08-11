@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.81 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
+      "description": "Start the 1.0.81 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
       "params": [
         {
           "code": "cap_init",
@@ -78,6 +78,23 @@
           "description": "Common sample requirement for MRC, movement, and SUG entry logic. Set to 0 to allow entry without learned samples; default 3.",
           "default": 3,
           "variant": "Number"
+        },
+        {
+          "code": "entry_type",
+          "name": "Entry order",
+          "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed. For MRC, an unfilled limit entry is cancelled and rescheduled when the target is touched.",
+          "default": 1,
+          "variant": "Select",
+          "options": [
+            {
+              "label": "Market",
+              "value": 0.0
+            },
+            {
+              "label": "Limit",
+              "value": 1.0
+            }
+          ]
         }
       ]
     }

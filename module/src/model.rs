@@ -25,6 +25,27 @@ pub enum StrategyMode {
     MrcReclaim,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntryType {
+    Market,
+    Limit,
+}
+
+impl EntryType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Market => "market",
+            Self::Limit => "limit",
+        }
+    }
+}
+
+impl Default for EntryType {
+    fn default() -> Self {
+        Self::Limit
+    }
+}
+
 impl StrategyMode {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -88,6 +109,8 @@ pub struct Config {
     pub min_tp_percent: f64,
     #[serde(default)]
     pub strategy_mode: StrategyMode,
+    #[serde(default)]
+    pub entry_type: EntryType,
     #[serde(default = "default_required_samples")]
     pub required_samples: u32,
 }
@@ -111,6 +134,7 @@ impl Default for Config {
             trading_amount: default_trading_amount(),
             min_tp_percent: 0.0,
             strategy_mode: StrategyMode::default(),
+            entry_type: EntryType::default(),
             required_samples: default_required_samples(),
         }
     }
@@ -135,6 +159,10 @@ impl Config {
 
     pub fn required_samples(&self) -> u32 {
         self.required_samples
+    }
+
+    pub fn entry_type(&self) -> EntryType {
+        self.entry_type
     }
 }
 
@@ -516,12 +544,15 @@ mod tests {
     #[test]
     fn strategy_mode_defaults_to_stairs_and_round_trips() {
         assert_eq!(Config::default().strategy_mode, StrategyMode::Stairs);
+        assert_eq!(Config::default().entry_type(), EntryType::Limit);
         let config: Config = serde_json::from_value(serde_json::json!({
-            "strategy_mode": "MrcReclaim"
+            "strategy_mode": "MrcReclaim",
+            "entry_type": "Market"
         }))
         .expect("strategy mode should deserialize from Start state");
         assert_eq!(config.strategy_mode, StrategyMode::MrcReclaim);
         assert_eq!(config.strategy_mode.as_str(), "mrc-reclaim");
+        assert_eq!(config.entry_type(), EntryType::Market);
     }
 
     #[test]

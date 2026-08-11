@@ -2,7 +2,9 @@ use crate::exit;
 use crate::format::{fmt_price_tick, tick_size};
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
+use crate::model::{
+    EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision,
+};
 use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
 use crate::risk::entry_budget;
 use crate::state::{sync_position_state, EngineState};
@@ -78,9 +80,10 @@ fn open_note(
         .map(EntryReason::price)
         .unwrap_or(market_price);
     format!(
-        "open {} because {} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
+        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
         side,
         entry_note,
+        state.cfg.entry_type.as_str(),
         reason_note,
         fmt_price_tick(reason_price, tick_size),
         fmt_price_tick(order_price, tick_size),
@@ -116,6 +119,33 @@ fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64
         PositionState::Long if input.price < reason_price => (input.price - 2.0 * tick).max(tick),
         PositionState::Short if input.price > reason_price => input.price + 2.0 * tick,
         _ => reason_price,
+    }
+}
+
+fn mrc_limit_target_touched(
+    input: &ModuleInput,
+    side: PositionState,
+    entry_reason: Option<&EntryReason>,
+) -> bool {
+    if !matches!(entry_reason, Some(EntryReason::MrcReclaim { .. }))
+        || !input.price.is_finite()
+        || input.price <= 0.0
+    {
+        return false;
+    }
+    let Some(target_price) = entry_reason.and_then(|reason| match reason {
+        EntryReason::MrcReclaim { target_price, .. } => Some(*target_price),
+        _ => None,
+    }) else {
+        return false;
+    };
+    if !target_price.is_finite() || target_price <= 0.0 {
+        return false;
+    }
+    match side {
+        PositionState::Long => input.price >= target_price,
+        PositionState::Short => input.price <= target_price,
+        PositionState::Flat => false,
     }
 }
 
@@ -166,6 +196,9 @@ fn created_position_update(
     state: &mut EngineState,
     side: PositionState,
 ) -> Option<ModuleUpdatePosition> {
+    if state.cfg.entry_type != EntryType::Limit {
+        return None;
+    }
     let direction = match side {
         PositionState::Long => Direction::Long,
         PositionState::Short => Direction::Short,
@@ -246,6 +279,28 @@ pub fn evaluate_with_cascade(
 
     if let Some(long_position) = input.positions.long.as_ref() {
         if !has_active_position(Some(long_position)) {
+            if state.cfg.entry_type == EntryType::Limit
+                && mrc_limit_target_touched(
+                    input,
+                    PositionState::Long,
+                    state.position.entry_reason.as_ref(),
+                )
+            {
+                state.position.entry_reason = None;
+                state.mrc_reclaim.pending_entry = None;
+                return Some(ExecutionResult {
+                    close_positions: vec![close(
+                        Direction::Long,
+                        &close_reason(
+                            "mrc-limit-target-reached-before-fill",
+                            state,
+                            input.price,
+                            tick_size(input),
+                        ),
+                    )],
+                    ..Default::default()
+                });
+            }
             if matches!(&decision.entry, EntryGate::Wait(_)) {
                 return None;
             }
@@ -275,6 +330,28 @@ pub fn evaluate_with_cascade(
 
     if let Some(short_position) = input.positions.short.as_ref() {
         if !has_active_position(Some(short_position)) {
+            if state.cfg.entry_type == EntryType::Limit
+                && mrc_limit_target_touched(
+                    input,
+                    PositionState::Short,
+                    state.position.entry_reason.as_ref(),
+                )
+            {
+                state.position.entry_reason = None;
+                state.mrc_reclaim.pending_entry = None;
+                return Some(ExecutionResult {
+                    close_positions: vec![close(
+                        Direction::Short,
+                        &close_reason(
+                            "mrc-limit-target-reached-before-fill",
+                            state,
+                            input.price,
+                            tick_size(input),
+                        ),
+                    )],
+                    ..Default::default()
+                });
+            }
             if matches!(&decision.entry, EntryGate::Wait(_)) {
                 return None;
             }
@@ -386,27 +463,28 @@ pub fn evaluate_with_cascade(
         if !entry_price.is_finite() || entry_price <= 0.0 {
             return None;
         }
-        let order_price = order_entry_price(input, entry_side, entry_price);
-        if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
-            let direction = match entry_side {
-                PositionState::Long => Direction::Long,
-                PositionState::Short => Direction::Short,
-                PositionState::Flat => Direction::Both,
-            };
-            return Some(ExecutionResult {
-                update_positions: vec![update_position(direction, Some(order_price))],
-                ..Default::default()
-            });
+        if state.cfg.entry_type == EntryType::Limit {
+            let order_price = order_entry_price(input, entry_side, entry_price);
+            if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
+                let direction = match entry_side {
+                    PositionState::Long => Direction::Long,
+                    PositionState::Short => Direction::Short,
+                    PositionState::Flat => Direction::Both,
+                };
+                return Some(ExecutionResult {
+                    update_positions: vec![update_position(direction, Some(order_price))],
+                    ..Default::default()
+                });
+            }
         }
         return None;
     }
 
     let order_price = order_entry_price(input, entry_side, entry_price);
-    let market_mrc_entry = mrc_entry;
     match decision.market_state {
         MarketState::Long => Some(ExecutionResult {
-            open_positions: vec![if market_mrc_entry {
-                market_open(
+            open_positions: vec![match state.cfg.entry_type {
+                EntryType::Market => market_open(
                     Direction::Long,
                     amount,
                     input.price,
@@ -419,9 +497,8 @@ pub fn evaluate_with_cascade(
                         decision,
                         state,
                     ),
-                )
-            } else {
-                limit_open(
+                ),
+                EntryType::Limit => limit_open(
                     Direction::Long,
                     amount,
                     order_price,
@@ -434,13 +511,13 @@ pub fn evaluate_with_cascade(
                         decision,
                         state,
                     ),
-                )
+                ),
             }],
             ..Default::default()
         }),
         MarketState::Short => Some(ExecutionResult {
-            open_positions: vec![if market_mrc_entry {
-                market_open(
+            open_positions: vec![match state.cfg.entry_type {
+                EntryType::Market => market_open(
                     Direction::Short,
                     amount,
                     input.price,
@@ -453,9 +530,8 @@ pub fn evaluate_with_cascade(
                         decision,
                         state,
                     ),
-                )
-            } else {
-                limit_open(
+                ),
+                EntryType::Limit => limit_open(
                     Direction::Short,
                     amount,
                     order_price,
@@ -468,7 +544,7 @@ pub fn evaluate_with_cascade(
                         decision,
                         state,
                     ),
-                )
+                ),
             }],
             ..Default::default()
         }),
@@ -479,7 +555,7 @@ pub fn evaluate_with_cascade(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ExitKind, ExitType, TradeDecision};
+    use crate::model::{EntryType, ExitKind, ExitMode, ExitType, TradeDecision};
     use crate::risk::apply_close_pnl;
     use crate::state::EngineState;
     use lte_strategy_bridge::abi::{
@@ -595,6 +671,7 @@ mod tests {
     #[test]
     fn mrc_reclaim_uses_market_entry() {
         let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Market;
         let mut input = input();
         input.symbol_info.price_tick_size = 0.01;
         let result = evaluate(
@@ -622,6 +699,72 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn mrc_reclaim_uses_limit_entry_when_configured() {
+        let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Limit;
+        let mut input = input();
+        input.symbol_info.price_tick_size = 0.01;
+        let result = evaluate(
+            &input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &mrc_decision(MarketState::Long),
+        )
+        .expect("MRC limit entry should be executable");
+
+        assert_eq!(result.open_positions.len(), 1);
+        assert_eq!(result.open_positions[0].order_type, ModuleOrderType::Limit);
+        assert_eq!(result.open_positions[0].enter_price, Some(99.98));
+    }
+
+    #[test]
+    fn mrc_pending_limit_is_cancelled_when_target_is_touched() {
+        let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Limit;
+        state.position.entry_reason = Some(EntryReason::MrcReclaim {
+            price: 101.0,
+            target_price: 104.0,
+            stop_price: 96.0,
+            source_line: 4,
+            target_line: 5,
+            probability: 0.75,
+            estimated_time_ms: 12_000.0,
+        });
+        let mut pending_input = input();
+        pending_input.price = 104.0;
+        pending_input.positions.long = Some(ModulePositionSummary {
+            entry_price: 99.98,
+            notional: 0.0,
+            pnl: 0.0,
+            qty: 0.0,
+        });
+
+        let result = evaluate_with_cascade(
+            &pending_input,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &TradeDecision {
+                market_state: MarketState::Long,
+                entry: EntryGate::Wait(crate::model::EntryWait {
+                    reason: "mrc-wait".to_string(),
+                    solutions: Vec::new(),
+                    notes: Vec::new(),
+                }),
+            },
+        )
+        .expect("target touch should cancel the pending MRC order");
+
+        assert_eq!(result.close_positions.len(), 1);
+        assert_eq!(result.close_positions[0].direction, Direction::Long);
+        assert!(result.close_positions[0]
+            .reason
+            .contains("mrc-limit-target-reached-before-fill"));
+        assert!(state.position.entry_reason.is_none());
     }
 
     #[test]
@@ -1753,6 +1896,25 @@ mod tests {
         assert_eq!(open.enter_price, Some(inp.price));
         assert!(open.take_profit.is_none());
         assert!(open.stop_loss.is_none());
+    }
+
+    #[test]
+    fn stairs_can_use_market_entry() {
+        let mut state = EngineState::default();
+        state.cfg.entry_type = EntryType::Market;
+        let inp = input();
+
+        let result = evaluate(
+            &inp,
+            &mut state,
+            &IndicatorSnapshot::default(),
+            &crate::model::SugInfoSnapshot::default(),
+            &decision(MarketState::Long),
+        )
+        .expect("market entry should be executable");
+        let open = &result.open_positions[0];
+        assert_eq!(open.order_type, ModuleOrderType::Market);
+        assert_eq!(open.enter_price, Some(inp.price));
     }
 
     #[test]

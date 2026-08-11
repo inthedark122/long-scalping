@@ -4,7 +4,7 @@ use crate::detection::{cascade, mrc_reclaim, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
-use crate::model::{exit_type_for_strategy, ExitMode, StrategyMode};
+use crate::model::{exit_type_for_strategy, EntryType, ExitMode, StrategyMode};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
@@ -143,6 +143,17 @@ fn handle_signal(
                 StrategyMode::Stairs
             };
         }
+        if let Some(entry_type) = values
+            .get("entry_type")
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+        {
+            state.cfg.entry_type = if entry_type >= 0.5 {
+                EntryType::Limit
+            } else {
+                EntryType::Market
+            };
+        }
         if let Some(required_samples) = values
             .get("required_samples")
             .and_then(|value| value.as_f64())
@@ -169,9 +180,10 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% required_samples={} exit={:?}",
+                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% required_samples={} exit={:?}",
                 state.allowed_direction,
                 state.cfg.strategy_mode.as_str(),
+                state.cfg.entry_type.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
@@ -360,6 +372,7 @@ mod tests {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
+        values.insert("entry_type".to_string(), serde_json::json!(0.0));
         values.insert("required_samples".to_string(), serde_json::json!(5.0));
         let output = run(
             &input(ModuleEvent::Signal {
@@ -371,8 +384,10 @@ mod tests {
         );
         assert!(output.debug.contains("strategy=mrc-reclaim"));
         assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcReclaim);
+        assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
         assert!(output.debug.contains("required_samples=5"));
+        assert!(output.debug.contains("entry=market"));
         assert_eq!(
             EngineState::default().cfg.strategy_mode,
             StrategyMode::Stairs
