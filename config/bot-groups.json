@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim consumes crossings once, derives direction from the learned transition, and rejects invalid TP/SL levels.",
+          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy overrides. Stairs uses LevelExit and follows the calculated level stop. MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
@@ -57,33 +57,11 @@
             {
               "code": "strategy_mode",
               "default": 0,
-              "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start; MRC Reclaim requires Single trade mode.",
+              "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start.",
               "name": "Strategy",
               "options": [
                 { "label": "Stairs", "value": 0 },
                 { "label": "MRC Reclaim", "value": 1 }
-              ],
-              "variant": "Select"
-            },
-            {
-              "code": "trade_mode",
-              "default": 0,
-              "description": "Choose single-order execution or martingale ladder execution.",
-              "name": "Trade mode",
-              "options": [
-                { "label": "Single", "value": 0 },
-                { "label": "Martingale", "value": 1 }
-              ],
-              "variant": "Select"
-            },
-            {
-              "code": "tp_control",
-              "default": 0,
-              "description": "Normal keeps the current TP behavior. Trailing stop uses only a favorable-only virtual SL and places a recovery TP two ticks beyond price after the SL is crossed.",
-              "name": "TP control",
-              "options": [
-                { "label": "Normal", "value": 0 },
-                { "label": "Trailing stop", "value": 1 }
               ],
               "variant": "Select"
             }
@@ -129,7 +107,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/trade_mode/tp_control overrides. Strategy selection applies when Start is received. Stairs preserves the current entry logic; MRC Reclaim consumes crossings once, derives direction from the learned transition, and rejects invalid TP/SL levels.",
+          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy overrides. Stairs uses LevelExit and follows the calculated level stop. MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
@@ -156,33 +134,11 @@
             {
               "code": "strategy_mode",
               "default": 0,
-              "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start; MRC Reclaim requires Single trade mode.",
+              "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start.",
               "name": "Strategy",
               "options": [
                 { "label": "Stairs", "value": 0 },
                 { "label": "MRC Reclaim", "value": 1 }
-              ],
-              "variant": "Select"
-            },
-            {
-              "code": "trade_mode",
-              "default": 0,
-              "description": "Choose single-order execution or martingale ladder execution.",
-              "name": "Trade mode",
-              "options": [
-                { "label": "Single", "value": 0 },
-                { "label": "Martingale", "value": 1 }
-              ],
-              "variant": "Select"
-            },
-            {
-              "code": "tp_control",
-              "default": 0,
-              "description": "Normal keeps the current TP behavior. Trailing stop uses only a favorable-only virtual SL and places a recovery TP two ticks beyond price after the SL is crossed.",
-              "name": "TP control",
-              "options": [
-                { "label": "Normal", "value": 0 },
-                { "label": "Trailing stop", "value": 1 }
               ],
               "variant": "Select"
             }

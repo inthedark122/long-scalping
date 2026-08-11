@@ -143,7 +143,7 @@ mod tests {
             "virtual-sl",
             ExitMode::TrailAfterVirtualSl,
             true,
-            "mode=martingale".to_string(),
+            "mode=virtual-trailing-exit".to_string(),
         );
 
         assert_eq!(history.total_count, 3);

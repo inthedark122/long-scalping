@@ -1,22 +1,15 @@
-use crate::builder::ensure_runtime_builder;
 use crate::exit;
 use crate::format::{fmt_price_tick, tick_size};
-use crate::martingale;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
-use crate::model::{
-    EntryGate, EntryReason, ExitMode, MarketState, PositionState, TpControl, TradeDecision,
-};
+use crate::model::{EntryGate, EntryReason, ExitMode, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
 use crate::risk::entry_budget;
-use crate::state::{sync_position_state, EngineState, MartingaleRuntime};
+use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
     ModulePositionSummary, ModuleUpdatePosition,
 };
-
-#[cfg(test)]
-use crate::model::ExitKind;
 
 // Keep Default available for type compatibility only. Never construct an
 // empty execution result with a default value; no action is represented by
@@ -212,7 +205,6 @@ pub fn evaluate_with_cascade(
     sug_snapshot: &SugInfoSnapshot,
     decision: &TradeDecision,
 ) -> Option<ExecutionResult> {
-    let builder = ensure_runtime_builder(state);
     let long = input
         .positions
         .long
@@ -266,17 +258,17 @@ pub fn evaluate_with_cascade(
                 ..Default::default()
             });
         }
-        let (tp_orders, update_positions) = exit::ensure_active_exit_order(
+        let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
             input,
             state,
             snapshot,
             sug_snapshot,
             PositionState::Long,
-            &builder,
         );
         return Some(ExecutionResult {
             tp_orders,
             update_positions,
+            cancel_orders,
             ..Default::default()
         });
     }
@@ -295,17 +287,17 @@ pub fn evaluate_with_cascade(
                 ..Default::default()
             });
         }
-        let (tp_orders, update_positions) = exit::ensure_active_exit_order(
+        let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
             input,
             state,
             snapshot,
             sug_snapshot,
             PositionState::Short,
-            &builder,
         );
         return Some(ExecutionResult {
             tp_orders,
             update_positions,
+            cancel_orders,
             ..Default::default()
         });
     }
@@ -409,41 +401,6 @@ pub fn evaluate_with_cascade(
         return None;
     }
 
-    if builder.is_martingale() {
-        if let Some(plan) = martingale::entry_plan(
-            state,
-            snapshot,
-            decision.market_state,
-            entry_reason(decision),
-            amount,
-        ) {
-            state.position.martingale = Some(MartingaleRuntime {
-                profile: plan.profile,
-                base_price: plan.base_price,
-                base_amount: plan.open_position.amount.unwrap_or(amount),
-                last_filled_mark: None,
-                sl_activation_price: plan.stop_loss.activation_price(),
-            });
-            state.position.take_profit = 0.0;
-            exit::set_stop_loss(state, plan.stop_loss);
-            state.position.exit_mode = ExitMode::Structural;
-            let tp_orders = if state.cfg.tp_control == TpControl::TrailingStop {
-                Vec::new()
-            } else {
-                plan.orders
-            };
-            return Some(ExecutionResult {
-                open_positions: vec![plan.open_position],
-                tp_orders,
-                ..Default::default()
-            });
-        }
-        return Some(ExecutionResult {
-            constraint: Some("martingale-plan-unavailable".to_string()),
-            ..Default::default()
-        });
-    }
-
     let order_price = order_entry_price(input, entry_side, entry_price);
     let market_mrc_entry = mrc_entry;
     match decision.market_state {
@@ -522,9 +479,9 @@ pub fn evaluate_with_cascade(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TradeDecision, TradeMode};
+    use crate::model::{ExitKind, ExitType, TradeDecision};
     use crate::risk::apply_close_pnl;
-    use crate::state::{EngineState, MartingaleRuntime};
+    use crate::state::EngineState;
     use lte_strategy_bridge::abi::{
         ModuleOrderType, ModulePositionSummary, ModulePositions, ModuleSymbolInfo,
     };
@@ -546,57 +503,6 @@ mod tests {
             sug_info: None,
             state: None,
         }
-    }
-
-    fn martingale_runtime() -> MartingaleRuntime {
-        MartingaleRuntime {
-            profile: crate::martingale::LadderProfile {
-                levels: 11,
-                range_pct: 1.0,
-                step_pct: 0.5,
-                take_profit_pct: 0.4,
-            },
-            base_price: 0.0,
-            base_amount: 0.0,
-            last_filled_mark: None,
-            sl_activation_price: None,
-        }
-    }
-
-    #[test]
-    fn martingale_activation_price_arms_common_stop_loss() {
-        let mut state = EngineState::default();
-        state.position.side = PositionState::Long;
-        state.position.stop_loss = 99.0;
-        let mut martingale = martingale_runtime();
-        martingale.sl_activation_price = Some(95.0);
-        state.position.martingale = Some(martingale);
-
-        assert!(!exit::virtual_stop_loss_hit_with_activation(
-            &mut state,
-            PositionState::Long,
-            96.0
-        ));
-        assert_eq!(
-            state
-                .position
-                .martingale
-                .as_ref()
-                .and_then(|martingale| martingale.sl_activation_price),
-            Some(95.0)
-        );
-
-        assert!(exit::virtual_stop_loss_hit_with_activation(
-            &mut state,
-            PositionState::Long,
-            94.0
-        ));
-        assert!(state
-            .position
-            .martingale
-            .as_ref()
-            .and_then(|martingale| martingale.sl_activation_price)
-            .is_none());
     }
 
     fn decision(market_state: MarketState) -> TradeDecision {
@@ -1347,7 +1253,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::VirtualTrailingExit { ticks: 3 },
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1409,7 +1315,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::LevelExit,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1460,7 +1366,6 @@ mod tests {
     #[test]
     fn trail_after_virtual_sl_reprices_single_tp() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         state.position = crate::state::PositionRuntime {
             side: crate::model::PositionState::Long,
             entry_price: 100.0,
@@ -1472,7 +1377,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::TrailAfterVirtualSl,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::LevelExit,
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1516,19 +1421,14 @@ mod tests {
             &decision(MarketState::Long),
         );
 
-        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
-        assert_eq!(result.as_ref().unwrap().tp_orders[0].enter_price, 105.0);
-        assert!(result.as_ref().unwrap().tp_orders[0]
-            .note
-            .as_deref()
-            .is_some_and(|note| note.contains("tp_reprice=")));
+        assert!(result.as_ref().unwrap().tp_orders.is_empty());
+        assert_eq!(state.position.take_profit, 100.2);
         assert!(result.as_ref().unwrap().update_positions.is_empty());
     }
 
     #[test]
-    fn trailing_stop_does_not_place_initial_tp() {
+    fn virtual_trailing_exit_initializes_missing_tp_and_sl() {
         let mut state = EngineState::default();
-        state.cfg.tp_control = TpControl::TrailingStop;
         state.position = crate::state::PositionRuntime {
             side: PositionState::Long,
             entry_price: 100.0,
@@ -1540,7 +1440,7 @@ mod tests {
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::VirtualTrailingExit { ticks: 3 },
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1563,24 +1463,28 @@ mod tests {
         assert!(result.as_ref().unwrap().cancel_orders.is_empty());
         assert_eq!(state.position.take_profit, 0.0);
         assert_eq!(state.position.exit_mode, ExitMode::Structural);
+        assert_eq!(
+            state.position.exit_type,
+            ExitType::VirtualTrailingExit { ticks: 3 }
+        );
     }
 
     #[test]
-    fn trailing_stop_moves_virtual_sl_only_in_favorable_direction() {
+    fn virtual_trailing_exit_keeps_static_sl() {
         let mut state = EngineState::default();
-        state.cfg.tp_control = TpControl::TrailingStop;
+        state.last_active_tp_recalc_bar = Some(state.bar_1m);
         state.position = crate::state::PositionRuntime {
             side: PositionState::Long,
             entry_price: 100.0,
             peak_price: 100.0,
             trough_price: 100.0,
-            take_profit: 0.0,
+            take_profit: 100.2,
             stop_loss: 90.0,
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::VirtualTrailingExit { ticks: 3 },
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1618,8 +1522,7 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(first.as_ref().unwrap().tp_orders.is_empty());
-        assert!(state.position.stop_loss > 90.0);
-        let trailed_stop = state.position.stop_loss;
+        assert_eq!(state.position.stop_loss, 90.0);
 
         inp.price = 101.0;
         let second = evaluate(
@@ -1630,25 +1533,24 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(second.as_ref().unwrap().tp_orders.is_empty());
-        assert_eq!(state.position.stop_loss, trailed_stop);
+        assert_eq!(state.position.stop_loss, 90.0);
     }
 
     #[test]
     fn trailing_stop_places_fixed_two_tick_tp_after_long_cross() {
         let mut state = EngineState::default();
-        state.cfg.tp_control = TpControl::TrailingStop;
         state.position = crate::state::PositionRuntime {
             side: PositionState::Long,
             entry_price: 100.0,
             peak_price: 100.0,
             trough_price: 100.0,
-            take_profit: 0.0,
+            take_profit: 100.2,
             stop_loss: 99.5,
             stop_loss_reason: "structural:1m:below:mean".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
         };
         let mut inp = input();
         inp.positions.long = Some(ModulePositionSummary {
@@ -1676,24 +1578,24 @@ mod tests {
         assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
         assert_eq!(state.position.take_profit, expected_tp);
         assert_eq!(state.position.exit_mode, ExitMode::TrailAfterVirtualSl);
+        assert_eq!(result.as_ref().unwrap().cancel_orders, vec!["tp-long"]);
     }
 
     #[test]
     fn trailing_stop_places_two_tick_tp_in_profitable_direction_for_short() {
         let mut state = EngineState::default();
-        state.cfg.tp_control = TpControl::TrailingStop;
         state.position = crate::state::PositionRuntime {
             side: PositionState::Short,
             entry_price: 100.0,
             peak_price: 100.0,
             trough_price: 100.0,
-            take_profit: 0.0,
+            take_profit: 100.2,
             stop_loss: 100.5,
             stop_loss_reason: String::new(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
             entry_reason: None,
-            martingale: None,
+            exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1719,182 +1621,7 @@ mod tests {
             expected_tp
         );
         assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
-    }
-
-    #[test]
-    fn trailing_stop_suppresses_martingale_entry_tp_orders() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.cfg.tp_control = TpControl::TrailingStop;
-        let mut inp = input();
-        inp.sug_info = Some(sug_info(1_000));
-        let mut snapshot = IndicatorSnapshot::default();
-        snapshot.tf1m.candle = crate::model::Candle {
-            open: 100.0,
-            high: 100.5,
-            low: 99.5,
-            close: 100.0,
-        };
-        snapshot.tf1m.mrc = crate::model::MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 0.0,
-        };
-        snapshot.tf5m = snapshot.tf1m;
-        snapshot.tf15m = snapshot.tf1m;
-        snapshot.tf1h = snapshot.tf1m;
-
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-
-        assert!(result.as_ref().unwrap().open_positions.len() <= 1);
-        assert!(result.as_ref().unwrap().tp_orders.is_empty());
-    }
-
-    #[test]
-    fn trailing_stop_rearms_only_after_returning_across_sl() {
-        let mut state = EngineState::default();
-        state.cfg.tp_control = TpControl::TrailingStop;
-        state.position = crate::state::PositionRuntime {
-            side: PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 100.0,
-            trough_price: 100.0,
-            take_profit: 0.0,
-            stop_loss: 99.5,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: true,
-            exit_mode: ExitMode::Structural,
-            entry_reason: None,
-            martingale: None,
-        };
-
-        let mut crossed_input = input();
-        crossed_input.positions.long = Some(ModulePositionSummary {
-            entry_price: 100.0,
-            notional: 10.0,
-            pnl: -0.8,
-            qty: 0.1,
-        });
-        crossed_input.price = 99.0;
-        let first = evaluate(
-            &crossed_input,
-            &mut state,
-            &IndicatorSnapshot::default(),
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-        assert_eq!(first.as_ref().unwrap().tp_orders.len(), 1);
-
-        let mut recovered_input = crossed_input;
-        recovered_input.price = 100.0;
-        let recovered = evaluate(
-            &recovered_input,
-            &mut state,
-            &IndicatorSnapshot::default(),
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-        assert!(recovered.as_ref().unwrap().tp_orders.is_empty());
-        assert!(recovered.as_ref().unwrap().cancel_orders.is_empty());
-        assert_eq!(state.position.take_profit, 0.0);
-        assert_eq!(state.position.exit_mode, ExitMode::Structural);
-
-        let mut second_cross_input = recovered_input;
-        second_cross_input.price = 99.0;
-        let second = evaluate(
-            &second_cross_input,
-            &mut state,
-            &IndicatorSnapshot::default(),
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-        assert_eq!(second.as_ref().unwrap().tp_orders.len(), 1);
-    }
-
-    #[test]
-    fn martingale_trail_after_virtual_sl_advances_take_profit() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.position = crate::state::PositionRuntime {
-            side: crate::model::PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 101.0,
-            trough_price: 99.0,
-            take_profit: 100.2,
-            stop_loss: 99.5,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: true,
-            exit_mode: ExitMode::TrailAfterVirtualSl,
-            entry_reason: None,
-            martingale: Some(martingale_runtime()),
-        };
-        let mut inp = input();
-        inp.positions.long = Some(ModulePositionSummary {
-            entry_price: 100.0,
-            notional: 10.0,
-            pnl: -0.8,
-            qty: 0.1,
-        });
-        inp.price = 99.0;
-        let mut snapshot = IndicatorSnapshot::default();
-        snapshot.tf1m.candle = crate::model::Candle {
-            open: 99.3,
-            high: 99.5,
-            low: 98.9,
-            close: 99.0,
-        };
-        snapshot.tf1m.mrc = crate::model::MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 0.0,
-        };
-        snapshot.tf5m = snapshot.tf1m;
-        snapshot.tf15m = snapshot.tf1m;
-        snapshot.tf1h = snapshot.tf1m;
-
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-
-        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 1);
-        assert!(result.as_ref().unwrap().update_positions.is_empty());
-        let expected_tp = crate::stop_loss::martingale_recovery_take_profit(
-            inp.price,
-            PositionState::Long,
-            tick_size(&inp),
-        );
-        assert_eq!(
-            result.as_ref().unwrap().tp_orders[0].enter_price,
-            expected_tp
-        );
-        assert_eq!(result.as_ref().unwrap().tp_orders[0].qty, Some(0.1));
-        assert!(result.as_ref().unwrap().tp_orders[0].reduce_only);
+        assert_eq!(result.as_ref().unwrap().cancel_orders, vec!["tp-short"]);
     }
 
     #[test]
@@ -1911,7 +1638,7 @@ mod tests {
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
             entry_reason: Some(crate::model::EntryReason::SugInfoMovement { price: 99.2 }),
-            martingale: None,
+            exit_type: ExitType::LevelExit,
         };
         let mut inp = input();
         inp.positions.short = Some(ModulePositionSummary {
@@ -1928,68 +1655,6 @@ mod tests {
             &crate::model::SugInfoSnapshot::default(),
             &decision(MarketState::Long),
         );
-        assert!(result.as_ref().unwrap().close_positions.is_empty());
-    }
-
-    #[test]
-    fn martingale_direction_change_grace_keeps_fresh_position_open() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.position = crate::state::PositionRuntime {
-            side: crate::model::PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 100.5,
-            trough_price: 99.5,
-            take_profit: 101.0,
-            stop_loss: 99.0,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: true,
-            exit_mode: ExitMode::Structural,
-            entry_reason: Some(crate::model::EntryReason::SugInfoScalp { price: 100.0 }),
-            martingale: None,
-        };
-        let mut inp = input();
-        inp.positions.long = Some(ModulePositionSummary {
-            entry_price: 100.0,
-            notional: 10.0,
-            pnl: 0.1,
-            qty: 0.1,
-        });
-        inp.price = 100.2;
-        inp.sug_info = Some(sug_info(6_000));
-
-        let mut snapshot = IndicatorSnapshot::default();
-        snapshot.tf1m.candle = crate::model::Candle {
-            open: 100.0,
-            high: 100.4,
-            low: 99.8,
-            close: 100.2,
-        };
-        snapshot.tf1m.mrc = crate::model::MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 0.0,
-        };
-        snapshot.tf5m = snapshot.tf1m;
-        snapshot.tf15m = snapshot.tf1m;
-        snapshot.tf1h = snapshot.tf1m;
-
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Short),
-        );
-
         assert!(result.as_ref().unwrap().close_positions.is_empty());
     }
 
@@ -2116,56 +1781,6 @@ mod tests {
 
         assert_eq!(order_entry_price(&inp, PositionState::Long, 100.0), 100.0);
         assert_eq!(order_entry_price(&inp, PositionState::Short, 101.0), 101.0);
-    }
-
-    #[test]
-    fn martingale_open_forces_immediate_position() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        let inp = input();
-        let snapshot = IndicatorSnapshot {
-            tf1m: crate::model::TimeframeSnapshot {
-                candle: crate::model::Candle {
-                    open: 100.0,
-                    high: 104.0,
-                    low: 96.0,
-                    close: 100.0,
-                },
-                mrc: crate::model::MrcBands {
-                    down_big: 92.0,
-                    down_outer: 94.0,
-                    down_small: 96.0,
-                    down_inner: 98.0,
-                    mean_line: 100.0,
-                    up_inner: 102.0,
-                    up_small: 104.0,
-                    up_outer: 106.0,
-                    up_big: 108.0,
-                    current_cross: 0.0,
-                    mean_line_slope: 1.0,
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let result = evaluate(
-            &inp,
-            &mut state,
-            &snapshot,
-            &crate::model::SugInfoSnapshot::default(),
-            &decision(MarketState::Long),
-        );
-        assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);
-        assert_eq!(
-            result.as_ref().unwrap().open_positions[0].order_type,
-            ModuleOrderType::Market
-        );
-        assert_eq!(
-            result.as_ref().unwrap().open_positions[0].enter_price,
-            Some(inp.price)
-        );
-        assert_eq!(result.as_ref().unwrap().tp_orders.len(), 2);
     }
 
     #[test]

@@ -8,13 +8,6 @@ use crate::model::{
 use crate::state::EngineState;
 
 pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
-    if state.cfg.trade_mode == crate::model::TradeMode::Martingale {
-        return EntryGate::Wait(EntryWait {
-            reason: "mrc-reclaim-single-only".to_string(),
-            solutions: Vec::new(),
-            notes: vec!["select Single trade mode for MRC Reclaim".to_string()],
-        });
-    }
     if let Some(reason) = crate::detection::mrc_reclaim::pending(&state.mrc_reclaim) {
         return EntryGate::Open {
             notes: vec![
@@ -54,7 +47,14 @@ fn candidate_exit_plan(
     price: f64,
     side: PositionState,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::compute(snapshot, sug_snapshot, cascade, price, side, false)
+    exit::compute(
+        snapshot,
+        sug_snapshot,
+        cascade,
+        price,
+        side,
+        crate::exit::ExitPlanContext::Candidate,
+    )
 }
 
 fn signal_candle<'a>(

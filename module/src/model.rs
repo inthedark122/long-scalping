@@ -19,16 +19,8 @@ pub enum PositionState {
     Short,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TradeMode {
-    #[default]
-    Single,
-    Martingale,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StrategyMode {
-    #[default]
     Stairs,
     MrcReclaim,
 }
@@ -42,27 +34,46 @@ impl StrategyMode {
     }
 }
 
-impl TradeMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Single => "single",
-            Self::Martingale => "martingale",
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExitType {
+    LevelExit,
+    VirtualTrailingExit { ticks: u32 },
+}
+
+pub const STAIRS_EXIT_TYPE: ExitType = ExitType::LevelExit;
+pub const MRC_RECLAIM_EXIT_TYPE: ExitType = ExitType::VirtualTrailingExit { ticks: 2 };
+
+pub fn exit_type_for_strategy(strategy_mode: StrategyMode) -> ExitType {
+    match strategy_mode {
+        StrategyMode::Stairs => STAIRS_EXIT_TYPE,
+        StrategyMode::MrcReclaim => MRC_RECLAIM_EXIT_TYPE,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TpControl {
-    #[default]
-    Normal,
-    TrailingStop,
+impl Default for StrategyMode {
+    fn default() -> Self {
+        Self::Stairs
+    }
 }
 
-impl TpControl {
+impl Default for ExitType {
+    fn default() -> Self {
+        STAIRS_EXIT_TYPE
+    }
+}
+
+impl ExitType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Normal => "normal",
-            Self::TrailingStop => "trailing-stop",
+            Self::LevelExit => "level-exit",
+            Self::VirtualTrailingExit { .. } => "virtual-trailing-exit",
+        }
+    }
+
+    pub fn ticks(self) -> u32 {
+        match self {
+            Self::LevelExit => 0,
+            Self::VirtualTrailingExit { ticks } => ticks.max(1),
         }
     }
 }
@@ -76,11 +87,7 @@ pub struct Config {
     #[serde(default)]
     pub min_tp_percent: f64,
     #[serde(default)]
-    pub trade_mode: TradeMode,
-    #[serde(default)]
     pub strategy_mode: StrategyMode,
-    #[serde(default)]
-    pub tp_control: TpControl,
 }
 
 fn default_cap_init() -> f64 {
@@ -97,9 +104,7 @@ impl Default for Config {
             cap_init: default_cap_init(),
             trading_amount: default_trading_amount(),
             min_tp_percent: 0.0,
-            trade_mode: TradeMode::default(),
             strategy_mode: StrategyMode::default(),
-            tp_control: TpControl::default(),
         }
     }
 }
@@ -506,6 +511,18 @@ mod tests {
         .expect("strategy mode should deserialize from Start state");
         assert_eq!(config.strategy_mode, StrategyMode::MrcReclaim);
         assert_eq!(config.strategy_mode.as_str(), "mrc-reclaim");
+    }
+
+    #[test]
+    fn strategy_exit_type_is_hardcoded_per_strategy() {
+        assert_eq!(
+            exit_type_for_strategy(StrategyMode::Stairs),
+            ExitType::LevelExit
+        );
+        assert_eq!(
+            exit_type_for_strategy(StrategyMode::MrcReclaim),
+            ExitType::VirtualTrailingExit { ticks: 2 }
+        );
     }
 }
 

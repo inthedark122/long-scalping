@@ -15,8 +15,6 @@ mod exit_impl;
 mod format;
 #[path = "../detection/levels.rs"]
 mod levels_impl;
-#[path = "../martingale.rs"]
-mod martingale;
 #[path = "../model.rs"]
 mod model;
 #[path = "../detection/mrc.rs"]

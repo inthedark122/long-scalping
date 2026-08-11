@@ -6,7 +6,6 @@ mod execution;
 mod exit;
 mod format;
 pub mod market_data;
-mod martingale;
 pub mod model;
 pub mod observer;
 mod order_manager;

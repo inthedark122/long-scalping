@@ -1,21 +1,14 @@
 use crate::builder::BuiltStrategy;
 use crate::detection::levels::LevelPoint;
-use crate::martingale::LadderProfile;
 use crate::model::MarketState;
-use crate::model::{Config, EntryReason, ExitMemory, ExitMode, IndicatorSnapshot, PositionState};
+use crate::model::{
+    exit_type_for_strategy, Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot,
+    PositionState,
+};
 use crate::observer::{DirectionChangeHistory, TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
-
-#[derive(Debug, Clone, Default)]
-pub struct MartingaleRuntime {
-    pub profile: LadderProfile,
-    pub base_price: f64,
-    pub base_amount: f64,
-    pub last_filled_mark: Option<String>,
-    pub sl_activation_price: Option<f64>,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct PositionRuntime {
@@ -28,8 +21,8 @@ pub struct PositionRuntime {
     pub stop_loss_reason: String,
     pub exit_tp_reliable: bool,
     pub exit_mode: ExitMode,
+    pub exit_type: ExitType,
     pub entry_reason: Option<EntryReason>,
-    pub martingale: Option<MartingaleRuntime>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -305,8 +298,8 @@ pub fn sync_position_state(
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
+                    exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
                     entry_reason: state.position.entry_reason.clone(),
-                    martingale: state.position.martingale.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
@@ -329,8 +322,8 @@ pub fn sync_position_state(
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Structural,
+                    exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
                     entry_reason: state.position.entry_reason.clone(),
-                    martingale: state.position.martingale.clone(),
                 };
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);

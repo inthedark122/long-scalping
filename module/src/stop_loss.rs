@@ -25,27 +25,19 @@ pub fn breakeven_price(entry_price: f64, side: PositionState, tick_size: f64) ->
     }
 }
 
-pub fn martingale_recovery_take_profit(
-    current_price: f64,
-    side: PositionState,
-    tick_size: f64,
-) -> f64 {
-    if current_price <= 0.0 {
-        return 0.0;
-    }
-
-    let move_ticks = 2.0 * tick_size.max(0.0);
-    match side {
-        PositionState::Long => current_price + move_ticks,
-        PositionState::Short => (current_price - move_ticks).max(tick_size.max(f64::EPSILON)),
-        PositionState::Flat => current_price,
-    }
-}
-
 pub fn trailing_recovery_take_profit(
     current_price: f64,
     side: PositionState,
     tick_size: f64,
+) -> Option<f64> {
+    trailing_recovery_take_profit_with_ticks(current_price, side, tick_size, 2)
+}
+
+pub fn trailing_recovery_take_profit_with_ticks(
+    current_price: f64,
+    side: PositionState,
+    tick_size: f64,
+    ticks: u32,
 ) -> Option<f64> {
     if !current_price.is_finite() || current_price <= 0.0 {
         return None;
@@ -55,8 +47,8 @@ pub fn trailing_recovery_take_profit(
     }
 
     let price = match side {
-        PositionState::Long => current_price + 2.0 * tick_size,
-        PositionState::Short => current_price - 2.0 * tick_size,
+        PositionState::Long => current_price + ticks.max(1) as f64 * tick_size,
+        PositionState::Short => current_price - ticks.max(1) as f64 * tick_size,
         PositionState::Flat => return None,
     };
     (price.is_finite() && price > 0.0).then_some(price)

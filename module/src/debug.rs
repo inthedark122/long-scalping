@@ -133,15 +133,10 @@ pub fn render(
             processed_structural_sl,
         ));
     }
-    if let Some(activation_price) = state
-        .position
-        .martingale
-        .as_ref()
-        .and_then(|martingale| martingale.sl_activation_price)
-    {
+    if state.position.side != PositionState::Flat {
         parts.push(format!(
-            "sl_activate={}",
-            fmt_price_tick(activation_price, tick_size)
+            "exit={:?} mode={:?}",
+            state.position.exit_type, state.position.exit_mode
         ));
     }
     if let Some(constraint) = constraint {
@@ -263,9 +258,7 @@ fn format_take_profit(state: &EngineState, snapshot: &IndicatorSnapshot, tick_si
         PositionState::Flat => None,
     }
     .unwrap_or_else(|| {
-        if state.position.martingale.is_some() {
-            "martingale".to_string()
-        } else if matches!(
+        if matches!(
             state.position.entry_reason.as_ref(),
             Some(crate::model::EntryReason::SidewayScalp { .. })
         ) {
@@ -482,7 +475,7 @@ mod tests {
     use crate::detection::cascade::CascadeSignal;
     use crate::model::{
         Candle, EntryGate, EntryReason, ExitMode, IndicatorSnapshot, MarketState, PositionState,
-        RegimeSnapshot, TradeDecision, TradeMode,
+        RegimeSnapshot, TradeDecision,
     };
     use crate::state::{EngineState, PositionRuntime};
 
@@ -540,7 +533,6 @@ mod tests {
     #[test]
     fn single_mode_debug_omits_budget_fields() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         state.position = PositionRuntime {
             side: PositionState::Long,
             entry_price: 100.0,
@@ -551,8 +543,8 @@ mod tests {
             stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
+            exit_type: crate::model::ExitType::LevelExit,
             entry_reason: Some(EntryReason::SugInfoScalp { price: 100.0 }),
-            martingale: None,
         };
         let debug = render(
             &state,
@@ -572,7 +564,6 @@ mod tests {
     #[test]
     fn entry_wait_debug_renders_solutions() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         let mut decision = decision();
         decision.entry = EntryGate::Wait(crate::model::EntryWait {
             reason: "mrc-pullback-wait".to_string(),
@@ -604,7 +595,6 @@ mod tests {
     #[test]
     fn open_debug_renders_entry_reason() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         let debug = render(
             &state,
             &snapshot(),
@@ -621,7 +611,6 @@ mod tests {
     #[test]
     fn open_debug_renders_different_entry_reason() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         let mut decision = decision();
         decision.entry = EntryGate::Open {
             notes: vec!["5m-primary".to_string()],
@@ -643,7 +632,6 @@ mod tests {
     #[test]
     fn exec_is_omitted_when_position_exists() {
         let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Single;
         state.position = PositionRuntime {
             side: PositionState::Long,
             entry_price: 100.0,
@@ -654,8 +642,8 @@ mod tests {
             stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
             exit_tp_reliable: true,
             exit_mode: ExitMode::Structural,
+            exit_type: crate::model::ExitType::LevelExit,
             entry_reason: None,
-            martingale: None,
         };
         let debug = render(
             &state,
@@ -669,50 +657,6 @@ mod tests {
 
         assert!(!debug.contains("exec="));
         assert!(debug.contains("sl=99 reason=structural"));
-    }
-
-    #[test]
-    fn martingale_mode_debug_shows_only_martingale_context() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.position = PositionRuntime {
-            side: PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 101.0,
-            trough_price: 99.0,
-            take_profit: 101.0,
-            stop_loss: 99.0,
-            stop_loss_reason: "structural:1m:below:zz_sell".to_string(),
-            exit_tp_reliable: true,
-            exit_mode: ExitMode::Structural,
-            entry_reason: None,
-            martingale: Some(crate::state::MartingaleRuntime {
-                profile: crate::martingale::LadderProfile {
-                    levels: 9,
-                    range_pct: 2.4,
-                    step_pct: 0.8,
-                    take_profit_pct: 0.64,
-                },
-                base_price: 0.0,
-                base_amount: 0.0,
-                last_filled_mark: None,
-                sl_activation_price: None,
-            }),
-        };
-        let debug = render(
-            &state,
-            &snapshot(),
-            &regime(),
-            &cascade(1),
-            &decision(),
-            None,
-            0.01,
-        );
-
-        assert!(!debug.contains("mode=martingale"));
-        assert!(!debug.contains("exec="));
-        assert!(!debug.contains("cap_init="));
-        assert!(!debug.contains("trading_amount="));
     }
 
     #[test]

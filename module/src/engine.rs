@@ -4,8 +4,7 @@ use crate::detection::{cascade, mrc_reclaim, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
-use crate::martingale;
-use crate::model::{ExitMode, StrategyMode, TpControl, TradeMode};
+use crate::model::{exit_type_for_strategy, ExitMode, StrategyMode};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::prediction;
@@ -137,25 +136,11 @@ fn handle_signal(
         if let Some(min_tp_percent) = values.get("min_tp_percent").and_then(|v| v.as_f64()) {
             state.cfg.min_tp_percent = min_tp_percent.max(0.0);
         }
-        if let Some(trade_mode) = values.get("trade_mode").and_then(|v| v.as_f64()) {
-            state.cfg.trade_mode = if trade_mode >= 1.0 {
-                TradeMode::Martingale
-            } else {
-                TradeMode::Single
-            };
-        }
         if let Some(strategy_mode) = values.get("strategy_mode").and_then(|v| v.as_f64()) {
             state.cfg.strategy_mode = if strategy_mode >= 1.0 {
                 StrategyMode::MrcReclaim
             } else {
                 StrategyMode::Stairs
-            };
-        }
-        if let Some(tp_control) = values.get("tp_control").and_then(|v| v.as_f64()) {
-            state.cfg.tp_control = if tp_control >= 1.0 {
-                TpControl::TrailingStop
-            } else {
-                TpControl::Normal
             };
         }
         if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
@@ -171,18 +156,17 @@ fn handle_signal(
             );
             state.mrc_reclaim.pending_entry = None;
         }
-        state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
+        state.strategy_builder = Some(builder::InitialBuilder::new().build());
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% trade_mode={} tp_control={}",
+                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% exit={:?}",
                 state.allowed_direction,
                 state.cfg.strategy_mode.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
-                state.cfg.trade_mode.as_str(),
-                state.cfg.tp_control.as_str()
+                exit_type_for_strategy(state.cfg.strategy_mode)
             ),
             ..Default::default()
         }
@@ -223,14 +207,14 @@ fn handle_new_position(
         stop_loss_reason: String::new(),
         exit_tp_reliable: false,
         exit_mode: ExitMode::Structural,
+        exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
         entry_reason: state.position.entry_reason.clone(),
-        martingale: state.position.martingale.clone(),
     };
     state.mrc_reclaim.pending_entry = None;
 
     let side = dir_to_position(direction);
-    state.strategy_builder = Some(builder::InitialBuilder::new(state.cfg.trade_mode).build());
-    let strategy = builder::ensure_runtime_builder(state);
+    state.strategy_builder = Some(builder::InitialBuilder::new().build());
+    builder::ensure_runtime_builder(state);
     let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -242,11 +226,6 @@ fn handle_new_position(
             };
         }
     };
-    let mrc_entry = matches!(
-        state.position.entry_reason,
-        Some(crate::model::EntryReason::MrcReclaim { .. })
-    );
-    let trailing_stop = state.cfg.tp_control == TpControl::TrailingStop && !mrc_entry;
     let plan = if let Some(crate::model::EntryReason::MrcReclaim {
         target_price,
         stop_price,
@@ -254,18 +233,6 @@ fn handle_new_position(
     }) = state.position.entry_reason.as_ref()
     {
         exit::mrc_reclaim_plan(*target_price, *stop_price)
-    } else if strategy.is_martingale() {
-        martingale::exit_plan(
-            &snapshot,
-            side,
-            entry_price,
-            state.position.entry_reason.as_ref(),
-            state
-                .position
-                .martingale
-                .as_ref()
-                .map(|martingale| martingale.profile),
-        )
     } else {
         input.sug_info.as_ref().and_then(|sug_info| {
             let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
@@ -275,22 +242,15 @@ fn handle_new_position(
                 &state.cascade_tf,
                 entry_price,
                 side,
-                !trailing_stop,
+                exit::ExitPlanContext::Entry,
             )
         })
     };
     let mut tp_orders = Vec::new();
     let order_mark = tp_mark(direction);
     if let Some(plan) = plan {
-        state.position.take_profit = if trailing_stop {
-            0.0
-        } else {
-            plan.take_profit.price()
-        };
+        state.position.take_profit = plan.take_profit.price();
         exit::set_stop_loss(state, plan.stop_loss);
-        if let Some(martingale) = state.position.martingale.as_mut() {
-            martingale.sl_activation_price = plan.stop_loss.activation_price();
-        }
         let qty = input
             .positions
             .long
@@ -298,7 +258,7 @@ fn handle_new_position(
             .map(|p| p.qty)
             .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
             .unwrap_or(0.0);
-        if qty > 0.0 && !trailing_stop {
+        if qty > 0.0 {
             let note = Some(plan.take_profit.order_note());
             tp_orders.push(tp_limit_order(
                 direction,
@@ -351,39 +311,14 @@ fn handle_order_update(
     mark: &Option<String>,
 ) -> ModuleOutput {
     order_manager::handle_order_update(
-        state.cfg.trade_mode,
-        input,
-        state,
-        direction,
-        status,
-        role,
-        fill_price,
-        filled_qty,
-        mark,
+        input, state, direction, status, role, fill_price, filled_qty, mark,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::InitialBuilder;
-    use crate::model::{PositionState, TradeMode};
-    use crate::state::{MartingaleRuntime, PositionRuntime};
-
-    fn martingale_runtime() -> MartingaleRuntime {
-        MartingaleRuntime {
-            profile: crate::martingale::LadderProfile {
-                levels: 6,
-                range_pct: 1.4,
-                step_pct: 0.7,
-                take_profit_pct: 0.56,
-            },
-            base_price: 100.0,
-            base_amount: 1.0,
-            last_filled_mark: None,
-            sl_activation_price: None,
-        }
-    }
+    use crate::state::PositionRuntime;
     use lte_strategy_bridge::abi::{
         ModuleEvent, ModuleExchangeOrderSide, ModuleInput, ModuleOrderStatus, ModulePositions,
         ModuleSymbolInfo, OrderRole,
@@ -414,7 +349,6 @@ mod tests {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
-        values.insert("trade_mode".to_string(), serde_json::json!(0.0));
         let output = run(
             &input(ModuleEvent::Signal {
                 direction: Direction::Both,
@@ -428,139 +362,6 @@ mod tests {
         assert_eq!(
             EngineState::default().cfg.strategy_mode,
             StrategyMode::Stairs
-        );
-    }
-
-    #[test]
-    fn martingale_entry_fill_replenishes_next_ladder_order() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.strategy_builder = Some(InitialBuilder::new(TradeMode::Martingale).build());
-        state.position = PositionRuntime {
-            side: PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 100.0,
-            trough_price: 100.0,
-            take_profit: 0.0,
-            stop_loss: 0.0,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: false,
-            exit_mode: ExitMode::Structural,
-            entry_reason: None,
-            martingale: Some(martingale_runtime()),
-        };
-
-        let output = run(
-            &input(ModuleEvent::OrderUpdate {
-                direction: Direction::Long,
-                order_side: ModuleExchangeOrderSide::Buy,
-                role: OrderRole::Entry,
-                status: ModuleOrderStatus::Filled,
-                fill_price: 99.3,
-                filled_qty: 1.0,
-                mark: Some("extra-1".to_string()),
-            }),
-            &mut state,
-        );
-
-        assert_eq!(output.place_orders.len(), 2);
-        let order = &output.place_orders[0];
-        assert_eq!(order.amount, Some(2.0));
-        assert_eq!(order.enter_price, 98.6);
-        assert!(output.debug.contains("martingale-replenish"));
-        assert_eq!(
-            state
-                .position
-                .martingale
-                .as_ref()
-                .and_then(|martingale| martingale.last_filled_mark.as_deref()),
-            Some("extra-1")
-        );
-    }
-
-    #[test]
-    fn martingale_open_fill_does_not_replenish() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.strategy_builder = Some(InitialBuilder::new(TradeMode::Martingale).build());
-        state.position = PositionRuntime {
-            side: PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 100.0,
-            trough_price: 100.0,
-            take_profit: 0.0,
-            stop_loss: 0.0,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: false,
-            exit_mode: ExitMode::Structural,
-            entry_reason: None,
-            martingale: Some(martingale_runtime()),
-        };
-
-        let output = run(
-            &input(ModuleEvent::OrderUpdate {
-                direction: Direction::Long,
-                order_side: ModuleExchangeOrderSide::Buy,
-                role: OrderRole::Entry,
-                status: ModuleOrderStatus::Filled,
-                fill_price: 100.0,
-                filled_qty: 1.0,
-                mark: Some("extra-0".to_string()),
-            }),
-            &mut state,
-        );
-
-        assert!(output.place_orders.is_empty());
-        assert!(!output.debug.contains("martingale-replenish"));
-        assert!(state
-            .position
-            .martingale
-            .as_ref()
-            .and_then(|martingale| martingale.last_filled_mark.as_deref())
-            .is_none());
-    }
-
-    #[test]
-    fn martingale_entry_fill_catches_up_two_order_window() {
-        let mut state = EngineState::default();
-        state.cfg.trade_mode = TradeMode::Martingale;
-        state.strategy_builder = Some(InitialBuilder::new(TradeMode::Martingale).build());
-        state.position = PositionRuntime {
-            side: PositionState::Long,
-            entry_price: 100.0,
-            peak_price: 100.0,
-            trough_price: 100.0,
-            take_profit: 0.0,
-            stop_loss: 0.0,
-            stop_loss_reason: String::new(),
-            exit_tp_reliable: false,
-            exit_mode: ExitMode::Structural,
-            entry_reason: None,
-            martingale: Some(martingale_runtime()),
-        };
-
-        let output = run(
-            &input(ModuleEvent::OrderUpdate {
-                direction: Direction::Long,
-                order_side: ModuleExchangeOrderSide::Buy,
-                role: OrderRole::Entry,
-                status: ModuleOrderStatus::Filled,
-                fill_price: 98.6,
-                filled_qty: 1.0,
-                mark: Some("extra-2".to_string()),
-            }),
-            &mut state,
-        );
-
-        assert_eq!(output.place_orders.len(), 2);
-        assert!(output.debug.contains("filled=2"));
-        assert_eq!(
-            state
-                .position
-                .martingale
-                .as_ref()
-                .and_then(|martingale| martingale.last_filled_mark.as_deref()),
-            Some("extra-2")
         );
     }
 }
