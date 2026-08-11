@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use long_scalping::model::Config;
+
 mod research;
 
 use research::data::fetch_history_for_timeframe;
@@ -15,7 +17,7 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--required-samples N] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -207,11 +209,12 @@ fn print_summary(
 fn analyze_symbol(
     symbol_key: &str,
     history: usize,
+    required_samples: u32,
 ) -> Result<(usize, usize, AnalysisReport), Box<dyn Error>> {
     let minute = fetch_history_for_timeframe(symbol_key, 60, history, None)?;
     let hourly_limit = ((history + 3_599) / 3_600 + 10).max(10);
     let hourly = fetch_history_for_timeframe(symbol_key, 3_600, hourly_limit, None)?;
-    let mut analyzer = Analyzer::default();
+    let mut analyzer = Analyzer::new(required_samples);
     let mut hourly_index = 0usize;
     let mut active_ntps = Vec::new();
 
@@ -236,6 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut symbol_keys = Vec::new();
     let mut history = 500usize;
+    let mut required_samples = Config::default().required_samples();
     let mut output = None::<String>;
     let mut html = None::<String>;
     let mut index = 0;
@@ -257,6 +261,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             "--history" if args.get(index + 1).is_some() => {
                 history = args[index + 1].parse().unwrap_or(history);
+                index += 2;
+            }
+            "--required-samples" if args.get(index + 1).is_some() => {
+                required_samples = args[index + 1].parse().unwrap_or(required_samples);
                 index += 2;
             }
             "--output" if args.get(index + 1).is_some() => {
@@ -290,7 +298,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, hourly_count, report) = analyze_symbol(symbol_key, history)?;
+        let (minute_count, hourly_count, report) =
+            analyze_symbol(symbol_key, history, required_samples)?;
         print_summary(
             symbol_key,
             minute_count,
@@ -303,6 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let document = json!({
                 "symbol_key": symbol_key,
                 "history_requested_1m": history,
+                "required_samples": required_samples,
                 "history_loaded": {"1m": minute_count, "1h": hourly_count},
                 "ntps_baseline": {"timeframe": "1h", "lookback_candles": 10, "small_ntps": "lower-third"},
                 "crossing_features": {"evidence": "wick-penetration", "frequent_window_minutes": 30, "frequent_threshold": 2, "break_minutes": 30},

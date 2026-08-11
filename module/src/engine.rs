@@ -143,6 +143,14 @@ fn handle_signal(
                 StrategyMode::Stairs
             };
         }
+        if let Some(required_samples) = values
+            .get("required_samples")
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+        {
+            state.cfg.required_samples =
+                required_samples.round().clamp(0.0, u32::MAX as f64) as u32;
+        }
         if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
             state.mrc_reclaim = crate::state::MrcReclaimState::default();
             state.vlines = [crate::state::VLineState::default(); 9];
@@ -153,6 +161,7 @@ fn handle_signal(
                 &mut state.mrc_crossing,
                 &state.history,
                 state.ticks.max(1).saturating_mul(60_000),
+                state.cfg.required_samples(),
             );
             state.mrc_reclaim.pending_entry = None;
         }
@@ -160,12 +169,13 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% exit={:?}",
+                "start direction={:?} strategy={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% required_samples={} exit={:?}",
                 state.allowed_direction,
                 state.cfg.strategy_mode.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
+                state.cfg.required_samples(),
                 exit_type_for_strategy(state.cfg.strategy_mode)
             ),
             ..Default::default()
@@ -243,6 +253,7 @@ fn handle_new_position(
                 entry_price,
                 side,
                 exit::ExitPlanContext::Entry,
+                state.cfg.required_samples(),
             )
         })
     };
@@ -349,6 +360,7 @@ mod tests {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
+        values.insert("required_samples".to_string(), serde_json::json!(5.0));
         let output = run(
             &input(ModuleEvent::Signal {
                 direction: Direction::Both,
@@ -359,6 +371,8 @@ mod tests {
         );
         assert!(output.debug.contains("strategy=mrc-reclaim"));
         assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcReclaim);
+        assert_eq!(state.cfg.required_samples(), 5);
+        assert!(output.debug.contains("required_samples=5"));
         assert_eq!(
             EngineState::default().cfg.strategy_mode,
             StrategyMode::Stairs
@@ -507,6 +521,7 @@ fn process_realtime(
             input.price,
             sug_info.time as u64,
             snapshot.tf1m.buy_sell_gain,
+            state.cfg.required_samples(),
         ))
     } else {
         None
@@ -583,7 +598,7 @@ fn process_realtime(
                 gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
                     reason: wait_reason,
                     solutions: vec![crate::model::EntryWaitSolution::WaitForSamples {
-                        required: mrc_reclaim::REQUIRED_SAMPLES,
+                        required: state.cfg.required_samples(),
                         current: mrc_reclaim::warmup_samples(&state.mrc_reclaim),
                     }],
                     notes: vec!["MRC transition history is not entry-ready".to_string()],

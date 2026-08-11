@@ -79,10 +79,11 @@ pub(crate) struct Analyzer {
     trades: VirtualTradeSimulator,
     wait_mode: bool,
     wait_direction: i8,
+    required_samples: u32,
 }
 
-impl Default for Analyzer {
-    fn default() -> Self {
+impl Analyzer {
+    pub(crate) fn new(required_samples: u32) -> Self {
         Self {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
@@ -91,6 +92,7 @@ impl Default for Analyzer {
             trades: VirtualTradeSimulator::default(),
             wait_mode: false,
             wait_direction: 0,
+            required_samples,
         }
     }
 }
@@ -123,6 +125,7 @@ impl Analyzer {
             row.time_ms.max(0) as u64,
             row.buy_sell_gain,
             Some((row.ntps, ntps_range)),
+            self.required_samples,
         );
         for event in observation.events {
             let target_line = event.target_line;
@@ -377,7 +380,7 @@ mod tests {
 
     #[test]
     fn wick_crossings_are_ordered_and_recorded() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[1, 10]);
         analyzer.observe(&row(60_000, 105.0, 105.0, 99.0, 10), &[1, 10]);
         let report = analyzer.report();
@@ -388,7 +391,7 @@ mod tests {
 
     #[test]
     fn transitions_have_probability_and_duration() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[1, 10]);
         analyzer.observe(&row(60_000, 101.0, 101.0, 99.0, 10), &[1, 10]);
         analyzer.observe(&row(180_000, 105.0, 105.0, 101.0, 10), &[1, 10]);
@@ -405,7 +408,7 @@ mod tests {
 
     #[test]
     fn low_ntps_uses_hourly_range_lower_third() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(60_000, 101.0, 101.0, 99.0, 30), &[10, 100]);
         assert!(analyzer.report().events[0].small_ntps);
@@ -413,7 +416,7 @@ mod tests {
 
     #[test]
     fn stale_line_is_flagged_as_break_line() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(1_800_000, 101.0, 101.0, 99.0, 10), &[10, 100]);
         assert!(analyzer.report().events[0].break_line);
@@ -422,7 +425,7 @@ mod tests {
 
     #[test]
     fn frequent_nearest_crossings_are_detected() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(60_000, 105.0, 105.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(120_000, 107.0, 107.0, 105.0, 10), &[10, 100]);
@@ -433,7 +436,7 @@ mod tests {
 
     #[test]
     fn crossing_probability_uses_source_observation_count() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(60_000, 101.0, 101.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(120_000, 99.0, 101.0, 99.0, 10), &[10, 100]);
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn learned_next_line_opens_virtual_trade_and_hits_target() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(60_000, 101.0, 101.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(120_000, 105.0, 105.0, 101.0, 100), &[10, 100]);
@@ -475,7 +478,7 @@ mod tests {
 
     #[test]
     fn break_line_enters_wait_mode_without_opening_trade() {
-        let mut analyzer = Analyzer::default();
+        let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 10), &[10, 100]);
         analyzer.observe(&row(BREAK_MS, 101.0, 101.0, 99.0, 10), &[10, 100]);
         let report = analyzer.report();

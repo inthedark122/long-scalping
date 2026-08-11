@@ -80,8 +80,13 @@ pub(super) fn refine_common(
             MarketState::Short => crate::model::PositionState::Short,
             MarketState::Sideways => crate::model::PositionState::Flat,
         };
-        if let Some(plan) = prediction::sug_entry_plan(snapshot, sug_snapshot, cascade, entry_side)
-        {
+        if let Some(plan) = prediction::sug_entry_plan(
+            snapshot,
+            sug_snapshot,
+            cascade,
+            entry_side,
+            state.cfg.required_samples(),
+        ) {
             let _ = (plan.target, plan.band);
             decision.market_state = plan.market_state;
             state.direction_source = "sug-info-plan".to_string();
@@ -106,6 +111,7 @@ pub(super) fn refine_common(
             cascade,
             &state.cascade_tf,
             decision.market_state,
+            state.cfg.required_samples(),
         ) {
             decision.market_state = plan.market_state;
             state.direction_source = "movement-plan".to_string();

@@ -7,7 +7,6 @@ use lte_strategy_bridge::indicator_access::{
     IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
 
-pub const REQUIRED_SAMPLES: u32 = 3;
 pub const BREAK_LINE_MS: u64 = 30 * 60 * 1_000;
 pub const FEATURE_WINDOW_MS: u64 = 30 * 60 * 1_000;
 pub const LINE_LABELS: [&str; 9] = [
@@ -99,6 +98,7 @@ fn target_for(
     source: usize,
     direction: i8,
     use_scenario: bool,
+    required_samples: u32,
 ) -> Option<(usize, u32)> {
     let matrix = if use_scenario {
         &state.scenario_transitions
@@ -113,7 +113,7 @@ fn target_for(
     range
         .filter_map(|target| {
             let count = matrix[source][target].count;
-            (count >= REQUIRED_SAMPLES).then_some((target, count))
+            (count >= required_samples).then_some((target, count))
         })
         .max_by_key(|(_, count)| *count)
 }
@@ -163,8 +163,18 @@ pub fn observe(
     price: f64,
     now_ms: u64,
     buy_sell_gain: f64,
+    required_samples: u32,
 ) -> Observation {
-    observe_with_context(state, events, lines, price, now_ms, buy_sell_gain, None)
+    observe_with_context(
+        state,
+        events,
+        lines,
+        price,
+        now_ms,
+        buy_sell_gain,
+        None,
+        required_samples,
+    )
 }
 
 pub fn observe_with_context(
@@ -175,6 +185,7 @@ pub fn observe_with_context(
     now_ms: u64,
     buy_sell_gain: f64,
     ntps: Option<(i64, Option<(i64, i64)>)>,
+    required_samples: u32,
 ) -> Observation {
     if state.last_price.is_none() {
         begin(state, now_ms);
@@ -315,7 +326,13 @@ pub fn observe_with_context(
 
         let use_scenario =
             small_ntps && frequent_nearest_crossings && state.scenario_source_counts[source] > 0;
-        let Some((target, count)) = target_for(state, source, event.direction, use_scenario) else {
+        let Some((target, count)) = target_for(
+            state,
+            source,
+            event.direction,
+            use_scenario,
+            required_samples,
+        ) else {
             observation.samples = warmup_samples(state);
             observation.wait_reason = Some("mrc-warmup".to_string());
             observation.events.push(ReclaimEvent {
@@ -458,6 +475,7 @@ pub fn seed_from_history(
     crossing: &mut MrcCrossingState,
     history: &IndicatorHistory,
     now_ms: u64,
+    required_samples: u32,
 ) {
     // IndicatorHistory is newest-first. Replay oldest-to-newest so the same
     // crossing and duration logic is used for startup data and live ticks.
@@ -496,7 +514,7 @@ pub fn seed_from_history(
             offset as u64 + 1,
             now,
         );
-        let _ = observe(state, &events, lines, price, now, 0.0);
+        let _ = observe(state, &events, lines, price, now, 0.0, required_samples);
     }
 }
 
@@ -527,6 +545,7 @@ mod tests {
                 100.0,
                 10 + n * 100,
                 0.0,
+                3,
             );
             observe(
                 &mut state,
@@ -535,6 +554,7 @@ mod tests {
                 105.0,
                 60 + n * 100,
                 0.0,
+                3,
             );
         }
         assert_eq!(state.transitions[4][5].count, 3);
@@ -546,6 +566,7 @@ mod tests {
             100.0,
             500,
             0.0,
+            3,
         );
         assert!(matches!(
             result.entry,
@@ -564,6 +585,7 @@ mod tests {
             100.0,
             BREAK_LINE_MS + 2,
             0.0,
+            3,
         );
         assert!(result.entry.is_none());
         assert_eq!(state.wait_direction, 1);
@@ -574,6 +596,7 @@ mod tests {
             101.0,
             BREAK_LINE_MS + 3,
             0.0,
+            3,
         );
         assert!(result.wait_reason.is_none());
         assert_eq!(state.wait_direction, 0);
@@ -611,6 +634,32 @@ mod tests {
     }
 
     #[test]
+    fn required_samples_setting_controls_transition_warmup() {
+        let lines = [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0];
+
+        let mut zero_state = MrcReclaimState::default();
+        let immediate = observe(&mut zero_state, &[event(4, 1, 1)], lines, 100.0, 1, 0.0, 0);
+        assert!(matches!(
+            immediate.entry,
+            Some(EntryReason::MrcReclaim { .. })
+        ));
+
+        let mut state = MrcReclaimState::default();
+        state.transitions[4][5].count = 3;
+
+        let waiting = observe(&mut state, &[event(4, 1, 1)], lines, 100.0, 1, 0.0, 4);
+        assert!(waiting.entry.is_none());
+        assert_eq!(waiting.samples, 3);
+
+        state.transitions[4][5].count = 4;
+        let ready = observe(&mut state, &[event(4, 1, 2)], lines, 100.0, 2, 0.0, 4);
+        assert!(matches!(
+            ready.entry,
+            Some(EntryReason::MrcReclaim { target_line: 5, .. })
+        ));
+    }
+
+    #[test]
     fn reason_direction_comes_from_source_to_target_transition() {
         let long = EntryReason::MrcReclaim {
             price: 100.0,
@@ -637,14 +686,14 @@ mod tests {
     #[test]
     fn pending_entry_expires_without_a_new_crossing() {
         let mut state = MrcReclaimState::default();
-        state.transitions[4][5].count = REQUIRED_SAMPLES;
+        state.transitions[4][5].count = 3;
         let lines = [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0];
 
-        let first = observe(&mut state, &[event(4, 1, 1)], lines, 100.0, 1, 0.0);
+        let first = observe(&mut state, &[event(4, 1, 1)], lines, 100.0, 1, 0.0, 3);
         assert!(first.entry.is_some());
         assert!(state.pending_entry.is_some());
 
-        let second = observe(&mut state, &[], lines, 101.0, 2, 0.0);
+        let second = observe(&mut state, &[], lines, 101.0, 2, 0.0, 3);
         assert!(second.entry.is_none());
         assert!(state.pending_entry.is_none());
     }

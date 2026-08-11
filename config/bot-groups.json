@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy overrides. Stairs uses LevelExit and follows the calculated level stop. MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
+          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
@@ -64,6 +64,13 @@
                 { "label": "MRC Reclaim", "value": 1 }
               ],
               "variant": "Select"
+            },
+            {
+              "code": "required_samples",
+              "default": 3,
+              "description": "Common sample requirement for MRC, movement, and SUG entry logic. Set to 0 to allow entry without learned samples; default 3.",
+              "name": "Required samples",
+              "variant": "Number"
             }
           ]
         }
@@ -107,7 +114,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy overrides. Stairs uses LevelExit and follows the calculated level stop. MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
+          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
@@ -141,6 +148,13 @@
                 { "label": "MRC Reclaim", "value": 1 }
               ],
               "variant": "Select"
+            },
+            {
+              "code": "required_samples",
+              "default": 3,
+              "description": "Common sample requirement for MRC, movement, and SUG entry logic. Set to 0 to allow entry without learned samples; default 3.",
+              "name": "Required samples",
+              "variant": "Number"
             }
           ]
         }

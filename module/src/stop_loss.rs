@@ -69,8 +69,9 @@ pub fn projected_move_distance(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeState,
+    required_samples: u32,
 ) -> Option<f64> {
-    if cascade.samples < 3 || cascade.avg_size <= 0.0 {
+    if cascade.samples < required_samples || cascade.avg_size <= 0.0 {
         return None;
     }
 

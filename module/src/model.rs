@@ -88,6 +88,8 @@ pub struct Config {
     pub min_tp_percent: f64,
     #[serde(default)]
     pub strategy_mode: StrategyMode,
+    #[serde(default = "default_required_samples")]
+    pub required_samples: u32,
 }
 
 fn default_cap_init() -> f64 {
@@ -98,6 +100,10 @@ fn default_trading_amount() -> f64 {
     50.0
 }
 
+fn default_required_samples() -> u32 {
+    3
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -105,6 +111,7 @@ impl Default for Config {
             trading_amount: default_trading_amount(),
             min_tp_percent: 0.0,
             strategy_mode: StrategyMode::default(),
+            required_samples: default_required_samples(),
         }
     }
 }
@@ -124,6 +131,10 @@ impl Config {
         } else {
             0.0
         }
+    }
+
+    pub fn required_samples(&self) -> u32 {
+        self.required_samples
     }
 }
 
@@ -523,6 +534,16 @@ mod tests {
             exit_type_for_strategy(StrategyMode::MrcReclaim),
             ExitType::VirtualTrailingExit { ticks: 2 }
         );
+    }
+
+    #[test]
+    fn required_samples_defaults_and_allows_zero() {
+        assert_eq!(Config::default().required_samples(), 3);
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "required_samples": 0
+        }))
+        .expect("sample setting should deserialize");
+        assert_eq!(config.required_samples(), 0);
     }
 }
 

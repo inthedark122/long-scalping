@@ -26,7 +26,7 @@ pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
     EntryGate::Wait(EntryWait {
         reason: "mrc-warmup".to_string(),
         solutions: vec![EntryWaitSolution::WaitForSamples {
-            required: crate::detection::mrc_reclaim::REQUIRED_SAMPLES,
+            required: state.cfg.required_samples(),
             current: crate::detection::mrc_reclaim::warmup_samples(&state.mrc_reclaim),
         }],
         notes: vec!["waiting for learned MRC line transitions".to_string()],
@@ -46,6 +46,7 @@ fn candidate_exit_plan(
     cascade: &crate::state::CascadeState,
     price: f64,
     side: PositionState,
+    required_samples: u32,
 ) -> Option<crate::exit::ExitPlan> {
     exit::compute(
         snapshot,
@@ -54,6 +55,7 @@ fn candidate_exit_plan(
         price,
         side,
         crate::exit::ExitPlanContext::Candidate,
+        required_samples,
     )
 }
 
@@ -221,8 +223,9 @@ pub fn movement_entry_plan(
     cascade: &CascadeSignal,
     history: &crate::state::CascadeState,
     market_state: MarketState,
+    required_samples: u32,
 ) -> Option<MovementEntryPlan> {
-    if cascade.samples < 3 || cascade.average_size <= 0.0 || cascade.stretched {
+    if cascade.samples < required_samples || cascade.average_size <= 0.0 || cascade.stretched {
         return None;
     }
 
@@ -491,9 +494,13 @@ pub fn sug_entry_plan(
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeSignal,
     side: PositionState,
+    required_samples: u32,
 ) -> Option<SugEntryPlan> {
     let sug = sug_snapshot.sug_candle?;
-    if matches!(side, PositionState::Flat) || cascade.samples < 3 || cascade.stretched {
+    if matches!(side, PositionState::Flat)
+        || cascade.samples < required_samples
+        || cascade.stretched
+    {
         return None;
     }
 
@@ -547,7 +554,8 @@ fn sug_entry_gate(
     side: PositionState,
 ) -> Option<EntryGate> {
     let sug = sug_snapshot.sug_candle?;
-    if cascade.samples < 3 {
+    let required_samples = state.cfg.required_samples();
+    if cascade.samples < required_samples {
         return Some(EntryGate::Wait(EntryWait {
             reason: "sug-info-1m-confirm-wait".to_string(),
             solutions: vec![EntryWaitSolution::WaitForConfirmation {
@@ -654,8 +662,10 @@ pub fn entry_gate(
     state: &mut EngineState,
     side: PositionState,
 ) -> EntryGate {
-    if sug_snapshot.sug_candle.is_some() && cascade.samples >= 3 {
-        if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, cascade, side) {
+    let required_samples = state.cfg.required_samples();
+    if sug_snapshot.sug_candle.is_some() && cascade.samples >= required_samples {
+        if let Some(plan) = sug_entry_plan(snapshot, sug_snapshot, cascade, side, required_samples)
+        {
             return EntryGate::Open {
                 notes: plan.notes,
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: plan.entry }),
@@ -663,11 +673,11 @@ pub fn entry_gate(
         }
     }
 
-    if state.position.side == PositionState::Flat && cascade.samples < 3 {
+    if state.position.side == PositionState::Flat && cascade.samples < required_samples {
         return EntryGate::Wait(EntryWait {
             reason: "movement-warmup".to_string(),
             solutions: vec![EntryWaitSolution::WaitForSamples {
-                required: 3,
+                required: required_samples,
                 current: cascade.samples,
             }],
             notes: vec![format!("cascade-samples={}", cascade.samples)],
@@ -792,6 +802,7 @@ pub fn entry_gate(
         cascade,
         &state.cascade_tf,
         market_state,
+        required_samples,
     ) {
         if let Some(wait) = movement_entry_confirmation_gate(state, &plan) {
             return wait;
@@ -811,6 +822,7 @@ pub fn entry_gate(
         &state.cascade_tf,
         current_price,
         side,
+        required_samples,
     ) {
         plan
     } else {
@@ -915,13 +927,24 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = sug_entry_plan(&snapshot(), &sug_snapshot(), &cascade, PositionState::Long);
+        let plan = sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &cascade,
+            PositionState::Long,
+            3,
+        );
         assert!(plan.is_some());
 
         cascade.dir = -1;
-        assert!(
-            sug_entry_plan(&snapshot(), &sug_snapshot(), &cascade, PositionState::Long,).is_some()
-        );
+        assert!(sug_entry_plan(
+            &snapshot(),
+            &sug_snapshot(),
+            &cascade,
+            PositionState::Long,
+            3,
+        )
+        .is_some());
 
         assert!(sug_entry_plan(
             &snapshot(),
@@ -932,6 +955,7 @@ mod tests {
                 ..Default::default()
             },
             PositionState::Long,
+            3,
         )
         .is_some());
     }
@@ -960,6 +984,7 @@ mod tests {
             &cascade,
             &history,
             MarketState::Sideways,
+            3,
         )
         .expect("movement should provide a directional plan");
 
