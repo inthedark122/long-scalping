@@ -1,5 +1,9 @@
 use crate::detection::cascade::{self, CascadeSignal};
-use crate::detection::{levels, sideways};
+use crate::detection::{
+    levels,
+    mrc_reclaim::{self, MrcWaitReason},
+    sideways,
+};
 use crate::exit;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, ExitKind,
@@ -8,7 +12,7 @@ use crate::model::{
 use crate::state::EngineState;
 
 pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
-    if let Some(reason) = crate::detection::mrc_reclaim::pending(&state.mrc_reclaim) {
+    if let Some(reason) = mrc_reclaim::pending(&state.mrc_reclaim) {
         return EntryGate::Open {
             notes: vec![
                 "strategy=mrc-reclaim".to_string(),
@@ -23,13 +27,44 @@ pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
             reason: EntryOpenReason::Entry(reason),
         };
     }
+    mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
+}
+
+pub fn mrc_wait_entry_gate(state: &EngineState, wait_reason: MrcWaitReason) -> EntryGate {
+    let (reason, solutions, notes) = match wait_reason {
+        MrcWaitReason::Crossing => (
+            "mrc-wait-crossing".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec!["waiting for a new MRC crossing with a directional target".to_string()],
+        ),
+        MrcWaitReason::Warmup => (
+            "mrc-warmup".to_string(),
+            vec![EntryWaitSolution::WaitForSamples {
+                required: state.cfg.required_samples(),
+                current: mrc_reclaim::warmup_samples(&state.mrc_reclaim),
+            }],
+            vec!["MRC transition history is not entry-ready".to_string()],
+        ),
+        MrcWaitReason::NoDirectionalTarget => (
+            "mrc-no-directional-target".to_string(),
+            vec![EntryWaitSolution::MrcDirectionalTarget],
+            vec!["MRC crossing has no directional target".to_string()],
+        ),
+        MrcWaitReason::BreakLine { line } => (
+            format!("break-line-{line}"),
+            vec![EntryWaitSolution::MrcBreakLineConfirmation],
+            vec!["MRC break-line confirmation is pending".to_string()],
+        ),
+        MrcWaitReason::BreakLineConfirmation => (
+            "break-line-confirmation".to_string(),
+            vec![EntryWaitSolution::MrcBreakLineConfirmation],
+            vec!["MRC break-line confirmation is pending".to_string()],
+        ),
+    };
     EntryGate::Wait(EntryWait {
-        reason: "mrc-warmup".to_string(),
-        solutions: vec![EntryWaitSolution::WaitForSamples {
-            required: state.cfg.required_samples(),
-            current: crate::detection::mrc_reclaim::warmup_samples(&state.mrc_reclaim),
-        }],
-        notes: vec!["waiting for learned MRC line transitions".to_string()],
+        reason,
+        solutions,
+        notes,
     })
 }
 
@@ -1014,6 +1049,18 @@ mod tests {
             }
             EntryGate::Wait(wait) => panic!("unexpected wait: {}", wait.reason),
         }
+    }
+
+    #[test]
+    fn mrc_wait_without_pending_entry_reports_crossing_not_samples() {
+        let mut state = EngineState::default();
+        state.cfg.required_samples = 0;
+
+        let EntryGate::Wait(wait) = mrc_reclaim_entry_gate(&state) else {
+            panic!("MRC without a pending entry should wait for a crossing");
+        };
+        assert_eq!(wait.reason, "mrc-wait-crossing");
+        assert_eq!(wait.solutions, vec![EntryWaitSolution::MrcCrossing]);
     }
 
     #[test]

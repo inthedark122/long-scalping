@@ -559,6 +559,9 @@ pub struct RegimeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryWaitSolution {
+    MrcCrossing,
+    MrcDirectionalTarget,
+    MrcBreakLineConfirmation,
     WaitForSamples {
         required: u32,
         current: u32,

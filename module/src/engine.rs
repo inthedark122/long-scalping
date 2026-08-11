@@ -595,14 +595,7 @@ fn process_realtime(
                     });
                 }
             } else if let Some(wait_reason) = observation.wait_reason {
-                gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
-                    reason: wait_reason,
-                    solutions: vec![crate::model::EntryWaitSolution::WaitForSamples {
-                        required: state.cfg.required_samples(),
-                        current: mrc_reclaim::warmup_samples(&state.mrc_reclaim),
-                    }],
-                    notes: vec!["MRC transition history is not entry-ready".to_string()],
-                });
+                gate = prediction::mrc_wait_entry_gate(state, wait_reason);
             }
         }
         gate

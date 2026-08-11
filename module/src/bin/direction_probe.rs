@@ -491,6 +491,9 @@ fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
         EntryGate::Wait(wait) => {
             for solution in &wait.solutions {
                 match solution {
+                    EntryWaitSolution::MrcCrossing
+                    | EntryWaitSolution::MrcDirectionalTarget
+                    | EntryWaitSolution::MrcBreakLineConfirmation => {}
                     EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
                         return *break_price;
                     }
@@ -534,6 +537,9 @@ fn directional_break_level(
     if let EntryGate::Wait(wait) = gate {
         for solution in &wait.solutions {
             match solution {
+                EntryWaitSolution::MrcCrossing
+                | EntryWaitSolution::MrcDirectionalTarget
+                | EntryWaitSolution::MrcBreakLineConfirmation => {}
                 EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
                     if let Some(candidate) =
                         break_candidate(current_price, side, *break_price, "wait-break")

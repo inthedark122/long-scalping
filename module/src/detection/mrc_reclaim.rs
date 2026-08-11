@@ -77,10 +77,19 @@ pub struct ReclaimEvent {
     pub estimated_time_ms: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrcWaitReason {
+    Crossing,
+    Warmup,
+    NoDirectionalTarget,
+    BreakLine { line: u8 },
+    BreakLineConfirmation,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Observation {
     pub entry: Option<EntryReason>,
-    pub wait_reason: Option<String>,
+    pub wait_reason: Option<MrcWaitReason>,
     pub samples: u32,
     pub events: Vec<ReclaimEvent>,
 }
@@ -116,6 +125,14 @@ fn target_for(
             (count >= required_samples).then_some((target, count))
         })
         .max_by_key(|(_, count)| *count)
+}
+
+fn has_directional_target(source: usize, direction: i8) -> bool {
+    if direction > 0 {
+        source + 1 < 9
+    } else {
+        source > 0
+    }
 }
 
 /// Return the strongest learned transition from the current source line.
@@ -220,7 +237,7 @@ pub fn observe_with_context(
         {
             state.wait_direction = 0;
         } else {
-            observation.wait_reason = Some("break-line-confirmation".to_string());
+            observation.wait_reason = Some(MrcWaitReason::BreakLineConfirmation);
         }
     }
 
@@ -281,7 +298,9 @@ pub fn observe_with_context(
             state.wait_direction = event.direction;
             state.pending_entry = None;
             observation.entry = None;
-            observation.wait_reason = Some(format!("break-line-{}", event.line_idx));
+            observation.wait_reason = Some(MrcWaitReason::BreakLine {
+                line: event.line_idx,
+            });
             observation.events.push(ReclaimEvent {
                 line_idx: event.line_idx,
                 line: event.line,
@@ -334,7 +353,11 @@ pub fn observe_with_context(
             required_samples,
         ) else {
             observation.samples = warmup_samples(state);
-            observation.wait_reason = Some("mrc-warmup".to_string());
+            observation.wait_reason = Some(if has_directional_target(source, event.direction) {
+                MrcWaitReason::Warmup
+            } else {
+                MrcWaitReason::NoDirectionalTarget
+            });
             observation.events.push(ReclaimEvent {
                 line_idx: event.line_idx,
                 line: event.line,
@@ -657,6 +680,20 @@ mod tests {
             ready.entry,
             Some(EntryReason::MrcReclaim { target_line: 5, .. })
         ));
+    }
+
+    #[test]
+    fn outer_cross_does_not_report_sample_warmup_without_a_target() {
+        let mut state = MrcReclaimState::default();
+        let lines = [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0];
+
+        let observation = observe(&mut state, &[event(8, 1, 1)], lines, 110.0, 1, 0.0, 0);
+
+        assert!(observation.entry.is_none());
+        assert_eq!(
+            observation.wait_reason,
+            Some(MrcWaitReason::NoDirectionalTarget)
+        );
     }
 
     #[test]
