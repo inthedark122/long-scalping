@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.81
+
+Common required-samples configuration release.
+
+- Use the configured `required_samples` value for MRC startup seeding and live observation.
+- Apply the common sample requirement across MRC, movement, SUG, and exit warmup logic.
+- Remove the hidden MRC sample fallback and expose the requirement in the research tool.
+
 # 1.0.80
 
 MRC Reclaim stale-entry protection release.

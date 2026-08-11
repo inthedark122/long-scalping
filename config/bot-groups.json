@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.80",
+          "module_version": "1.0.81",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.80"
+              "module_version": "1.0.81"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
+          "description": "Start the 1.0.81 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
@@ -101,12 +101,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.80",
+          "module_version": "1.0.81",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.80"
+              "module_version": "1.0.81"
             }
           }
         }
@@ -114,7 +114,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.80 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
+          "description": "Start the 1.0.81 release using compiled defaults or cap_init/trading_amount/min_tp_percent/strategy/required_samples overrides. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with a static level stop and moves TP by 2 ticks after it is crossed.",
           "name": "Start",
           "params": [
             {
