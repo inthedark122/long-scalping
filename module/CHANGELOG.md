@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.82
+
+Volatility-adjusted risk sizing release.
+
+- Add optional `risk_target_percent` sizing based on projected stop-loss distance.
+- Cap aggregate exposure when the projected stop is wider than the configured target.
+- Reject protected entries that cannot satisfy a valid stop-loss or exchange minimum notional.
+
 # 1.0.81
 
 Common required-samples configuration release.
