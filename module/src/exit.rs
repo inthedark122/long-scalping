@@ -768,25 +768,43 @@ fn ensure_trailing_exit_order(
         );
     }
 
+    // VirtualTrailingExit must refresh its virtual SL on every live
+    // evaluation. The TP remains on its existing 1m cadence, but the stop
+    // needs the current price/indicator state to trail the position before a
+    // fast move can cross the stale level.
+    let recalculate_virtual_sl = matches!(
+        state.position.exit_type,
+        ExitType::VirtualTrailingExit { .. }
+    );
     let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
-    if !recalculate_tp
-        || matches!(
-            state.position.entry_reason,
-            Some(crate::model::EntryReason::MrcReclaim { .. })
+    let preserve_mrc_reclaim_tp = matches!(
+        state.position.entry_reason,
+        Some(crate::model::EntryReason::MrcReclaim { .. })
+    );
+
+    // Build the active plan on every evaluation for VirtualTrailingExit. This
+    // calculation must happen independently of the 1m TP reprice throttle.
+    let active_plan = if recalculate_virtual_sl || (recalculate_tp && !preserve_mrc_reclaim_tp) {
+        position_exit_plan(
+            state,
+            snapshot,
+            sug_snapshot,
+            input.price,
+            side,
+            ExitPlanContext::ActiveReprice,
         )
-    {
+    } else {
+        None
+    };
+
+    if !recalculate_virtual_sl && (!recalculate_tp || preserve_mrc_reclaim_tp) {
         return (Vec::new(), Vec::new(), Vec::new());
     }
-    state.last_active_tp_recalc_bar = Some(state.bar_1m);
+    if recalculate_tp {
+        state.last_active_tp_recalc_bar = Some(state.bar_1m);
+    }
 
-    if let Some(plan) = position_exit_plan(
-        state,
-        snapshot,
-        sug_snapshot,
-        input.price,
-        side,
-        ExitPlanContext::ActiveReprice,
-    ) {
+    if let Some(plan) = active_plan {
         let candidate_stop_loss = plan.stop_loss.price();
         let favorable = match side {
             PositionState::Long => candidate_stop_loss > previous_stop_loss,
@@ -797,7 +815,10 @@ fn ensure_trailing_exit_order(
             set_stop_loss(state, plan.stop_loss);
             state.position.exit_tp_reliable = plan.tp_reliable;
         }
-        if (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON {
+        if recalculate_tp
+            && !preserve_mrc_reclaim_tp
+            && (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON
+        {
             let previous_tp = state.position.take_profit;
             state.position.take_profit = plan.take_profit.price();
             let tick = tick_size(input);

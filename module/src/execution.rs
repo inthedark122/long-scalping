@@ -1809,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn virtual_trailing_exit_keeps_static_sl() {
+    fn virtual_trailing_exit_recalculates_sl_on_each_evaluation() {
         let mut state = EngineState::default();
         state.last_active_tp_recalc_bar = Some(state.bar_1m);
         state.position = crate::state::PositionRuntime {
@@ -1822,7 +1822,15 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            entry_reason: None,
+            entry_reason: Some(crate::model::EntryReason::MrcReclaim {
+                price: 100.0,
+                target_price: 100.2,
+                stop_price: 90.0,
+                probability: 0.8,
+                estimated_time_ms: 1_000.0,
+                source_line: 1,
+                target_line: 2,
+            }),
             exit_type: ExitType::VirtualTrailingExit { ticks: 3 },
         };
         let mut inp = input();
@@ -1861,9 +1869,12 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(first.as_ref().unwrap().tp_orders.is_empty());
-        assert_eq!(state.position.stop_loss, 90.0);
+        assert_eq!(state.position.stop_loss, 95.0);
 
         inp.price = 101.0;
+        snapshot.tf1m.zz_buy_price = Some(99.0);
+        snapshot.tf5m = snapshot.tf1m;
+        snapshot.tf15m = snapshot.tf1m;
         let second = evaluate(
             &inp,
             &mut state,
@@ -1872,7 +1883,7 @@ mod tests {
             &decision(MarketState::Long),
         );
         assert!(second.as_ref().unwrap().tp_orders.is_empty());
-        assert_eq!(state.position.stop_loss, 90.0);
+        assert_eq!(state.position.stop_loss, 99.0);
     }
 
     #[test]
