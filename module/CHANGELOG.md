@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.83
+
+Virtual trailing stop recalculation release.
+
+- Recalculate the `VirtualTrailingExit` stop plan on every realtime evaluation instead of retaining the initial stop level.
+- Keep trailing stops favorable-only while preserving the existing once-per-1m-bar TP repricing cadence.
+
 # 1.0.82
 
 Volatility-adjusted risk sizing release.
