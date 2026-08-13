@@ -718,7 +718,56 @@ fn ensure_trailing_exit_order(
     }
 
     if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
-        return (Vec::new(), Vec::new(), Vec::new());
+        let previous_tp = state.position.take_profit;
+        let tick = tick_size(input);
+        let Some(recovery_tp) = stop_loss::trailing_recovery_take_profit_with_ticks(
+            input.price,
+            side,
+            tick,
+            recovery_ticks(state.position.exit_type),
+        ) else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
+
+        // Keep the same reduce-only order anchored to the latest market price.
+        // The host upserts by mark, so returning this order on every changed
+        // price amends the existing recovery order instead of leaving it at
+        // the price from the initial virtual-SL crossing.
+        if (recovery_tp - previous_tp).abs() <= f64::EPSILON {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+        state.position.take_profit = recovery_tp;
+        record_tp_reprice(
+            state,
+            input,
+            side,
+            previous_tp,
+            recovery_tp,
+            "trail-reprice",
+            state.position.exit_type.as_str(),
+            true,
+            format!(
+                "mode={}|tp_mark={}|price={:.4}|sl={:.4}|tick={:.4}|ticks={}",
+                state.position.exit_type.as_str(),
+                mark,
+                input.price,
+                state.position.stop_loss,
+                tick,
+                recovery_ticks(state.position.exit_type)
+            ),
+        );
+        let note = tp_reprice_order_note(state, tick, "tp:trail-reprice");
+        return (
+            vec![tp_limit_order(
+                direction,
+                qty,
+                recovery_tp,
+                &mark,
+                Some(&note),
+            )],
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
     let previous_stop_loss = state.position.stop_loss;

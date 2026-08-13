@@ -347,11 +347,7 @@ fn handle_order_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::PositionRuntime;
-    use lte_strategy_bridge::abi::{
-        ModuleEvent, ModuleExchangeOrderSide, ModuleInput, ModuleOrderStatus, ModulePositions,
-        ModuleSymbolInfo, OrderRole,
-    };
+    use lte_strategy_bridge::abi::{ModuleEvent, ModuleInput, ModulePositions, ModuleSymbolInfo};
     use std::collections::BTreeMap;
 
     fn input(event: ModuleEvent) -> ModuleInput {
