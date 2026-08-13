@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.85
+
+Trailing recovery TP repricing release.
+
+- Reprice the reduce-only recovery TP from the current market price after the virtual stop is crossed.
+- Keep the recovery order anchored to the latest price on successive realtime evaluations.
+- Add integration coverage for long and short trailing repricing.
+
 # 1.0.84
 
 MRC sample warmup progress release.
