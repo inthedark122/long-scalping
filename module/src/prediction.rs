@@ -27,7 +27,11 @@ pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
             reason: EntryOpenReason::Entry(reason),
         };
     }
-    mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
+    if mrc_reclaim::warmup_samples(&state.mrc_reclaim) < state.cfg.required_samples() {
+        mrc_wait_entry_gate(state, MrcWaitReason::Warmup)
+    } else {
+        mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
+    }
 }
 
 pub fn mrc_wait_entry_gate(state: &EngineState, wait_reason: MrcWaitReason) -> EntryGate {
@@ -1052,9 +1056,29 @@ mod tests {
     }
 
     #[test]
-    fn mrc_wait_without_pending_entry_reports_crossing_not_samples() {
+    fn mrc_wait_without_pending_entry_reports_sample_progress_until_ready() {
         let mut state = EngineState::default();
-        state.cfg.required_samples = 0;
+        state.cfg.required_samples = 10;
+
+        let EntryGate::Wait(wait) = mrc_reclaim_entry_gate(&state) else {
+            panic!("MRC without a pending entry should wait");
+        };
+        assert_eq!(wait.reason, "mrc-warmup");
+        assert_eq!(
+            wait.solutions,
+            vec![EntryWaitSolution::WaitForSamples {
+                required: 10,
+                current: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn mrc_wait_without_pending_entry_keeps_crossing_wait_when_warm() {
+        let mut state = EngineState::default();
+        state.cfg.required_samples = 1;
+        state.mrc_reclaim.last_line = Some(4);
+        state.mrc_reclaim.transitions[4][5].count = 1;
 
         let EntryGate::Wait(wait) = mrc_reclaim_entry_gate(&state) else {
             panic!("MRC without a pending entry should wait for a crossing");
