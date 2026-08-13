@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.84
+
+MRC sample warmup progress release.
+
+- Restore the existing \`samples:current/required\` progress while MRC transition history is warming up.
+- Keep the explicit MRC crossing wait once the configured sample requirement is ready.
+
 # 1.0.83
 
 Virtual trailing stop recalculation release.
