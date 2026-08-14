@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.85",
+          "module_version": "1.0.86",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.85"
+              "module_version": "1.0.86"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.85 release using compiled defaults or cap_init/trading_amount/min_tp_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with favorable-only stop recalculation on each realtime evaluation and moves TP by 2 ticks from the current price after the virtual stop is crossed.",
+          "description": "Start the 1.0.86 release using compiled defaults or cap_init/trading_amount/min_tp_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim keeps its entry target and adjacent-line stop fixed during normal realtime evaluations, then moves TP by 2 ticks from the current price after the virtual stop is crossed.",
           "name": "Start",
           "params": [
             {
@@ -119,12 +119,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.85",
+          "module_version": "1.0.86",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.85"
+              "module_version": "1.0.86"
             }
           }
         }
@@ -132,7 +132,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.85 release using compiled defaults or cap_init/trading_amount/min_tp_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim uses VirtualTrailingExit with favorable-only stop recalculation on each realtime evaluation and moves TP by 2 ticks from the current price after the virtual stop is crossed.",
+          "description": "Start the 1.0.86 release using compiled defaults or cap_init/trading_amount/min_tp_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim keeps its entry target and adjacent-line stop fixed during normal realtime evaluations, then moves TP by 2 ticks from the current price after the virtual stop is crossed.",
           "name": "Start",
           "params": [
             {

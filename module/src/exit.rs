@@ -817,23 +817,26 @@ fn ensure_trailing_exit_order(
         );
     }
 
-    // VirtualTrailingExit must refresh its virtual SL on every live
-    // evaluation. The TP remains on its existing 1m cadence, but the stop
-    // needs the current price/indicator state to trail the position before a
-    // fast move can cross the stale level.
-    let recalculate_virtual_sl = matches!(
-        state.position.exit_type,
-        ExitType::VirtualTrailingExit { .. }
-    );
-    let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
-    let preserve_mrc_reclaim_tp = matches!(
+    let preserve_mrc_reclaim_exit = matches!(
         state.position.entry_reason,
         Some(crate::model::EntryReason::MrcReclaim { .. })
     );
 
+    // VirtualTrailingExit must refresh its virtual SL on every live
+    // evaluation, except for MRC Reclaim positions, whose learned entry
+    // target and adjacent-line stop are fixed for the position lifetime.
+    // The TP for other strategies remains on its existing 1m cadence, but
+    // the stop needs the current price/indicator state to trail the position
+    // before a fast move can cross the stale level.
+    let recalculate_virtual_sl = matches!(
+        state.position.exit_type,
+        ExitType::VirtualTrailingExit { .. }
+    ) && !preserve_mrc_reclaim_exit;
+    let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
+
     // Build the active plan on every evaluation for VirtualTrailingExit. This
     // calculation must happen independently of the 1m TP reprice throttle.
-    let active_plan = if recalculate_virtual_sl || (recalculate_tp && !preserve_mrc_reclaim_tp) {
+    let active_plan = if recalculate_virtual_sl || (recalculate_tp && !preserve_mrc_reclaim_exit) {
         position_exit_plan(
             state,
             snapshot,
@@ -846,7 +849,7 @@ fn ensure_trailing_exit_order(
         None
     };
 
-    if !recalculate_virtual_sl && (!recalculate_tp || preserve_mrc_reclaim_tp) {
+    if !recalculate_virtual_sl && (!recalculate_tp || preserve_mrc_reclaim_exit) {
         return (Vec::new(), Vec::new(), Vec::new());
     }
     if recalculate_tp {
@@ -865,7 +868,7 @@ fn ensure_trailing_exit_order(
             state.position.exit_tp_reliable = plan.tp_reliable;
         }
         if recalculate_tp
-            && !preserve_mrc_reclaim_tp
+            && !preserve_mrc_reclaim_exit
             && (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON
         {
             let previous_tp = state.position.take_profit;

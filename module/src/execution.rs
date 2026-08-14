@@ -1759,15 +1759,7 @@ mod tests {
             stop_loss_reason: String::new(),
             exit_tp_reliable: false,
             exit_mode: ExitMode::Structural,
-            entry_reason: Some(crate::model::EntryReason::MrcReclaim {
-                price: 100.0,
-                target_price: 100.2,
-                stop_price: 90.0,
-                probability: 0.8,
-                estimated_time_ms: 1_000.0,
-                source_line: 1,
-                target_line: 2,
-            }),
+            entry_reason: Some(crate::model::EntryReason::SugInfoScalp { price: 100.0 }),
             exit_type: ExitType::VirtualTrailingExit { ticks: 3 },
         };
         let mut inp = input();

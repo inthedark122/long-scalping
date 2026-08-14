@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.86
+
+MRC Reclaim fixed-exit release.
+
+- Keep the entry-derived MRC target and adjacent-line stop fixed during normal realtime evaluations.
+- Preserve virtual-stop recovery behavior after the initial stop is crossed.
+- Add regression coverage for MRC exit stability.
+
 # 1.0.85
 
 Trailing recovery TP repricing release.

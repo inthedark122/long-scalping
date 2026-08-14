@@ -149,3 +149,73 @@ fn trail_after_virtual_sl_reprices_single_tp_from_current_price() {
     assert!(output.place_orders[0].reduce_only);
     assert!(output.cancel_orders.is_empty());
 }
+
+#[test]
+fn mrc_reclaim_keeps_entry_tp_and_sl_on_realtime_updates() {
+    let mut state = EngineState::default();
+    let mut snapshot = IndicatorSnapshot::default();
+    snapshot.tf1m.mrc = long_scalping::model::MrcBands {
+        down_big: 80.0,
+        down_outer: 85.0,
+        down_small: 90.0,
+        down_inner: 95.0,
+        mean_line: 100.0,
+        up_inner: 105.0,
+        up_small: 110.0,
+        up_outer: 115.0,
+        up_big: 120.0,
+        current_cross: 0.0,
+        mean_line_slope: 1.0,
+    };
+    snapshot.tf1m.zz_buy_price = Some(95.0);
+    snapshot.tf1m.zz_sell_price = Some(110.0);
+    snapshot.tf1m.candle.close = 102.0;
+    snapshot.tf5m = snapshot.tf1m;
+    snapshot.tf15m = snapshot.tf1m;
+    snapshot.tf1h = snapshot.tf1m;
+    state.last_snapshot = Some(snapshot);
+    state.last_active_tp_recalc_bar = Some(state.bar_1m);
+    state.position = PositionRuntime {
+        side: PositionState::Long,
+        entry_price: 100.0,
+        peak_price: 100.0,
+        trough_price: 100.0,
+        take_profit: 100.2,
+        stop_loss: 90.0,
+        stop_loss_reason: "mrc-reclaim:adjacent-line".to_string(),
+        exit_tp_reliable: true,
+        exit_mode: ExitMode::Structural,
+        exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
+        entry_reason: Some(long_scalping::model::EntryReason::MrcReclaim {
+            price: 100.0,
+            target_price: 100.2,
+            stop_price: 90.0,
+            probability: 0.8,
+            estimated_time_ms: 1_000.0,
+            source_line: 1,
+            target_line: 2,
+        }),
+    };
+
+    let positions = ModulePositions {
+        long: Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.2,
+            qty: 0.1,
+        }),
+        short: None,
+    };
+
+    let first = run(&input(102.0, positions.clone()), &mut state);
+    assert!(first.place_orders.is_empty());
+    assert!(first.cancel_orders.is_empty());
+    assert_eq!(state.position.take_profit, 100.2);
+    assert_eq!(state.position.stop_loss, 90.0);
+
+    let second = run(&input(101.0, positions), &mut state);
+    assert!(second.place_orders.is_empty());
+    assert!(second.cancel_orders.is_empty());
+    assert_eq!(state.position.take_profit, 100.2);
+    assert_eq!(state.position.stop_loss, 90.0);
+}
