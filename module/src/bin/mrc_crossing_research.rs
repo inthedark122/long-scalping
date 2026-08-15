@@ -17,7 +17,7 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--required-samples N] [--no-cache] [--clear-cache] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--end-time UNIX_MS] [--required-samples N] [--no-cache] [--clear-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -216,11 +216,16 @@ fn hourly_history_limit(minute_history: usize) -> usize {
 fn analyze_symbol(
     symbol_key: &str,
     history: usize,
+    end_time_ms: Option<i64>,
     required_samples: u32,
     cache_settings: CacheSettings,
 ) -> Result<(usize, usize, CacheStatus, CacheStatus, AnalysisReport), Box<dyn Error>> {
     let (minute, minute_cache) =
         fetch_history_for_timeframe_cached(symbol_key, 60, history, None, cache_settings)?;
+    let minute = minute
+        .into_iter()
+        .filter(|row| end_time_ms.is_none_or(|end| row.time_ms < end))
+        .collect::<Vec<_>>();
     let hourly_limit = hourly_history_limit(history);
     let (hourly, hourly_cache) =
         fetch_history_for_timeframe_cached(symbol_key, 3_600, hourly_limit, None, cache_settings)?;
@@ -255,6 +260,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut symbol_keys = Vec::new();
     let mut history = 500usize;
+    let mut end_time_ms = None::<i64>;
     let mut required_samples = Config::default().required_samples();
     let mut output = None::<String>;
     let mut html = None::<String>;
@@ -278,6 +284,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             "--history" if args.get(index + 1).is_some() => {
                 history = args[index + 1].parse().unwrap_or(history);
+                index += 2;
+            }
+            "--end-time" if args.get(index + 1).is_some() => {
+                end_time_ms = args[index + 1].parse().ok();
                 index += 2;
             }
             "--required-samples" if args.get(index + 1).is_some() => {
@@ -326,6 +336,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (minute_count, hourly_count, minute_cache, hourly_cache, report) = analyze_symbol(
             symbol_key,
             history,
+            end_time_ms,
             required_samples,
             cache_settings,
         )?;
@@ -343,6 +354,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let document = json!({
                 "symbol_key": symbol_key,
                 "history_requested_1m": history,
+                "end_time_ms": end_time_ms,
                 "required_samples": required_samples,
                 "cache": {"1m": minute_cache.to_string(), "1h": hourly_cache.to_string()},
                 "history_loaded": {"1m": minute_count, "1h": hourly_count},

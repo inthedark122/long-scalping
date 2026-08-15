@@ -183,7 +183,7 @@ impl Analyzer {
         ) {
             return;
         }
-        self.trades.open(TradeSetup::with_levels(
+        self.trades.queue_next_candle(TradeSetup::with_levels(
             event.direction,
             event.line,
             event.line_name,
@@ -451,14 +451,15 @@ mod tests {
         let mut analyzer = Analyzer::new(3);
         analyzer.observe(&row(0, 99.0, 99.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(60_000, 101.0, 101.0, 99.0, 100), &[10, 100]);
-        analyzer.observe(&row(120_000, 105.0, 105.0, 101.0, 100), &[10, 100]);
+        analyzer.observe(&row(120_000, 105.0, 105.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(180_000, 99.0, 105.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(240_000, 105.0, 105.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(300_000, 99.0, 105.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(360_000, 105.0, 105.0, 99.0, 100), &[10, 100]);
         analyzer.observe(&row(420_000, 95.0, 105.0, 95.0, 100), &[10, 100]);
         analyzer.observe(&row(480_000, 101.0, 101.0, 95.0, 100), &[10, 100]);
-        analyzer.observe(&row(540_000, 103.0, 105.0, 101.0, 100), &[10, 100]);
+        analyzer.observe(&row(540_000, 103.0, 105.0, 99.0, 100), &[10, 100]);
+        analyzer.observe(&row(600_000, 103.0, 105.0, 101.0, 100), &[10, 100]);
         let report = analyzer.report();
         assert_eq!(report.trade_summary.trades, 1);
         assert_eq!(report.trades[0].source_name, "mean");

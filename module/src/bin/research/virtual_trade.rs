@@ -208,6 +208,7 @@ impl TradeSetup {
 pub(crate) struct VirtualTradeSimulator {
     fees: FeeModel,
     active: Option<VirtualPosition>,
+    pending_next_candle: Option<TradeSetup>,
     completed: Vec<VirtualTradeResult>,
 }
 
@@ -222,14 +223,27 @@ impl VirtualTradeSimulator {
         Self {
             fees,
             active: None,
+            pending_next_candle: None,
             completed: Vec::new(),
         }
     }
 
     pub(crate) fn open(&mut self, setup: TradeSetup) {
-        if self.active.is_some() {
+        if self.active.is_some() || self.pending_next_candle.is_some() {
             return;
         }
+        let opened_at = setup.opened_at;
+        self.activate(setup, opened_at);
+    }
+
+    pub(crate) fn queue_next_candle(&mut self, setup: TradeSetup) {
+        if self.active.is_some() || self.pending_next_candle.is_some() {
+            return;
+        }
+        self.pending_next_candle = Some(setup);
+    }
+
+    fn activate(&mut self, setup: TradeSetup, opened_at: i64) {
         self.active = Some(VirtualPosition {
             side: setup.side,
             source_line: setup.source_line,
@@ -239,7 +253,7 @@ impl VirtualTradeSimulator {
             entry_price: setup.entry_price,
             target_price: setup.target_price,
             stop_price: setup.stop_price,
-            opened_at: setup.opened_at,
+            opened_at,
             reason: setup.reason,
             max_favorable_price: setup.entry_price,
             max_adverse_price: setup.entry_price,
@@ -247,6 +261,25 @@ impl VirtualTradeSimulator {
     }
 
     pub(crate) fn update(&mut self, row: &CandleRow) {
+        if self.active.is_none() {
+            let Some(setup) = self.pending_next_candle.take() else {
+                return;
+            };
+
+            let fills = if setup.side > 0 {
+                row.low <= setup.entry_price
+            } else {
+                row.high >= setup.entry_price
+            };
+            if fills {
+                // The entry is only known to fill somewhere inside this candle.
+                // Do not also resolve TP/SL from the same OHLC bar; its intrabar
+                // order is unknowable without tick data.
+                self.activate(setup, row.time_ms);
+            }
+            return;
+        }
+
         let Some((hit_stop, hit_target, stop_price, target_price)) =
             self.active.as_mut().map(|trade| {
                 if trade.side > 0 {
@@ -336,6 +369,9 @@ impl VirtualTradeSimulator {
     }
 
     pub(crate) fn finish(&mut self, row: &CandleRow) {
+        // A setup created on the final candle has no next candle in which it
+        // can fill, so expire it instead of allowing the final row to fill it.
+        self.pending_next_candle = None;
         self.update(row);
         self.close_active(row.close, row.time_ms, "end-of-history", "market");
     }
