@@ -8,7 +8,7 @@ use long_scalping::model::Config;
 
 mod research;
 
-use research::data::fetch_history_for_timeframe;
+use research::data::{fetch_history_for_timeframe_cached, CacheSettings, CacheStatus};
 use research::mrc_crossing::{AnalysisReport, Analyzer};
 use research::mrc_crossing_html;
 use serde_json::json;
@@ -17,7 +17,7 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--required-samples N] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--required-samples N] [--no-cache] [--clear-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -120,12 +120,15 @@ fn print_summary(
     symbol_key: &str,
     minute_count: usize,
     hourly_count: usize,
+    minute_cache: CacheStatus,
+    hourly_cache: CacheStatus,
     report: &AnalysisReport,
     print_positions: bool,
 ) {
     println!("MRC CROSSING RESEARCH");
     println!("symbol                 : {symbol_key}");
     println!("history                : 1m={minute_count} 1h={hourly_count}");
+    println!("cache                  : 1m={minute_cache} 1h={hourly_cache}");
     println!("crossings              : {}", report.crossing_count);
     println!("transitions            : {}", report.transition_count);
     println!("break-line events      : {}", report.break_event_count);
@@ -206,14 +209,21 @@ fn print_summary(
     }
 }
 
+fn hourly_history_limit(minute_history: usize) -> usize {
+    ((minute_history + 59) / 60 + 10).max(10)
+}
+
 fn analyze_symbol(
     symbol_key: &str,
     history: usize,
     required_samples: u32,
-) -> Result<(usize, usize, AnalysisReport), Box<dyn Error>> {
-    let minute = fetch_history_for_timeframe(symbol_key, 60, history, None)?;
-    let hourly_limit = ((history + 3_599) / 3_600 + 10).max(10);
-    let hourly = fetch_history_for_timeframe(symbol_key, 3_600, hourly_limit, None)?;
+    cache_settings: CacheSettings,
+) -> Result<(usize, usize, CacheStatus, CacheStatus, AnalysisReport), Box<dyn Error>> {
+    let (minute, minute_cache) =
+        fetch_history_for_timeframe_cached(symbol_key, 60, history, None, cache_settings)?;
+    let hourly_limit = hourly_history_limit(history);
+    let (hourly, hourly_cache) =
+        fetch_history_for_timeframe_cached(symbol_key, 3_600, hourly_limit, None, cache_settings)?;
     let mut analyzer = Analyzer::new(required_samples);
     let mut hourly_index = 0usize;
     let mut active_ntps = Vec::new();
@@ -232,7 +242,13 @@ fn analyze_symbol(
         analyzer.finish(last);
     }
 
-    Ok((minute.len(), hourly.len(), analyzer.report()))
+    Ok((
+        minute.len(),
+        hourly.len(),
+        minute_cache,
+        hourly_cache,
+        analyzer.report(),
+    ))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -242,6 +258,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut required_samples = Config::default().required_samples();
     let mut output = None::<String>;
     let mut html = None::<String>;
+    let mut cache_settings = CacheSettings::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -266,6 +283,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--required-samples" if args.get(index + 1).is_some() => {
                 required_samples = args[index + 1].parse().unwrap_or(required_samples);
                 index += 2;
+            }
+            "--no-cache" => {
+                cache_settings.enabled = false;
+                index += 1;
+            }
+            "--clear-cache" => {
+                cache_settings.clear = true;
+                index += 1;
             }
             "--output" if args.get(index + 1).is_some() => {
                 output = Some(args[index + 1].clone());
@@ -298,12 +323,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, hourly_count, report) =
-            analyze_symbol(symbol_key, history, required_samples)?;
+        let (minute_count, hourly_count, minute_cache, hourly_cache, report) = analyze_symbol(
+            symbol_key,
+            history,
+            required_samples,
+            cache_settings,
+        )?;
         print_summary(
             symbol_key,
             minute_count,
             hourly_count,
+            minute_cache,
+            hourly_cache,
             &report,
             print_positions,
         );
@@ -313,6 +344,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "symbol_key": symbol_key,
                 "history_requested_1m": history,
                 "required_samples": required_samples,
+                "cache": {"1m": minute_cache.to_string(), "1h": hourly_cache.to_string()},
                 "history_loaded": {"1m": minute_count, "1h": hourly_count},
                 "ntps_baseline": {"timeframe": "1h", "lookback_candles": 10, "small_ntps": "lower-third"},
                 "crossing_features": {"evidence": "wick-penetration", "frequent_window_minutes": 30, "frequent_threshold": 2, "break_minutes": 30},
