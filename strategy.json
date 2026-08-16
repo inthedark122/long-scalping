@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.87",
+      "module_version": "1.0.88",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.87"
+          "module_version": "1.0.88"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.87 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing learns exact three-line crossings from the configured minimum samples and uses learned next-line probability, timing, and movement; configured minimum TP and SL distances apply to MRC exits; cascade movement remains separate. Stairs uses LevelExit.",
+      "description": "Start the 1.0.88 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing learns exact three-line crossings from the configured minimum samples and uses learned next-line probability, timing, and movement; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
       "params": [
         {
           "code": "cap_init",
@@ -51,14 +51,14 @@
         {
           "code": "min_tp_percent",
           "name": "Minimum TP %",
-          "description": "Minimum structural TP distance. The larger of this value and the cascade average is used.",
+          "description": "Minimum TP distance for every strategy exit. The larger of this value and the cascade average is used when selecting structural targets.",
           "default": 0.0,
           "variant": "Number"
         },
         {
           "code": "min_sl_percent",
           "name": "Minimum SL %",
-          "description": "Minimum MRC stop-loss distance. The learned MRC stop is expanded away from entry when it is closer; 0 disables this minimum.",
+          "description": "Minimum SL distance for every strategy exit. A closer stop is expanded away from entry; 0 disables this minimum.",
           "default": 0.0,
           "variant": "Number"
         },
@@ -96,7 +96,7 @@
         {
           "code": "entry_type",
           "name": "Entry order",
-      "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. For MRC Crossing, configured minimum TP and SL distances apply to the learned exit; the current candle is evaluated for a fresh signal after expiration.",
+      "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; the current candle is evaluated for a fresh signal after expiration.",
           "default": 1,
           "variant": "Select",
           "options": [

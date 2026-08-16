@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.88
+
+Global exit-distance guard release.
+
+- Enforce configured minimum TP and SL distances through the shared guard layer.
+- Keep exit-plan construction focused on selecting the strategy's raw TP and SL levels.
+- Make used structural stop-loss exclusions explicit in the single exit-plan builder.
+
 # 1.0.87
 
 MRC Crossing model release.
