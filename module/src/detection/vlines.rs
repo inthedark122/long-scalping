@@ -1,4 +1,4 @@
-use crate::state::{MrcCrossingState, VLineState};
+use crate::state::{MrcCrossingState, MrcMovementSnapshot, VLineState};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MrcCrossEvent {
@@ -7,6 +7,29 @@ pub struct MrcCrossEvent {
     pub direction: i8,
     pub tick: u64,
     pub now_ms: u64,
+    pub completed_movement: Option<MrcMovementSnapshot>,
+}
+
+fn completed_movement(crossing: &MrcCrossingState, now_ms: u64) -> Option<MrcMovementSnapshot> {
+    let start_line = crossing.last_line?;
+    let start_time = crossing
+        .sequence_len
+        .checked_sub(1)
+        .map(|index| crossing.sequence_times_ms[index])
+        .filter(|time| *time > 0)?;
+    if crossing.movement_start <= 0.0 || crossing.movement_direction == 0 {
+        return None;
+    }
+    Some(MrcMovementSnapshot {
+        start_line,
+        start_price: crossing.movement_start,
+        target_price: crossing.movement_target,
+        high: crossing.movement_high,
+        low: crossing.movement_low,
+        extreme: crossing.movement_extreme,
+        direction: crossing.movement_direction,
+        duration_ms: now_ms.saturating_sub(start_time),
+    })
 }
 
 fn record_cross(
@@ -26,6 +49,8 @@ fn record_cross(
     if crossing.last_line == Some(line_idx as u8) {
         return None;
     }
+
+    let completed_movement = completed_movement(crossing, now_ms);
 
     let tracker = &mut vlines[line_idx];
     tracker.last_cross_tick = tick;
@@ -70,6 +95,7 @@ fn record_cross(
         direction,
         tick,
         now_ms,
+        completed_movement,
     })
 }
 

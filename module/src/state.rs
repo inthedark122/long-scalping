@@ -54,58 +54,81 @@ pub struct MrcCrossingState {
     pub movement_direction: i8,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MrcTransitionStats {
-    pub count: u32,
-    pub duration_sum_ms: u64,
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MrcMovementSnapshot {
+    pub start_line: u8,
+    pub start_price: f64,
+    pub target_price: f64,
+    pub high: f64,
+    pub low: f64,
+    pub extreme: f64,
+    pub direction: i8,
+    pub duration_ms: u64,
 }
 
-impl MrcTransitionStats {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MrcForecastStats {
+    pub count: u32,
+    pub duration_sum_ms: u64,
+    pub favorable_pct_sum: f64,
+    pub adverse_pct_sum: f64,
+}
+
+impl MrcForecastStats {
     pub fn average_duration_ms(self) -> Option<f64> {
         (self.count > 0).then_some(self.duration_sum_ms as f64 / self.count as f64)
     }
+
+    pub fn average_favorable_pct(self) -> Option<f64> {
+        (self.count > 0).then_some(self.favorable_pct_sum / self.count as f64)
+    }
+
+    pub fn average_adverse_pct(self) -> Option<f64> {
+        (self.count > 0).then_some(self.adverse_pct_sum / self.count as f64)
+    }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MrcPatternStats {
+    pub next: [MrcForecastStats; 9],
+}
+
+impl Default for MrcPatternStats {
+    fn default() -> Self {
+        Self {
+            next: [MrcForecastStats::default(); 9],
+        }
+    }
+}
+
+impl MrcPatternStats {
+    pub fn observations(&self) -> u32 {
+        self.next.iter().map(|stats| stats.count).sum()
+    }
+}
+
+pub const MRC_PATTERN_LENGTH: usize = 3;
+
 #[derive(Debug, Clone)]
-pub struct MrcReclaimState {
-    pub first_seen_ms: [u64; 9],
-    pub last_cross_ms: [u64; 9],
-    pub source_counts: [u32; 9],
-    pub transitions: [[MrcTransitionStats; 9]; 9],
-    pub scenario_source_counts: [u32; 9],
-    pub scenario_transitions: [[MrcTransitionStats; 9]; 9],
-    pub recent_lines: [u8; 32],
-    pub recent_line_times_ms: [u64; 32],
-    pub recent_len: usize,
-    pub last_event_small_ntps: bool,
-    pub last_event_frequent_nearest: bool,
+pub struct MrcCrossingModel {
+    pub patterns: [[[MrcPatternStats; 9]; 9]; 9],
+    pub pattern_lines: [u8; MRC_PATTERN_LENGTH],
+    pub pattern_len: usize,
     pub last_line: Option<u8>,
     pub last_direction: i8,
     pub last_event_ms: u64,
-    pub last_price: Option<f64>,
-    pub wait_direction: i8,
     pub pending_entry: Option<EntryReason>,
 }
 
-impl Default for MrcReclaimState {
+impl Default for MrcCrossingModel {
     fn default() -> Self {
         Self {
-            first_seen_ms: [0; 9],
-            last_cross_ms: [0; 9],
-            source_counts: [0; 9],
-            transitions: [[MrcTransitionStats::default(); 9]; 9],
-            scenario_source_counts: [0; 9],
-            scenario_transitions: [[MrcTransitionStats::default(); 9]; 9],
-            recent_lines: [0; 32],
-            recent_line_times_ms: [0; 32],
-            recent_len: 0,
-            last_event_small_ntps: false,
-            last_event_frequent_nearest: false,
+            patterns: [[[MrcPatternStats::default(); 9]; 9]; 9],
+            pattern_lines: [0; MRC_PATTERN_LENGTH],
+            pattern_len: 0,
             last_line: None,
             last_direction: 0,
             last_event_ms: 0,
-            last_price: None,
-            wait_direction: 0,
             pending_entry: None,
         }
     }
@@ -197,7 +220,8 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
-    pub mrc_reclaim: MrcReclaimState,
+    pub mrc_crossing_model: MrcCrossingModel,
+    pub pending_entry_bar: Option<u64>,
     pub structural_stop_loss: Option<LevelPoint>,
     pub processed_structural_stop_losses: Vec<LevelPoint>,
     pub volume_gain: VolumeGainTracker,
@@ -228,7 +252,8 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
-            mrc_reclaim: MrcReclaimState::default(),
+            mrc_crossing_model: MrcCrossingModel::default(),
+            pending_entry_bar: None,
             structural_stop_loss: None,
             processed_structural_stop_losses: Vec::new(),
             volume_gain: VolumeGainTracker::default(),
@@ -279,6 +304,7 @@ pub fn sync_position_state(
 ) {
     if long.is_none() && short.is_none() {
         state.tp_reprice_history.reset();
+        state.pending_entry_bar = None;
     }
 
     match (long, short) {

@@ -185,9 +185,6 @@ fn format_entry_wait_solution(
     match solution {
         crate::model::EntryWaitSolution::MrcCrossing => "mrc-crossing".to_string(),
         crate::model::EntryWaitSolution::MrcDirectionalTarget => "directional-target".to_string(),
-        crate::model::EntryWaitSolution::MrcBreakLineConfirmation => {
-            "break-line-confirmation".to_string()
-        }
         crate::model::EntryWaitSolution::WaitForSamples { required, current } => {
             format!("samples:{current}/{required}")
         }

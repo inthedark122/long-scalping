@@ -1,6 +1,6 @@
 use crate::builder;
 use crate::debug;
-use crate::detection::{cascade, mrc_reclaim, regime, sideways, vlines};
+use crate::detection::{cascade, mrc_crossing, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
@@ -126,7 +126,8 @@ fn handle_signal(
         state.allowed_direction = *direction;
         state.trade_budget = 0.0;
         state.movement_entry_pending = None;
-        state.mrc_reclaim.pending_entry = None;
+        state.mrc_crossing_model.pending_entry = None;
+        state.pending_entry_bar = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -143,7 +144,7 @@ fn handle_signal(
         }
         if let Some(strategy_mode) = values.get("strategy_mode").and_then(|v| v.as_f64()) {
             state.cfg.strategy_mode = if strategy_mode >= 1.0 {
-                StrategyMode::MrcReclaim
+                StrategyMode::MrcCrossing
             } else {
                 StrategyMode::Stairs
             };
@@ -167,19 +168,19 @@ fn handle_signal(
             state.cfg.required_samples =
                 required_samples.round().clamp(0.0, u32::MAX as f64) as u32;
         }
-        if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
-            state.mrc_reclaim = crate::state::MrcReclaimState::default();
+        if state.cfg.strategy_mode == StrategyMode::MrcCrossing {
+            state.mrc_crossing_model = crate::state::MrcCrossingModel::default();
             state.vlines = [crate::state::VLineState::default(); 9];
             state.mrc_crossing = crate::state::MrcCrossingState::default();
-            mrc_reclaim::seed_from_history(
-                &mut state.mrc_reclaim,
+            mrc_crossing::seed_from_history(
+                &mut state.mrc_crossing_model,
                 &mut state.vlines,
                 &mut state.mrc_crossing,
                 &state.history,
                 state.ticks.max(1).saturating_mul(60_000),
                 state.cfg.required_samples(),
             );
-            state.mrc_reclaim.pending_entry = None;
+            state.mrc_crossing_model.pending_entry = None;
         }
         state.strategy_builder = Some(builder::InitialBuilder::new().build());
         state.cfg_loaded = true;
@@ -238,7 +239,8 @@ fn handle_new_position(
         exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
         entry_reason: state.position.entry_reason.clone(),
     };
-    state.mrc_reclaim.pending_entry = None;
+    state.mrc_crossing_model.pending_entry = None;
+    state.pending_entry_bar = None;
 
     let side = dir_to_position(direction);
     state.strategy_builder = Some(builder::InitialBuilder::new().build());
@@ -254,13 +256,13 @@ fn handle_new_position(
             };
         }
     };
-    let plan = if let Some(crate::model::EntryReason::MrcReclaim {
+    let plan = if let Some(crate::model::EntryReason::MrcCrossing {
         target_price,
         stop_price,
         ..
     }) = state.position.entry_reason.as_ref()
     {
-        exit::mrc_reclaim_plan(*target_price, *stop_price)
+        exit::mrc_crossing_plan(*target_price, *stop_price)
     } else {
         input.sug_info.as_ref().and_then(|sug_info| {
             let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
@@ -322,6 +324,7 @@ fn handle_finish_position(
         state.structural_stop_loss = None;
         state.processed_structural_stop_losses.clear();
         state.position = PositionRuntime::default();
+        state.pending_entry_bar = None;
     }
     ModuleOutput {
         debug: format!("finish {:?} pnl={:.4}", direction, pnl),
@@ -370,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn start_selects_mrc_reclaim_without_changing_stairs_default() {
+    fn start_selects_mrc_crossing_without_changing_stairs_default() {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
@@ -385,8 +388,8 @@ mod tests {
             }),
             &mut state,
         );
-        assert!(output.debug.contains("strategy=mrc-reclaim"));
-        assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcReclaim);
+        assert!(output.debug.contains("strategy=mrc-crossing"));
+        assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcCrossing);
         assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
         assert_eq!(state.cfg.risk_target_percent(), 1.25);
@@ -521,6 +524,7 @@ fn process_realtime(
         sug_info.time as u64,
     );
     let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
+    let is_mrc_crossing = state.cfg.strategy_mode == StrategyMode::MrcCrossing;
     let candle = crate::model::Candle {
         open: sug_info.candle.enter,
         high: sug_info.candle.max,
@@ -533,14 +537,11 @@ fn process_realtime(
         .mrc_risk
         .observe(&snapshot, &sug_snapshot, input.price, sug_info.time as u64);
 
-    let mrc_observation = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
-        Some(mrc_reclaim::observe(
-            &mut state.mrc_reclaim,
+    let mrc_observation = if is_mrc_crossing {
+        Some(mrc_crossing::observe(
+            &mut state.mrc_crossing_model,
             &mrc_events,
             snapshot.tf1m.mrc.lines(),
-            input.price,
-            sug_info.time as u64,
-            snapshot.tf1m.buy_sell_gain,
             state.cfg.required_samples(),
         ))
     } else {
@@ -553,19 +554,19 @@ fn process_realtime(
     let mrc_reason_direction = mrc_observation
         .as_ref()
         .and_then(|observation| observation.entry.as_ref())
-        .map(mrc_reclaim::reason_direction)
+        .map(mrc_crossing::reason_direction)
         .or_else(|| {
             state
-                .mrc_reclaim
+                .mrc_crossing_model
                 .pending_entry
                 .as_ref()
-                .map(mrc_reclaim::reason_direction)
+                .map(mrc_crossing::reason_direction)
         });
-    let entry_direction = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
+    let entry_direction = if is_mrc_crossing {
         mrc_reason_direction
             .filter(|direction| *direction != 0)
-            .map(mrc_reclaim::market_state)
-            .unwrap_or_else(|| mrc_reclaim::market_state(state.mrc_reclaim.last_direction))
+            .map(mrc_crossing::market_state)
+            .unwrap_or_else(|| mrc_crossing::market_state(state.mrc_crossing_model.last_direction))
     } else {
         regime.confirmed
     };
@@ -574,8 +575,8 @@ fn process_realtime(
         crate::model::MarketState::Short => crate::model::PositionState::Short,
         crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
     };
-    let entry_gate = if state.cfg.strategy_mode == StrategyMode::MrcReclaim {
-        let mut gate = prediction::mrc_reclaim_entry_gate(state);
+    let entry_gate = if is_mrc_crossing {
+        let mut gate = prediction::mrc_crossing_entry_gate(state);
         if let Some(observation) = mrc_observation {
             if let Some(reason) = observation.entry {
                 let direction = match entry_direction {
@@ -584,12 +585,12 @@ fn process_realtime(
                     crate::model::MarketState::Sideways => 0,
                 };
                 let valid = match reason {
-                    crate::model::EntryReason::MrcReclaim {
+                    crate::model::EntryReason::MrcCrossing {
                         price: _,
                         target_price,
                         stop_price,
                         ..
-                    } => mrc_reclaim::valid_price_levels(
+                    } => mrc_crossing::valid_price_levels(
                         direction,
                         input.price,
                         target_price,
@@ -601,13 +602,13 @@ fn process_realtime(
                 if valid {
                     gate = crate::model::EntryGate::Open {
                         notes: vec![
-                            "strategy=mrc-reclaim".to_string(),
+                            "strategy=mrc-crossing".to_string(),
                             format!("samples={}", observation.samples),
                         ],
                         reason: crate::model::EntryOpenReason::Entry(reason),
                     };
                 } else {
-                    state.mrc_reclaim.pending_entry = None;
+                    state.mrc_crossing_model.pending_entry = None;
                     gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
                         reason: "mrc-invalid-exit-levels".to_string(),
                         solutions: Vec::new(),
@@ -622,19 +623,27 @@ fn process_realtime(
     } else {
         prediction::entry_gate(&snapshot, &sug_snapshot, &cas_tf, state, entry_side)
     };
-    let decision = strategy.refine_realtime_decision(
-        state,
-        &snapshot,
-        &sug_snapshot,
-        &sideway,
-        regime,
-        &cas_tf,
-        sug_info,
-        crate::model::TradeDecision {
-            market_state: entry_direction,
-            entry: entry_gate,
-        },
-    );
+    let base_decision = crate::model::TradeDecision {
+        market_state: entry_direction,
+        entry: entry_gate,
+    };
+    let decision = if is_mrc_crossing {
+        // MRC crossing is a self-contained signal path. The generic builder
+        // may rewrite structural entries from sideways/cascade inputs, which
+        // are unrelated to the MRC crossing model.
+        base_decision
+    } else {
+        strategy.refine_realtime_decision(
+            state,
+            &snapshot,
+            &sug_snapshot,
+            &sideway,
+            regime,
+            &cas_tf,
+            sug_info,
+            base_decision,
+        )
+    };
     state
         .direction_history
         .observe(decision.market_state, input.price, sug_info.time as u64);

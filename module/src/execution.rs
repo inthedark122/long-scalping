@@ -55,7 +55,7 @@ fn open_note(
                 EntryReason::Structural { price } => {
                     format!("{} price={:.4}", reason.label(), price)
                 }
-                EntryReason::MrcReclaim {
+                EntryReason::MrcCrossing {
                     price,
                     target_price,
                     stop_price,
@@ -103,13 +103,13 @@ fn pre_entry_exit_plan(
     reference_price: f64,
     side: PositionState,
 ) -> Option<exit::ExitPlan> {
-    if let Some(EntryReason::MrcReclaim {
+    if let Some(EntryReason::MrcCrossing {
         target_price,
         stop_price,
         ..
     }) = reason
     {
-        return exit::mrc_reclaim_plan(*target_price, *stop_price);
+        return exit::mrc_crossing_plan(*target_price, *stop_price);
     }
 
     exit::compute_with_excluded_stop_losses_and_minimum(
@@ -152,31 +152,23 @@ fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64
     }
 }
 
-fn mrc_limit_target_touched(
+fn pending_limit_entry_expired(
     input: &ModuleInput,
+    state: &EngineState,
     side: PositionState,
-    entry_reason: Option<&EntryReason>,
 ) -> bool {
-    if !matches!(entry_reason, Some(EntryReason::MrcReclaim { .. }))
-        || !input.price.is_finite()
-        || input.price <= 0.0
-    {
+    if state.cfg.entry_type != EntryType::Limit {
         return false;
     }
-    let Some(target_price) = entry_reason.and_then(|reason| match reason {
-        EntryReason::MrcReclaim { target_price, .. } => Some(*target_price),
-        _ => None,
-    }) else {
+    let Some(signal_bar) = state.pending_entry_bar else {
         return false;
     };
-    if !target_price.is_finite() || target_price <= 0.0 {
+    if state.bar_1m <= signal_bar {
         return false;
     }
-    match side {
-        PositionState::Long => input.price >= target_price,
-        PositionState::Short => input.price <= target_price,
-        PositionState::Flat => false,
-    }
+    pending_position(input, side)
+        .map(|position| !has_active_position(Some(position)))
+        .unwrap_or(false)
 }
 
 fn active_position<'a>(
@@ -307,113 +299,139 @@ pub fn evaluate_with_cascade(
         });
     }
 
-    if let Some(long_position) = input.positions.long.as_ref() {
-        if !has_active_position(Some(long_position)) {
-            if state.cfg.entry_type == EntryType::Limit
-                && mrc_limit_target_touched(
-                    input,
-                    PositionState::Long,
-                    state.position.entry_reason.as_ref(),
-                )
-            {
-                state.position.entry_reason = None;
-                state.mrc_reclaim.pending_entry = None;
-                return Some(ExecutionResult {
-                    close_positions: vec![close(
-                        Direction::Long,
-                        &close_reason(
-                            "mrc-limit-target-reached-before-fill",
-                            state,
-                            input.price,
-                            tick_size(input),
-                        ),
-                    )],
-                    ..Default::default()
-                });
-            }
-            if matches!(&decision.entry, EntryGate::Wait(_)) {
-                return None;
-            }
-            let reason = entry_reason(decision).cloned();
-            state.position.entry_reason = reason;
-            return Some(ExecutionResult {
-                update_positions: created_position_update(input, state, PositionState::Long)
-                    .into_iter()
-                    .collect(),
-                ..Default::default()
-            });
-        }
-        let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
-            input,
-            state,
-            snapshot,
-            sug_snapshot,
-            PositionState::Long,
-        );
-        return Some(ExecutionResult {
-            tp_orders,
-            update_positions,
-            cancel_orders,
-            ..Default::default()
-        });
-    }
-
-    if let Some(short_position) = input.positions.short.as_ref() {
-        if !has_active_position(Some(short_position)) {
-            if state.cfg.entry_type == EntryType::Limit
-                && mrc_limit_target_touched(
-                    input,
-                    PositionState::Short,
-                    state.position.entry_reason.as_ref(),
-                )
-            {
-                state.position.entry_reason = None;
-                state.mrc_reclaim.pending_entry = None;
-                return Some(ExecutionResult {
-                    close_positions: vec![close(
-                        Direction::Short,
-                        &close_reason(
-                            "mrc-limit-target-reached-before-fill",
-                            state,
-                            input.price,
-                            tick_size(input),
-                        ),
-                    )],
-                    ..Default::default()
-                });
-            }
-            if matches!(&decision.entry, EntryGate::Wait(_)) {
-                return None;
-            }
-            let reason = entry_reason(decision).cloned();
-            state.position.entry_reason = reason;
-            return Some(ExecutionResult {
-                update_positions: created_position_update(input, state, PositionState::Short)
-                    .into_iter()
-                    .collect(),
-                ..Default::default()
-            });
-        }
-        let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
-            input,
-            state,
-            snapshot,
-            sug_snapshot,
-            PositionState::Short,
-        );
-        return Some(ExecutionResult {
-            tp_orders,
-            update_positions,
-            cancel_orders,
-            ..Default::default()
-        });
-    }
-
     let entry_side = match decision.market_state {
         MarketState::Long => PositionState::Long,
         MarketState::Short => PositionState::Short,
         MarketState::Sideways => PositionState::Flat,
     };
+    let decision_is_open = matches!(&decision.entry, EntryGate::Open { .. });
+    let expired_side = [PositionState::Long, PositionState::Short]
+        .into_iter()
+        .find(|side| pending_limit_entry_expired(input, state, *side));
+    let expired_cancel = expired_side
+        .filter(|side| !decision_is_open || *side != entry_side)
+        .map(|side| {
+            let direction = match side {
+                PositionState::Long => Direction::Long,
+                PositionState::Short => Direction::Short,
+                PositionState::Flat => Direction::Both,
+            };
+            let reason = close_reason(
+                "limit-entry-expired-after-one-candle",
+                state,
+                input.price,
+                tick_size(input),
+            );
+            (direction, reason)
+        });
+    if expired_side.is_some() {
+        state.position.entry_reason = None;
+        state.mrc_crossing_model.pending_entry = None;
+        state.pending_entry_bar = None;
+    }
+
+    let finish = |mut result: ExecutionResult| {
+        if let Some((direction, reason)) = expired_cancel.as_ref() {
+            result.close_positions.insert(0, close(*direction, reason));
+        }
+        Some(result)
+    };
+    let cancel_only = || {
+        expired_cancel
+            .as_ref()
+            .map(|(direction, reason)| ExecutionResult {
+                close_positions: vec![close(*direction, reason)],
+                ..Default::default()
+            })
+    };
+
+    if let Some(long_position) = input.positions.long.as_ref() {
+        if !has_active_position(Some(long_position)) {
+            let expired_long = expired_side == Some(PositionState::Long);
+            let replace_expired_long =
+                expired_long && decision_is_open && entry_side == PositionState::Long;
+            if !expired_long || replace_expired_long {
+                if matches!(&decision.entry, EntryGate::Wait(_)) {
+                    return cancel_only();
+                }
+                let reason = entry_reason(decision).cloned();
+                state.position.entry_reason = reason;
+                if matches!(
+                    state.position.entry_reason,
+                    Some(EntryReason::MrcCrossing { .. })
+                ) {
+                    state.mrc_crossing_model.pending_entry = None;
+                }
+                let update = created_position_update(input, state, PositionState::Long);
+                if replace_expired_long || update.is_some() {
+                    state.pending_entry_bar =
+                        (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
+                }
+                return finish(ExecutionResult {
+                    update_positions: update.into_iter().collect(),
+                    ..Default::default()
+                });
+            }
+        } else {
+            let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
+                input,
+                state,
+                snapshot,
+                sug_snapshot,
+                PositionState::Long,
+            );
+            return finish(ExecutionResult {
+                tp_orders,
+                update_positions,
+                cancel_orders,
+                ..Default::default()
+            });
+        }
+    }
+
+    if let Some(short_position) = input.positions.short.as_ref() {
+        if !has_active_position(Some(short_position)) {
+            let expired_short = expired_side == Some(PositionState::Short);
+            let replace_expired_short =
+                expired_short && decision_is_open && entry_side == PositionState::Short;
+            if !expired_short || replace_expired_short {
+                if matches!(&decision.entry, EntryGate::Wait(_)) {
+                    return cancel_only();
+                }
+                let reason = entry_reason(decision).cloned();
+                state.position.entry_reason = reason;
+                if matches!(
+                    state.position.entry_reason,
+                    Some(EntryReason::MrcCrossing { .. })
+                ) {
+                    state.mrc_crossing_model.pending_entry = None;
+                }
+                let update = created_position_update(input, state, PositionState::Short);
+                if replace_expired_short || update.is_some() {
+                    state.pending_entry_bar =
+                        (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
+                }
+                return finish(ExecutionResult {
+                    update_positions: update.into_iter().collect(),
+                    ..Default::default()
+                });
+            }
+        } else {
+            let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
+                input,
+                state,
+                snapshot,
+                sug_snapshot,
+                PositionState::Short,
+            );
+            return finish(ExecutionResult {
+                tp_orders,
+                update_positions,
+                cancel_orders,
+                ..Default::default()
+            });
+        }
+    }
 
     let direction_allowed = matches!(
         (state.allowed_direction, entry_side),
@@ -422,7 +440,7 @@ pub fn evaluate_with_cascade(
             | (Direction::Short, PositionState::Short)
     );
     if !direction_allowed {
-        return Some(ExecutionResult {
+        return finish(ExecutionResult {
             constraint: Some(format!(
                 "entry-direction-guard:allowed={:?}:requested={:?}",
                 state.allowed_direction, entry_side
@@ -432,20 +450,20 @@ pub fn evaluate_with_cascade(
     }
 
     if matches!(&decision.entry, EntryGate::Wait(_)) {
-        return None;
+        return cancel_only();
     }
 
     let base_amount = entry_budget(input, state);
     let leverage = (input.leverage as f64).max(1.0);
     if base_amount <= 0.0 {
-        return Some(ExecutionResult {
+        return finish(ExecutionResult {
             constraint: Some("budget-too-small".to_string()),
             ..Default::default()
         });
     }
     if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
         if base_amount * leverage < min_notional {
-            return Some(ExecutionResult {
+            return finish(ExecutionResult {
                 constraint: Some("budget-too-small".to_string()),
                 ..Default::default()
             });
@@ -453,8 +471,8 @@ pub fn evaluate_with_cascade(
     }
 
     let reason = entry_reason(decision).cloned();
-    let mrc_entry = matches!(reason.as_ref(), Some(EntryReason::MrcReclaim { .. }));
-    if let Some(EntryReason::MrcReclaim {
+    let mrc_entry = matches!(reason.as_ref(), Some(EntryReason::MrcCrossing { .. }));
+    if let Some(EntryReason::MrcCrossing {
         target_price,
         stop_price,
         ..
@@ -465,24 +483,18 @@ pub fn evaluate_with_cascade(
             PositionState::Short => -1,
             PositionState::Flat => 0,
         };
-        if !crate::detection::mrc_reclaim::valid_price_levels(
+        if !crate::detection::mrc_crossing::valid_price_levels(
             direction,
             input.price,
             *target_price,
             *stop_price,
             Some(input.symbol_info.price_tick_size),
         ) {
-            return Some(ExecutionResult {
+            return finish(ExecutionResult {
                 constraint: Some("mrc-invalid-exit-levels".to_string()),
                 ..Default::default()
             });
         }
-    }
-    state.position.entry_reason = reason.clone();
-    // The signal has now been consumed. If the LIMIT order remains unfilled,
-    // the reason must not be reopened on a later tick as a fresh entry.
-    if mrc_entry {
-        state.mrc_reclaim.pending_entry = None;
     }
     let entry_price = entry_reason(decision)
         .map(|reason| reason.price())
@@ -491,7 +503,7 @@ pub fn evaluate_with_cascade(
         pending_position(input, entry_side).filter(|position| !has_active_position(Some(position)))
     {
         if !entry_price.is_finite() || entry_price <= 0.0 {
-            return None;
+            return cancel_only();
         }
         if state.cfg.entry_type == EntryType::Limit {
             let order_price = order_entry_price(input, entry_side, entry_price);
@@ -501,14 +513,20 @@ pub fn evaluate_with_cascade(
                     PositionState::Short => Direction::Short,
                     PositionState::Flat => Direction::Both,
                 };
-                return Some(ExecutionResult {
+                return finish(ExecutionResult {
                     update_positions: vec![update_position(direction, Some(order_price))],
                     ..Default::default()
                 });
             }
         }
-        return None;
+        return cancel_only();
     }
+
+    state.position.entry_reason = reason.clone();
+    if mrc_entry {
+        state.mrc_crossing_model.pending_entry = None;
+    }
+    state.pending_entry_bar = (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
 
     let order_price = order_entry_price(input, entry_side, entry_price);
     let sizing_reference_price = match state.cfg.entry_type {
@@ -538,7 +556,7 @@ pub fn evaluate_with_cascade(
     ) {
         Ok(sizing) => sizing,
         Err(constraint) => {
-            return Some(ExecutionResult {
+            return finish(ExecutionResult {
                 constraint: Some(constraint.to_string()),
                 ..Default::default()
             });
@@ -546,21 +564,21 @@ pub fn evaluate_with_cascade(
     };
     let amount = sizing.amount;
     if amount <= 0.0 {
-        return Some(ExecutionResult {
+        return finish(ExecutionResult {
             constraint: Some("risk-adjusted-size-too-small".to_string()),
             ..Default::default()
         });
     }
     if let Some(min_notional) = input.symbol_info.min_notional.filter(|value| *value > 0.0) {
         if amount * leverage < min_notional {
-            return Some(ExecutionResult {
+            return finish(ExecutionResult {
                 constraint: Some("risk-adjusted-below-min-notional".to_string()),
                 ..Default::default()
             });
         }
     }
     match decision.market_state {
-        MarketState::Long => Some(ExecutionResult {
+        MarketState::Long => finish(ExecutionResult {
             open_positions: vec![match state.cfg.entry_type {
                 EntryType::Market => market_open(
                     Direction::Long,
@@ -595,7 +613,7 @@ pub fn evaluate_with_cascade(
             }],
             ..Default::default()
         }),
-        MarketState::Short => Some(ExecutionResult {
+        MarketState::Short => finish(ExecutionResult {
             open_positions: vec![match state.cfg.entry_type {
                 EntryType::Market => market_open(
                     Direction::Short,
@@ -630,7 +648,7 @@ pub fn evaluate_with_cascade(
             }],
             ..Default::default()
         }),
-        _ => None,
+        _ => cancel_only(),
     }
 }
 
@@ -703,8 +721,8 @@ mod tests {
         TradeDecision {
             market_state,
             entry: EntryGate::Open {
-                notes: vec!["strategy=mrc-reclaim".to_string()],
-                reason: crate::model::EntryOpenReason::Entry(EntryReason::MrcReclaim {
+                notes: vec!["strategy=mrc-crossing".to_string()],
+                reason: crate::model::EntryOpenReason::Entry(EntryReason::MrcCrossing {
                     price: 101.0,
                     target_price: 104.0,
                     stop_price: 96.0,
@@ -712,6 +730,8 @@ mod tests {
                     target_line: 5,
                     probability: 0.75,
                     estimated_time_ms: 12_000.0,
+                    favorable_move_pct: 3.0,
+                    adverse_move_pct: -1.0,
                 }),
             },
         }
@@ -751,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn mrc_reclaim_uses_market_entry() {
+    fn mrc_crossing_uses_market_entry() {
         let mut state = EngineState::default();
         state.cfg.entry_type = EntryType::Market;
         let mut input = input();
@@ -772,10 +792,10 @@ mod tests {
         assert_eq!(result.open_positions[0].enter_price, Some(100.0));
         assert!(result.open_positions[0]
             .note
-            .contains("strategy=mrc-reclaim"));
+            .contains("strategy=mrc-crossing"));
         assert!(matches!(
             state.position.entry_reason,
-            Some(EntryReason::MrcReclaim {
+            Some(EntryReason::MrcCrossing {
                 target_price: 104.0,
                 stop_price: 96.0,
                 ..
@@ -898,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn mrc_reclaim_uses_limit_entry_when_configured() {
+    fn mrc_crossing_uses_limit_entry_when_configured() {
         let mut state = EngineState::default();
         state.cfg.entry_type = EntryType::Limit;
         let mut input = input();
@@ -918,20 +938,12 @@ mod tests {
     }
 
     #[test]
-    fn mrc_pending_limit_is_cancelled_when_target_is_touched() {
+    fn pending_limit_is_cancelled_after_one_candle() {
         let mut state = EngineState::default();
         state.cfg.entry_type = EntryType::Limit;
-        state.position.entry_reason = Some(EntryReason::MrcReclaim {
-            price: 101.0,
-            target_price: 104.0,
-            stop_price: 96.0,
-            source_line: 4,
-            target_line: 5,
-            probability: 0.75,
-            estimated_time_ms: 12_000.0,
-        });
+        state.pending_entry_bar = Some(0);
+        state.bar_1m = 1;
         let mut pending_input = input();
-        pending_input.price = 104.0;
         pending_input.positions.long = Some(ModulePositionSummary {
             entry_price: 99.98,
             notional: 0.0,
@@ -953,13 +965,13 @@ mod tests {
                 }),
             },
         )
-        .expect("target touch should cancel the pending MRC order");
+        .expect("an old pending limit order should be cancelled");
 
         assert_eq!(result.close_positions.len(), 1);
         assert_eq!(result.close_positions[0].direction, Direction::Long);
         assert!(result.close_positions[0]
             .reason
-            .contains("mrc-limit-target-reached-before-fill"));
+            .contains("limit-entry-expired-after-one-candle"));
         assert!(state.position.entry_reason.is_none());
     }
 

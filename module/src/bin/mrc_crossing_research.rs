@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use long_scalping::model::Config;
+use long_scalping::state::MRC_PATTERN_LENGTH;
 
 mod research;
 
@@ -130,20 +131,11 @@ fn print_summary(
     println!("history                : 1m={minute_count} 1h={hourly_count}");
     println!("cache                  : 1m={minute_cache} 1h={hourly_cache}");
     println!("crossings              : {}", report.crossing_count);
-    println!("transitions            : {}", report.transition_count);
-    println!("break-line events      : {}", report.break_event_count);
-    println!("scenario events        : {}", report.scenario_event_count);
+    println!("learned pattern routes  : {}", report.pattern_count);
     if let Some(event) = report.latest_event {
         println!(
-            "latest                 : {} line={} direction={} ntps={} small_ntps={} frequent={} break={} mode={}",
-            event.time_ms,
-            event.line_name,
-            event.direction,
-            event.ntps,
-            event.small_ntps,
-            event.frequent_nearest_crossings,
-            event.break_line,
-            event.mode,
+            "latest                 : {} line={} direction={}",
+            event.time_ms, event.line_name, event.direction,
         );
     }
     println!("forecast source        : {:?}", report.forecast.source_name);
@@ -166,26 +158,27 @@ fn print_summary(
         for destination in &report.forecast.likely_destinations {
             println!(
                 "  {} -> {} probability={:.1}% time={}",
-                destination.from_name,
+                destination.pattern_names.join(" -> "),
                 destination.to_name,
                 destination.probability * 100.0,
                 format_minutes(destination.average_duration_ms),
             );
         }
     }
-    let mean_transitions = report
-        .transitions
+    let mean_patterns = report
+        .patterns
         .iter()
-        .filter(|transition| transition.from == 4)
+        .filter(|pattern| pattern.pattern[2] == 4)
         .collect::<Vec<_>>();
-    if !mean_transitions.is_empty() {
-        println!("mean-line transitions:");
-        for transition in mean_transitions {
+    if !mean_patterns.is_empty() {
+        println!("patterns ending at mean-line:");
+        for pattern in mean_patterns {
             println!(
-                "  mean -> {} probability={:.1}% time={}",
-                transition.to_name,
-                transition.probability * 100.0,
-                format_minutes(transition.average_duration_ms),
+                "  {} -> {} probability={:.1}% time={}",
+                pattern.pattern_names.join(" -> "),
+                pattern.to_name,
+                pattern.probability * 100.0,
+                format_minutes(pattern.average_duration_ms),
             );
         }
     }
@@ -199,10 +192,6 @@ fn print_summary(
         report.trade_summary.total_fees_pct,
         report.trade_summary.total_pnl_pct,
         report.trade_summary.max_drawdown_pct,
-    );
-    println!(
-        "trade wait mode        : {} direction={}",
-        report.wait_mode, report.wait_direction
     );
     if print_positions {
         print_trade_log(report);
@@ -358,8 +347,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "required_samples": required_samples,
                 "cache": {"1m": minute_cache.to_string(), "1h": hourly_cache.to_string()},
                 "history_loaded": {"1m": minute_count, "1h": hourly_count},
-                "ntps_baseline": {"timeframe": "1h", "lookback_candles": 10, "small_ntps": "lower-third"},
-                "crossing_features": {"evidence": "wick-penetration", "frequent_window_minutes": 30, "frequent_threshold": 2, "break_minutes": 30},
+                "crossing_features": {"evidence": "MRC line crossing", "pattern_length": MRC_PATTERN_LENGTH, "required_samples": required_samples},
                 "analysis": &report,
             });
             fs::write(&path, serde_json::to_string_pretty(&document)?)?;

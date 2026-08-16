@@ -17,10 +17,10 @@ mod format;
 mod levels_impl;
 #[path = "../model.rs"]
 mod model;
+#[path = "../detection/mrc_crossing.rs"]
+mod mrc_crossing_impl;
 #[path = "../detection/mrc.rs"]
 mod mrc_impl;
-#[path = "../detection/mrc_reclaim.rs"]
-mod mrc_reclaim_impl;
 #[path = "../observer/mod.rs"]
 mod observer;
 #[path = "../orders.rs"]
@@ -50,8 +50,8 @@ mod detection {
     pub mod mrc {
         pub use crate::mrc_impl::*;
     }
-    pub mod mrc_reclaim {
-        pub use crate::mrc_reclaim_impl::*;
+    pub mod mrc_crossing {
+        pub use crate::mrc_crossing_impl::*;
     }
     pub mod regime {
         pub use crate::regime_impl::*;
@@ -491,9 +491,7 @@ fn gate_entry_price(gate: &EntryGate, fallback: f64) -> f64 {
         EntryGate::Wait(wait) => {
             for solution in &wait.solutions {
                 match solution {
-                    EntryWaitSolution::MrcCrossing
-                    | EntryWaitSolution::MrcDirectionalTarget
-                    | EntryWaitSolution::MrcBreakLineConfirmation => {}
+                    EntryWaitSolution::MrcCrossing | EntryWaitSolution::MrcDirectionalTarget => {}
                     EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
                         return *break_price;
                     }
@@ -537,9 +535,7 @@ fn directional_break_level(
     if let EntryGate::Wait(wait) = gate {
         for solution in &wait.solutions {
             match solution {
-                EntryWaitSolution::MrcCrossing
-                | EntryWaitSolution::MrcDirectionalTarget
-                | EntryWaitSolution::MrcBreakLineConfirmation => {}
+                EntryWaitSolution::MrcCrossing | EntryWaitSolution::MrcDirectionalTarget => {}
                 EntryWaitSolution::WaitForDirectionBreak { break_price, .. } => {
                     if let Some(candidate) =
                         break_candidate(current_price, side, *break_price, "wait-break")
@@ -778,7 +774,8 @@ fn print_symbol(symbol_key: &str, opts: &ProbeOptions) -> Result<(), Box<dyn Err
         &cascade_state,
         entry_price,
         recommendation_side,
-        false,
+        exit::ExitPlanContext::Candidate,
+        3,
     );
 
     println!("=== {} ===", symbol_key);

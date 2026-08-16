@@ -22,7 +22,7 @@ pub enum PositionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StrategyMode {
     Stairs,
-    MrcReclaim,
+    MrcCrossing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ impl StrategyMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Stairs => "stairs",
-            Self::MrcReclaim => "mrc-reclaim",
+            Self::MrcCrossing => "mrc-crossing",
         }
     }
 }
@@ -62,12 +62,12 @@ pub enum ExitType {
 }
 
 pub const STAIRS_EXIT_TYPE: ExitType = ExitType::LevelExit;
-pub const MRC_RECLAIM_EXIT_TYPE: ExitType = ExitType::VirtualTrailingExit { ticks: 2 };
+pub const MRC_CROSSING_EXIT_TYPE: ExitType = ExitType::VirtualTrailingExit { ticks: 2 };
 
 pub fn exit_type_for_strategy(strategy_mode: StrategyMode) -> ExitType {
     match strategy_mode {
         StrategyMode::Stairs => STAIRS_EXIT_TYPE,
-        StrategyMode::MrcReclaim => MRC_RECLAIM_EXIT_TYPE,
+        StrategyMode::MrcCrossing => MRC_CROSSING_EXIT_TYPE,
     }
 }
 
@@ -335,7 +335,7 @@ pub enum EntryReason {
     Structural {
         price: f64,
     },
-    MrcReclaim {
+    MrcCrossing {
         price: f64,
         target_price: f64,
         stop_price: f64,
@@ -343,6 +343,8 @@ pub enum EntryReason {
         target_line: u8,
         probability: f64,
         estimated_time_ms: f64,
+        favorable_move_pct: f64,
+        adverse_move_pct: f64,
     },
 }
 
@@ -353,7 +355,7 @@ impl EntryReason {
             Self::SugInfoMovement { price, .. } => *price,
             Self::SidewayScalp { price, .. } => *price,
             Self::Structural { price } => *price,
-            Self::MrcReclaim { price, .. } => *price,
+            Self::MrcCrossing { price, .. } => *price,
         }
     }
 
@@ -363,7 +365,7 @@ impl EntryReason {
             Self::SugInfoMovement { .. } => "sug-info-movement",
             Self::SidewayScalp { .. } => "sideway-scalp",
             Self::Structural { .. } => "structural",
-            Self::MrcReclaim { .. } => "mrc-reclaim",
+            Self::MrcCrossing { .. } => "mrc-crossing",
         }
     }
 }
@@ -557,12 +559,12 @@ mod tests {
         assert_eq!(Config::default().strategy_mode, StrategyMode::Stairs);
         assert_eq!(Config::default().entry_type(), EntryType::Limit);
         let config: Config = serde_json::from_value(serde_json::json!({
-            "strategy_mode": "MrcReclaim",
+            "strategy_mode": "MrcCrossing",
             "entry_type": "Market"
         }))
         .expect("strategy mode should deserialize from Start state");
-        assert_eq!(config.strategy_mode, StrategyMode::MrcReclaim);
-        assert_eq!(config.strategy_mode.as_str(), "mrc-reclaim");
+        assert_eq!(config.strategy_mode, StrategyMode::MrcCrossing);
+        assert_eq!(config.strategy_mode.as_str(), "mrc-crossing");
         assert_eq!(config.entry_type(), EntryType::Market);
     }
 
@@ -573,7 +575,7 @@ mod tests {
             ExitType::LevelExit
         );
         assert_eq!(
-            exit_type_for_strategy(StrategyMode::MrcReclaim),
+            exit_type_for_strategy(StrategyMode::MrcCrossing),
             ExitType::VirtualTrailingExit { ticks: 2 }
         );
     }
@@ -603,7 +605,6 @@ pub struct RegimeSnapshot {
 pub enum EntryWaitSolution {
     MrcCrossing,
     MrcDirectionalTarget,
-    MrcBreakLineConfirmation,
     WaitForSamples {
         required: u32,
         current: u32,

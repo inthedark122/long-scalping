@@ -31,7 +31,7 @@ pub enum StopLoss {
     Structural { level: levels::LevelPoint },
     Sideway { price: f64 },
     SupportBreak { price: f64 },
-    MrcReclaim { price: f64 },
+    MrcCrossing { price: f64 },
 }
 
 impl StopLoss {
@@ -39,7 +39,7 @@ impl StopLoss {
         match self {
             Self::Structural { level } => level.value,
             Self::Sideway { price } | Self::SupportBreak { price } => price,
-            Self::MrcReclaim { price } => price,
+            Self::MrcCrossing { price } => price,
         }
     }
 
@@ -55,7 +55,7 @@ impl StopLoss {
             Self::Structural { level } => format!("structural:{}", level.label()),
             Self::Sideway { .. } => "sideway:block-edge".to_string(),
             Self::SupportBreak { .. } => "support-break".to_string(),
-            Self::MrcReclaim { .. } => "mrc-reclaim:adjacent-line".to_string(),
+            Self::MrcCrossing { .. } => "mrc-crossing:adjacent-line".to_string(),
         }
     }
 }
@@ -65,14 +65,14 @@ pub enum TakeProfit {
     Structural { level: levels::LevelPoint },
     Movement { price: f64 },
     Sideway { price: f64 },
-    MrcReclaim { price: f64 },
+    MrcCrossing { price: f64 },
 }
 
 impl TakeProfit {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Movement { price } | Self::Sideway { price } | Self::MrcReclaim { price } => {
+            Self::Movement { price } | Self::Sideway { price } | Self::MrcCrossing { price } => {
                 price
             }
         }
@@ -83,7 +83,7 @@ impl TakeProfit {
             Self::Structural { .. } => "structural",
             Self::Movement { .. } => "movement",
             Self::Sideway { .. } => "sideway",
-            Self::MrcReclaim { .. } => "mrc-reclaim",
+            Self::MrcCrossing { .. } => "mrc-crossing",
         }
     }
 
@@ -95,7 +95,7 @@ impl TakeProfit {
     }
 }
 
-pub fn mrc_reclaim_plan(target_price: f64, stop_price: f64) -> Option<ExitPlan> {
+pub fn mrc_crossing_plan(target_price: f64, stop_price: f64) -> Option<ExitPlan> {
     if !target_price.is_finite()
         || !stop_price.is_finite()
         || target_price <= 0.0
@@ -104,10 +104,10 @@ pub fn mrc_reclaim_plan(target_price: f64, stop_price: f64) -> Option<ExitPlan> 
         return None;
     }
     Some(ExitPlan {
-        take_profit: TakeProfit::MrcReclaim {
+        take_profit: TakeProfit::MrcCrossing {
             price: target_price,
         },
-        stop_loss: StopLoss::MrcReclaim { price: stop_price },
+        stop_loss: StopLoss::MrcCrossing { price: stop_price },
         tp_reliable: true,
     })
 }
@@ -648,13 +648,13 @@ fn entry_exit_plan(
     reference_price: f64,
     side: PositionState,
 ) -> Option<ExitPlan> {
-    if let Some(crate::model::EntryReason::MrcReclaim {
+    if let Some(crate::model::EntryReason::MrcCrossing {
         target_price,
         stop_price,
         ..
     }) = state.position.entry_reason.as_ref()
     {
-        mrc_reclaim_plan(*target_price, *stop_price)
+        mrc_crossing_plan(*target_price, *stop_price)
     } else {
         position_exit_plan(
             state,
@@ -817,13 +817,13 @@ fn ensure_trailing_exit_order(
         );
     }
 
-    let preserve_mrc_reclaim_exit = matches!(
+    let preserve_mrc_crossing_exit = matches!(
         state.position.entry_reason,
-        Some(crate::model::EntryReason::MrcReclaim { .. })
+        Some(crate::model::EntryReason::MrcCrossing { .. })
     );
 
     // VirtualTrailingExit must refresh its virtual SL on every live
-    // evaluation, except for MRC Reclaim positions, whose learned entry
+    // evaluation, except for MRC crossing positions, whose learned entry
     // target and adjacent-line stop are fixed for the position lifetime.
     // The TP for other strategies remains on its existing 1m cadence, but
     // the stop needs the current price/indicator state to trail the position
@@ -831,12 +831,12 @@ fn ensure_trailing_exit_order(
     let recalculate_virtual_sl = matches!(
         state.position.exit_type,
         ExitType::VirtualTrailingExit { .. }
-    ) && !preserve_mrc_reclaim_exit;
+    ) && !preserve_mrc_crossing_exit;
     let recalculate_tp = state.last_active_tp_recalc_bar != Some(state.bar_1m);
 
     // Build the active plan on every evaluation for VirtualTrailingExit. This
     // calculation must happen independently of the 1m TP reprice throttle.
-    let active_plan = if recalculate_virtual_sl || (recalculate_tp && !preserve_mrc_reclaim_exit) {
+    let active_plan = if recalculate_virtual_sl || (recalculate_tp && !preserve_mrc_crossing_exit) {
         position_exit_plan(
             state,
             snapshot,
@@ -849,7 +849,7 @@ fn ensure_trailing_exit_order(
         None
     };
 
-    if !recalculate_virtual_sl && (!recalculate_tp || preserve_mrc_reclaim_exit) {
+    if !recalculate_virtual_sl && (!recalculate_tp || preserve_mrc_crossing_exit) {
         return (Vec::new(), Vec::new(), Vec::new());
     }
     if recalculate_tp {
@@ -868,7 +868,7 @@ fn ensure_trailing_exit_order(
             state.position.exit_tp_reliable = plan.tp_reliable;
         }
         if recalculate_tp
-            && !preserve_mrc_reclaim_exit
+            && !preserve_mrc_crossing_exit
             && (plan.take_profit.price() - state.position.take_profit).abs() > f64::EPSILON
         {
             let previous_tp = state.position.take_profit;
@@ -1167,11 +1167,11 @@ mod tests {
     }
 
     #[test]
-    fn mrc_reclaim_plan_keeps_learned_target_and_adjacent_stop() {
-        let plan = mrc_reclaim_plan(104.0, 96.0).expect("valid MRC plan");
+    fn mrc_crossing_plan_keeps_learned_target_and_adjacent_stop() {
+        let plan = mrc_crossing_plan(104.0, 96.0).expect("valid MRC plan");
         assert_eq!(plan.take_profit.price(), 104.0);
         assert_eq!(plan.stop_loss.price(), 96.0);
-        assert_eq!(plan.take_profit.source_label(), "mrc-reclaim");
-        assert_eq!(plan.stop_loss.reason(), "mrc-reclaim:adjacent-line");
+        assert_eq!(plan.take_profit.source_label(), "mrc-crossing");
+        assert_eq!(plan.stop_loss.reason(), "mrc-crossing:adjacent-line");
     }
 }

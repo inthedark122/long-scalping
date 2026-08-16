@@ -1,7 +1,7 @@
 use crate::detection::cascade::{self, CascadeSignal};
 use crate::detection::{
     levels,
-    mrc_reclaim::{self, MrcWaitReason},
+    mrc_crossing::{self, MrcWaitReason},
     sideways,
 };
 use crate::exit;
@@ -11,15 +11,15 @@ use crate::model::{
 };
 use crate::state::EngineState;
 
-pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
-    if let Some(reason) = mrc_reclaim::pending(&state.mrc_reclaim) {
+pub fn mrc_crossing_entry_gate(state: &EngineState) -> EntryGate {
+    if let Some(reason) = mrc_crossing::pending(&state.mrc_crossing_model) {
         return EntryGate::Open {
             notes: vec![
-                "strategy=mrc-reclaim".to_string(),
+                "strategy=mrc-crossing".to_string(),
                 format!(
                     "probability={:.3}",
                     match &reason {
-                        EntryReason::MrcReclaim { probability, .. } => *probability,
+                        EntryReason::MrcCrossing { probability, .. } => *probability,
                         _ => 0.0,
                     }
                 ),
@@ -27,7 +27,7 @@ pub fn mrc_reclaim_entry_gate(state: &EngineState) -> EntryGate {
             reason: EntryOpenReason::Entry(reason),
         };
     }
-    if mrc_reclaim::warmup_samples(&state.mrc_reclaim) < state.cfg.required_samples() {
+    if mrc_crossing::warmup_samples(&state.mrc_crossing_model) < state.cfg.required_samples() {
         mrc_wait_entry_gate(state, MrcWaitReason::Warmup)
     } else {
         mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
@@ -45,24 +45,14 @@ pub fn mrc_wait_entry_gate(state: &EngineState, wait_reason: MrcWaitReason) -> E
             "mrc-warmup".to_string(),
             vec![EntryWaitSolution::WaitForSamples {
                 required: state.cfg.required_samples(),
-                current: mrc_reclaim::warmup_samples(&state.mrc_reclaim),
+                current: mrc_crossing::warmup_samples(&state.mrc_crossing_model),
             }],
-            vec!["MRC transition history is not entry-ready".to_string()],
+            vec!["MRC crossing-pattern history is not entry-ready".to_string()],
         ),
         MrcWaitReason::NoDirectionalTarget => (
             "mrc-no-directional-target".to_string(),
             vec![EntryWaitSolution::MrcDirectionalTarget],
             vec!["MRC crossing has no directional target".to_string()],
-        ),
-        MrcWaitReason::BreakLine { line } => (
-            format!("break-line-{line}"),
-            vec![EntryWaitSolution::MrcBreakLineConfirmation],
-            vec!["MRC break-line confirmation is pending".to_string()],
-        ),
-        MrcWaitReason::BreakLineConfirmation => (
-            "break-line-confirmation".to_string(),
-            vec![EntryWaitSolution::MrcBreakLineConfirmation],
-            vec!["MRC break-line confirmation is pending".to_string()],
         ),
     };
     EntryGate::Wait(EntryWait {
@@ -1060,7 +1050,7 @@ mod tests {
         let mut state = EngineState::default();
         state.cfg.required_samples = 10;
 
-        let EntryGate::Wait(wait) = mrc_reclaim_entry_gate(&state) else {
+        let EntryGate::Wait(wait) = mrc_crossing_entry_gate(&state) else {
             panic!("MRC without a pending entry should wait");
         };
         assert_eq!(wait.reason, "mrc-warmup");
@@ -1077,10 +1067,11 @@ mod tests {
     fn mrc_wait_without_pending_entry_keeps_crossing_wait_when_warm() {
         let mut state = EngineState::default();
         state.cfg.required_samples = 1;
-        state.mrc_reclaim.last_line = Some(4);
-        state.mrc_reclaim.transitions[4][5].count = 1;
+        state.mrc_crossing_model.pattern_len = 3;
+        state.mrc_crossing_model.pattern_lines = [3, 4, 5];
+        state.mrc_crossing_model.patterns[3][4][5].next[6].count = 1;
 
-        let EntryGate::Wait(wait) = mrc_reclaim_entry_gate(&state) else {
+        let EntryGate::Wait(wait) = mrc_crossing_entry_gate(&state) else {
             panic!("MRC without a pending entry should wait for a crossing");
         };
         assert_eq!(wait.reason, "mrc-wait-crossing");

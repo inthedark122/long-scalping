@@ -22,8 +22,6 @@ pub(crate) fn write_report(
         "trade_summary": report.trade_summary,
         "trades": report.trades,
         "open_trade": report.open_trade,
-        "wait_mode": report.wait_mode,
-        "wait_direction": report.wait_direction,
     });
     let payload = serde_json::to_string(&data)?.replace('<', "\\u003c");
     let html = TEMPLATE.replace("__DATA__", &payload);
@@ -175,7 +173,6 @@ const TEMPLATE: &str = r###"<!doctype html>
       ["Average PnL", Number(summary.average_pnl_pct || 0).toFixed(4) + "%"],
       ["Average duration", summary.average_duration_ms
         ? (Number(summary.average_duration_ms) / 60000).toFixed(2) + "m" : "—"],
-      ["Wait mode", DATA.wait_mode ? "ON" : "OFF"],
     ];
     document.getElementById("cards").innerHTML = cardData.map(([label, value]) =>
       '<div class="card"><div class="card-label">' + esc(label) +
@@ -298,11 +295,8 @@ mod tests {
     fn generated_report_is_standalone_html() {
         let report = AnalysisReport {
             crossing_count: 0,
-            transition_count: 0,
-            break_event_count: 0,
-            scenario_event_count: 0,
-            transitions: Vec::new(),
-            scenario_transitions: Vec::new(),
+            pattern_count: 0,
+            patterns: Vec::new(),
             latest_event: None,
             forecast: super::super::mrc_crossing::Forecast {
                 source_line: None,
@@ -317,8 +311,6 @@ mod tests {
             trade_summary: TradeSummary::default(),
             trades: Vec::new(),
             open_trade: None,
-            wait_mode: false,
-            wait_direction: 0,
         };
         let data = json!({
             "symbol_key": "TEST",
