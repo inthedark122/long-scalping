@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.92
+
+One-candle limit-entry expiry release.
+
+- Cancel unfilled limit entries when their one-candle lifetime ends, including same-side signals.
+- Allow a fresh current-candle signal to create a new limit entry after the stale order is canceled.
+
 # 1.0.91
 
 Simplified fixed MRC exit handling.
