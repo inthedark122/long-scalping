@@ -64,6 +64,9 @@ pub fn enforce_minimum_exit_distances(
         TakeProfit::Sideway { .. } => TakeProfit::Sideway {
             price: target_price,
         },
+        TakeProfit::Provided { .. } => TakeProfit::Provided {
+            price: target_price,
+        },
     };
     let stop_loss = match plan.stop_loss {
         StopLoss::Structural { mut level } => {
@@ -72,6 +75,7 @@ pub fn enforce_minimum_exit_distances(
         }
         StopLoss::Sideway { .. } => StopLoss::Sideway { price: stop_price },
         StopLoss::SupportBreak { .. } => StopLoss::SupportBreak { price: stop_price },
+        StopLoss::Provided { .. } => StopLoss::Provided { price: stop_price },
     };
 
     match side {

@@ -32,13 +32,16 @@ pub enum StopLoss {
     Structural { level: levels::LevelPoint },
     Sideway { price: f64 },
     SupportBreak { price: f64 },
+    Provided { price: f64 },
 }
 
 impl StopLoss {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Sideway { price } | Self::SupportBreak { price } => price,
+            Self::Sideway { price } | Self::SupportBreak { price } | Self::Provided { price } => {
+                price
+            }
         }
     }
 
@@ -54,6 +57,7 @@ impl StopLoss {
             Self::Structural { level } => format!("structural:{}", level.label()),
             Self::Sideway { .. } => "sideway:block-edge".to_string(),
             Self::SupportBreak { .. } => "support-break".to_string(),
+            Self::Provided { .. } => "provided".to_string(),
         }
     }
 }
@@ -63,13 +67,14 @@ pub enum TakeProfit {
     Structural { level: levels::LevelPoint },
     Movement { price: f64 },
     Sideway { price: f64 },
+    Provided { price: f64 },
 }
 
 impl TakeProfit {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Movement { price } | Self::Sideway { price } => price,
+            Self::Movement { price } | Self::Sideway { price } | Self::Provided { price } => price,
         }
     }
 
@@ -78,6 +83,7 @@ impl TakeProfit {
             Self::Structural { .. } => "structural",
             Self::Movement { .. } => "movement",
             Self::Sideway { .. } => "sideway",
+            Self::Provided { .. } => "provided",
         }
     }
 
@@ -87,6 +93,25 @@ impl TakeProfit {
             take_profit => format!("tp:{}", take_profit.source_label()),
         }
     }
+}
+
+pub fn provided_exit_plan(levels: crate::model::ExitLevels) -> Option<ExitPlan> {
+    if !levels.take_profit.is_finite()
+        || !levels.stop_loss.is_finite()
+        || levels.take_profit <= 0.0
+        || levels.stop_loss <= 0.0
+    {
+        return None;
+    }
+    Some(ExitPlan {
+        take_profit: TakeProfit::Provided {
+            price: levels.take_profit,
+        },
+        stop_loss: StopLoss::Provided {
+            price: levels.stop_loss,
+        },
+        tp_reliable: true,
+    })
 }
 
 fn structural_plan(
@@ -567,18 +592,21 @@ fn position_exit_plan(
     side: PositionState,
     context: ExitPlanContext,
 ) -> Option<ExitPlan> {
-    build_exit_plan(
-        snapshot,
-        sug_snapshot,
-        &state.cascade_tf,
-        reference_price,
-        side,
-        context,
-        state.cfg.required_samples(),
-        &state.processed_structural_stop_losses,
-        state.cfg.min_tp_percent(),
-    )
-    .and_then(|plan| {
+    let plan = match state.entry_exit_levels {
+        Some(levels) => provided_exit_plan(levels),
+        None => build_exit_plan(
+            snapshot,
+            sug_snapshot,
+            &state.cascade_tf,
+            reference_price,
+            side,
+            context,
+            state.cfg.required_samples(),
+            &state.processed_structural_stop_losses,
+            state.cfg.min_tp_percent(),
+        ),
+    };
+    plan.and_then(|plan| {
         guard::minimum_exit_distances::enforce_minimum_exit_distances(
             plan,
             reference_price,
@@ -595,7 +623,7 @@ type ActiveExitResult = (
     Vec<String>,
 );
 
-fn entry_exit_plan(
+pub(crate) fn entry_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,

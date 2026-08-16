@@ -705,8 +705,15 @@ impl EntryOpenReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ExitLevels {
+    pub take_profit: f64,
+    pub stop_loss: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeDecision {
     pub market_state: MarketState,
     pub entry: EntryGate,
+    pub exit_levels: Option<ExitLevels>,
 }

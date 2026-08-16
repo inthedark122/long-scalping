@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use long_scalping::{
     engine::run,
     model::{
-        EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState, StrategyMode,
+        EntryReason, EntryType, ExitLevels, ExitMode, ExitType, IndicatorSnapshot, PositionState,
+        StrategyMode,
     },
     state::{EngineState, PositionRuntime},
 };
@@ -92,6 +93,74 @@ fn trailing_stop_reprices_two_tick_tp_from_latest_long_price() {
     assert_eq!(second.place_orders[0].mark, "tp-long");
     assert!(second.place_orders[0].reduce_only);
     assert!(second.cancel_orders.is_empty());
+}
+
+#[test]
+fn supplied_exit_levels_are_used_for_active_position_without_structural_repricing() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.position = position(PositionState::Long, 0.0);
+    state.position.take_profit = 0.0;
+    state.entry_exit_levels = Some(ExitLevels {
+        take_profit: 106.0,
+        stop_loss: 97.0,
+    });
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(output.place_orders.len(), 1);
+    assert_eq!(output.place_orders[0].enter_price, 106.0);
+    assert_eq!(state.position.take_profit, 106.0);
+    assert_eq!(state.position.stop_loss, 97.0);
+}
+
+#[test]
+fn new_position_uses_strategy_supplied_exit_levels() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.entry_exit_levels = Some(ExitLevels {
+        take_profit: 106.0,
+        stop_loss: 97.0,
+    });
+
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 10.0,
+                pnl: 0.0,
+                qty: 0.1,
+            }),
+            short: None,
+        },
+    );
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 0.1,
+    };
+
+    let output = run(&new_position, &mut state);
+
+    assert_eq!(output.place_orders.len(), 1);
+    assert_eq!(output.place_orders[0].enter_price, 106.0);
+    assert_eq!(state.position.take_profit, 106.0);
+    assert_eq!(state.position.stop_loss, 97.0);
 }
 
 #[test]
@@ -220,6 +289,10 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
             adverse_move_pct: -1.0,
         }),
     };
+    state.entry_exit_levels = Some(ExitLevels {
+        take_profit: 100.2,
+        stop_loss: 90.0,
+    });
 
     let positions = ModulePositions {
         long: Some(ModulePositionSummary {
@@ -235,13 +308,13 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
     assert!(first.place_orders.is_empty());
     assert!(first.cancel_orders.is_empty());
     assert_eq!(state.position.take_profit, 100.2);
-    assert_eq!(state.position.stop_loss, 95.0);
+    assert_eq!(state.position.stop_loss, 90.0);
 
     let second = run(&input(101.0, positions), &mut state);
     assert!(second.place_orders.is_empty());
     assert!(second.cancel_orders.is_empty());
     assert_eq!(state.position.take_profit, 100.2);
-    assert_eq!(state.position.stop_loss, 95.0);
+    assert_eq!(state.position.stop_loss, 90.0);
 }
 
 #[test]
@@ -299,6 +372,10 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
         expected_price_high: 100.2,
         favorable_move_pct: 0.2,
         adverse_move_pct: -0.2,
+    });
+    state.entry_exit_levels = Some(ExitLevels {
+        take_profit: 100.2,
+        stop_loss: 99.8,
     });
 
     let output = run(
@@ -381,6 +458,10 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
         favorable_move_pct: 0.2,
         adverse_move_pct: -0.2,
     });
+    state.entry_exit_levels = Some(ExitLevels {
+        take_profit: 99.8,
+        stop_loss: 100.2,
+    });
 
     let output = run(
         &input(
@@ -399,7 +480,7 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
     );
 
     assert!(state.position.take_profit <= 99.0);
-    assert!(state.position.stop_loss >= 100.5);
+    assert!(state.position.stop_loss >= 100.49);
     assert_eq!(
         output.place_orders[0].enter_price,
         state.position.take_profit
