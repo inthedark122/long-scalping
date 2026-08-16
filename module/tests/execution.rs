@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use long_scalping::{
     engine::run,
     model::{
-        EntryReason, EntryType, ExitLevels, ExitMode, ExitType, IndicatorSnapshot, PositionState,
-        StrategyMode,
+        EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState, StrategyMode,
     },
     state::{EngineState, PositionRuntime},
 };
@@ -68,6 +67,40 @@ fn position(side: PositionState, stop_loss: f64) -> PositionRuntime {
     }
 }
 
+fn mrc_reason(target_price: f64, stop_price: f64) -> EntryReason {
+    EntryReason::MrcCrossing {
+        price: 100.0,
+        market_price: 100.0,
+        mrc_min: 90.0,
+        mrc_max: 110.0,
+        target_price,
+        stop_price,
+        source_line: 4,
+        target_line: 5,
+        pattern: vec![4, 5],
+        pattern_elapsed_ms: vec![0, 12_000],
+        pattern_samples: 1,
+        context_samples: 0,
+        no_pullback_count: 0,
+        reverted_line: None,
+        target_samples: 1,
+        movement_samples: 1,
+        next_line_crosses: 1,
+        support_resistance_moves: 0,
+        price_only_moves: 0,
+        successful_moves: 1,
+        failed_moves: 0,
+        probability: 0.75,
+        movement_success_rate: 1.0,
+        expected_value_pct: 3.0,
+        expected_price_low: 100.0,
+        expected_price_high: target_price,
+        estimated_time_ms: 12_000.0,
+        favorable_move_pct: 3.0,
+        adverse_move_pct: -1.0,
+    }
+}
+
 #[test]
 fn trailing_stop_reprices_two_tick_tp_from_latest_long_price() {
     let mut state = EngineState::default();
@@ -96,15 +129,12 @@ fn trailing_stop_reprices_two_tick_tp_from_latest_long_price() {
 }
 
 #[test]
-fn supplied_exit_levels_are_used_for_active_position_without_structural_repricing() {
+fn mrc_entry_reason_exits_are_fixed_without_structural_repricing() {
     let mut state = EngineState::default();
     state.last_snapshot = Some(IndicatorSnapshot::default());
     state.position = position(PositionState::Long, 0.0);
     state.position.take_profit = 0.0;
-    state.entry_exit_levels = Some(ExitLevels {
-        take_profit: 106.0,
-        stop_loss: 97.0,
-    });
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
 
     let output = run(
         &input(
@@ -126,16 +156,33 @@ fn supplied_exit_levels_are_used_for_active_position_without_structural_repricin
     assert_eq!(output.place_orders[0].enter_price, 106.0);
     assert_eq!(state.position.take_profit, 106.0);
     assert_eq!(state.position.stop_loss, 97.0);
+    assert_eq!(state.position.exit_mode, ExitMode::Fixed);
+
+    let second = run(
+        &input(
+            103.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.3,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+    assert!(second.place_orders.is_empty());
+    assert_eq!(state.position.take_profit, 106.0);
+    assert_eq!(state.position.stop_loss, 97.0);
 }
 
 #[test]
-fn new_position_uses_strategy_supplied_exit_levels() {
+fn new_position_uses_mrc_entry_reason_exits() {
     let mut state = EngineState::default();
     state.last_snapshot = Some(IndicatorSnapshot::default());
-    state.entry_exit_levels = Some(ExitLevels {
-        take_profit: 106.0,
-        stop_loss: 97.0,
-    });
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
 
     let mut new_position = input(
         100.0,
@@ -161,6 +208,39 @@ fn new_position_uses_strategy_supplied_exit_levels() {
     assert_eq!(output.place_orders[0].enter_price, 106.0);
     assert_eq!(state.position.take_profit, 106.0);
     assert_eq!(state.position.stop_loss, 97.0);
+    assert_eq!(state.position.exit_mode, ExitMode::Fixed);
+}
+
+#[test]
+fn mrc_entry_reason_exits_apply_minimums_once_from_entry_price() {
+    let mut state = EngineState::default();
+    state.cfg.min_tp_percent = 1.5;
+    state.cfg.min_sl_percent = 1.5;
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.position = position(PositionState::Long, 0.0);
+    state.position.take_profit = 0.0;
+    state.position.entry_reason = Some(mrc_reason(100.5, 99.5));
+
+    let positions = ModulePositions {
+        long: Some(ModulePositionSummary {
+            entry_price: 100.0,
+            notional: 10.0,
+            pnl: 0.0,
+            qty: 0.1,
+        }),
+        short: None,
+    };
+    let first = run(&input(100.0, positions.clone()), &mut state);
+    assert_eq!(first.place_orders.len(), 1);
+    assert!((first.place_orders[0].enter_price - 101.5).abs() < 1e-9);
+    assert!((state.position.take_profit - 101.5).abs() < 1e-9);
+    assert!((state.position.stop_loss - 98.5).abs() < 1e-9);
+    assert_eq!(state.position.exit_mode, ExitMode::Fixed);
+
+    let second = run(&input(110.0, positions), &mut state);
+    assert!(second.place_orders.is_empty());
+    assert!((state.position.take_profit - 101.5).abs() < 1e-9);
+    assert!((state.position.stop_loss - 98.5).abs() < 1e-9);
 }
 
 #[test]
@@ -289,11 +369,6 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
             adverse_move_pct: -1.0,
         }),
     };
-    state.entry_exit_levels = Some(ExitLevels {
-        take_profit: 100.2,
-        stop_loss: 90.0,
-    });
-
     let positions = ModulePositions {
         long: Some(ModulePositionSummary {
             entry_price: 100.0,
@@ -373,11 +448,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
         favorable_move_pct: 0.2,
         adverse_move_pct: -0.2,
     });
-    state.entry_exit_levels = Some(ExitLevels {
-        take_profit: 100.2,
-        stop_loss: 99.8,
-    });
-
     let output = run(
         &input(
             100.0,
@@ -458,11 +528,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
         favorable_move_pct: 0.2,
         adverse_move_pct: -0.2,
     });
-    state.entry_exit_levels = Some(ExitLevels {
-        take_profit: 99.8,
-        stop_loss: 100.2,
-    });
-
     let output = run(
         &input(
             100.0,

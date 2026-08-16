@@ -365,7 +365,6 @@ pub fn evaluate_with_cascade(
         state.position.entry_reason = None;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
-        state.entry_exit_levels = None;
     }
 
     let finish = |mut result: ExecutionResult| {
@@ -509,7 +508,6 @@ pub fn evaluate_with_cascade(
     }
 
     let reason = entry_reason(decision).cloned();
-    let exit_levels = decision.exit_levels;
     let mrc_entry = matches!(reason.as_ref(), Some(EntryReason::MrcCrossing { .. }));
     if let Some(EntryReason::MrcCrossing {
         target_price,
@@ -543,7 +541,6 @@ pub fn evaluate_with_cascade(
         .unwrap_or(input.price);
     if decision_is_open {
         state.position.entry_reason = reason.clone();
-        state.entry_exit_levels = exit_levels;
     }
     if let Some(pending_position) =
         pending_position(input, entry_side).filter(|position| !has_active_position(Some(position)))
@@ -573,7 +570,6 @@ pub fn evaluate_with_cascade(
     }
 
     state.position.entry_reason = reason.clone();
-    state.entry_exit_levels = exit_levels;
     if mrc_entry {
         state.mrc_crossing_model.current_entry = None;
     }
@@ -744,7 +740,6 @@ mod tests {
                     crate::model::EntryReason::SugInfoScalp { price: 100.0 },
                 ),
             },
-            exit_levels: None,
         }
     }
 
@@ -757,7 +752,6 @@ mod tests {
                     crate::model::EntryReason::Structural { price: 100.0 },
                 ),
             },
-            exit_levels: None,
         }
     }
 
@@ -790,7 +784,6 @@ mod tests {
                     crate::model::EntryReason::SugInfoMovement { price },
                 ),
             },
-            exit_levels: None,
         }
     }
 
@@ -831,10 +824,6 @@ mod tests {
                     adverse_move_pct: -1.0,
                 }),
             },
-            exit_levels: Some(crate::model::ExitLevels {
-                take_profit: 104.0,
-                stop_loss: 96.0,
-            }),
         }
     }
 
@@ -902,13 +891,6 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(
-            state.entry_exit_levels,
-            Some(crate::model::ExitLevels {
-                take_profit: 104.0,
-                stop_loss: 96.0,
-            })
-        );
     }
 
     #[test]
@@ -1071,7 +1053,6 @@ mod tests {
                     solutions: Vec::new(),
                     notes: Vec::new(),
                 }),
-                exit_levels: None,
             },
         )
         .expect("an old pending limit order should be cancelled");
@@ -1112,7 +1093,6 @@ mod tests {
                 }],
                 notes: vec!["forced-pullback".to_string()],
             }),
-            exit_levels: None,
         };
         let first = evaluate_with_cascade(
             &input(),
@@ -2152,7 +2132,6 @@ mod tests {
                         crate::model::EntryReason::SugInfoScalp { price: 99.5 },
                     ),
                 },
-                exit_levels: None,
             },
         );
         assert_eq!(result.as_ref().unwrap().open_positions.len(), 1);

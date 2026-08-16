@@ -515,7 +515,6 @@ mod tests {
                 notes: vec!["5m-primary".to_string()],
                 reason: EntryOpenReason::Entry(EntryReason::SugInfoScalp { price: 100.0 }),
             },
-            exit_levels: None,
         }
     }
 

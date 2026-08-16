@@ -1,7 +1,9 @@
 use crate::detection::{cascade, levels};
 use crate::format::tick_size;
 use crate::guard;
-use crate::model::{ExitMode, ExitType, IndicatorSnapshot, PositionState, SugInfoSnapshot};
+use crate::model::{
+    EntryReason, ExitMode, ExitType, IndicatorSnapshot, PositionState, SugInfoSnapshot,
+};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::state::{CascadeState, EngineState};
 use crate::stop_loss;
@@ -32,16 +34,14 @@ pub enum StopLoss {
     Structural { level: levels::LevelPoint },
     Sideway { price: f64 },
     SupportBreak { price: f64 },
-    Provided { price: f64 },
+    Fixed { price: f64 },
 }
 
 impl StopLoss {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Sideway { price } | Self::SupportBreak { price } | Self::Provided { price } => {
-                price
-            }
+            Self::Sideway { price } | Self::SupportBreak { price } | Self::Fixed { price } => price,
         }
     }
 
@@ -57,7 +57,7 @@ impl StopLoss {
             Self::Structural { level } => format!("structural:{}", level.label()),
             Self::Sideway { .. } => "sideway:block-edge".to_string(),
             Self::SupportBreak { .. } => "support-break".to_string(),
-            Self::Provided { .. } => "provided".to_string(),
+            Self::Fixed { .. } => "fixed".to_string(),
         }
     }
 }
@@ -67,14 +67,14 @@ pub enum TakeProfit {
     Structural { level: levels::LevelPoint },
     Movement { price: f64 },
     Sideway { price: f64 },
-    Provided { price: f64 },
+    Fixed { price: f64 },
 }
 
 impl TakeProfit {
     pub fn price(self) -> f64 {
         match self {
             Self::Structural { level } => level.value,
-            Self::Movement { price } | Self::Sideway { price } | Self::Provided { price } => price,
+            Self::Movement { price } | Self::Sideway { price } | Self::Fixed { price } => price,
         }
     }
 
@@ -83,7 +83,7 @@ impl TakeProfit {
             Self::Structural { .. } => "structural",
             Self::Movement { .. } => "movement",
             Self::Sideway { .. } => "sideway",
-            Self::Provided { .. } => "provided",
+            Self::Fixed { .. } => "fixed",
         }
     }
 
@@ -93,25 +93,6 @@ impl TakeProfit {
             take_profit => format!("tp:{}", take_profit.source_label()),
         }
     }
-}
-
-pub fn provided_exit_plan(levels: crate::model::ExitLevels) -> Option<ExitPlan> {
-    if !levels.take_profit.is_finite()
-        || !levels.stop_loss.is_finite()
-        || levels.take_profit <= 0.0
-        || levels.stop_loss <= 0.0
-    {
-        return None;
-    }
-    Some(ExitPlan {
-        take_profit: TakeProfit::Provided {
-            price: levels.take_profit,
-        },
-        stop_loss: StopLoss::Provided {
-            price: levels.stop_loss,
-        },
-        tp_reliable: true,
-    })
 }
 
 fn structural_plan(
@@ -592,9 +573,26 @@ fn position_exit_plan(
     side: PositionState,
     context: ExitPlanContext,
 ) -> Option<ExitPlan> {
-    let plan = match state.entry_exit_levels {
-        Some(levels) => provided_exit_plan(levels),
-        None => build_exit_plan(
+    let plan = match state.position.entry_reason.as_ref() {
+        Some(EntryReason::MrcCrossing {
+            target_price,
+            stop_price,
+            ..
+        }) if target_price.is_finite()
+            && stop_price.is_finite()
+            && *target_price > 0.0
+            && *stop_price > 0.0 =>
+        {
+            Some(ExitPlan {
+                take_profit: TakeProfit::Fixed {
+                    price: *target_price,
+                },
+                stop_loss: StopLoss::Fixed { price: *stop_price },
+                tp_reliable: true,
+            })
+        }
+        Some(EntryReason::MrcCrossing { .. }) => None,
+        _ => build_exit_plan(
             snapshot,
             sug_snapshot,
             &state.cascade_tf,
@@ -673,6 +671,13 @@ fn ensure_trailing_exit_order(
         let Some(plan) = entry_exit_plan(state, snapshot, sug_snapshot, reference_price, side)
         else {
             return (Vec::new(), Vec::new(), Vec::new());
+        };
+        state.position.exit_mode = if matches!(plan.take_profit, TakeProfit::Fixed { .. })
+            && matches!(plan.stop_loss, StopLoss::Fixed { .. })
+        {
+            ExitMode::Fixed
+        } else {
+            ExitMode::Structural
         };
         state.position.take_profit = plan.take_profit.price();
         set_stop_loss(state, plan.stop_loss);
@@ -790,9 +795,11 @@ fn ensure_trailing_exit_order(
         );
     }
 
-    // Recalculate the common exit plan on its normal cadence. This applies to
-    // MRC entries as well; the crossing prediction explains the entry, while
-    // the shared exit engine owns the live TP/SL plan.
+    if state.position.exit_mode == ExitMode::Fixed {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    // Recalculate structural and movement plans on their normal cadence.
     let recalculate_virtual_sl = matches!(
         state.position.exit_type,
         ExitType::VirtualTrailingExit { .. }

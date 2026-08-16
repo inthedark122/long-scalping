@@ -404,6 +404,7 @@ impl EntryReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExitMode {
     Structural,
+    Fixed,
     TrailAfterVirtualSl,
 }
 
@@ -417,6 +418,7 @@ impl ExitMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Structural => "structural",
+            Self::Fixed => "fixed",
             Self::TrailAfterVirtualSl => "trail-after-virtual-sl",
         }
     }
@@ -705,15 +707,8 @@ impl EntryOpenReason {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ExitLevels {
-    pub take_profit: f64,
-    pub stop_loss: f64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeDecision {
     pub market_state: MarketState,
     pub entry: EntryGate,
-    pub exit_levels: Option<ExitLevels>,
 }

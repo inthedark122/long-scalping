@@ -2,8 +2,8 @@ use crate::builder::BuiltStrategy;
 use crate::detection::levels::LevelPoint;
 use crate::model::MarketState;
 use crate::model::{
-    exit_type_for_strategy, Config, EntryReason, ExitLevels, ExitMemory, ExitMode, ExitType,
-    IndicatorSnapshot, PositionState,
+    exit_type_for_strategy, Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot,
+    PositionState,
 };
 use crate::observer::{DirectionChangeHistory, TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
@@ -242,7 +242,6 @@ pub struct EngineState {
     pub last_active_tp_recalc_bar: Option<u64>,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
-    pub entry_exit_levels: Option<ExitLevels>,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
@@ -275,7 +274,6 @@ impl Default for EngineState {
             last_active_tp_recalc_bar: None,
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
-            entry_exit_levels: None,
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
@@ -332,7 +330,6 @@ pub fn sync_position_state(
     if long.is_none() && short.is_none() {
         state.tp_reprice_history.reset();
         state.pending_entry_bar = None;
-        state.entry_exit_levels = None;
     }
 
     match (long, short) {
