@@ -553,7 +553,7 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
 }
 
 #[test]
-fn expired_mrc_limit_is_updated_for_the_new_core_signal() {
+fn expired_mrc_limit_is_cancelled_before_new_core_signal() {
     let mut state = EngineState::default();
     state.cfg.strategy_mode = StrategyMode::MrcCrossing;
     state.cfg.entry_type = EntryType::Limit;
@@ -706,11 +706,18 @@ fn expired_mrc_limit_is_updated_for_the_new_core_signal() {
         ),
         &mut state,
     );
-    assert!(output.close_positions.is_empty());
-    assert!(output.open_positions.is_empty());
-    assert_eq!(output.update_positions.len(), 1);
-    assert_eq!(output.update_positions[0].direction, Direction::Long);
-    assert_eq!(output.update_positions[0].enter_price, Some(98.8));
+    assert_eq!(output.close_positions.len(), 1);
+    assert_eq!(output.close_positions[0].direction, Direction::Long);
+    assert!(output.close_positions[0]
+        .reason
+        .contains("limit-entry-expired-after-one-candle"));
+    assert_eq!(output.open_positions.len(), 1);
+    assert_eq!(
+        output.open_positions[0].order_type,
+        lte_strategy_bridge::abi::ModuleOrderType::Limit
+    );
+    assert_eq!(output.open_positions[0].enter_price, Some(103.0));
+    assert!(output.update_positions.is_empty());
     assert_eq!(state.pending_entry_bar, Some(2));
     assert!(state.position.entry_reason.is_some());
 }
