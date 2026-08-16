@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.89
+
+MRC opposite-direction core release.
+
+- Make the learned opposite-direction trade decision the core MRC entry behavior.
+- Keep the learned entry trigger while swapping TP and SL for the selected trade side.
+- Remove the separate research-only mode so the default analysis follows live core behavior.
+
 # 1.0.88
 
 Global exit-distance guard release.
