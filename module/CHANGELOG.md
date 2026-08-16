@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.91
+
+Simplified fixed MRC exit handling.
+
+- Represent strategy-provided TP/SL values as fixed variants of the existing exit types.
+- Keep runtime exit mode only for active fixed, structural, and virtual-SL behavior.
+- Remove the separate ExitLevels plumbing and ExitPlan mode field.
+
 # 1.0.90
 
 Strategy-provided MRC exit release.
