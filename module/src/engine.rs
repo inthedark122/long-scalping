@@ -3,6 +3,7 @@ use crate::debug;
 use crate::detection::{cascade, mrc_crossing, regime, sideways, vlines};
 use crate::execution;
 use crate::exit;
+use crate::guard;
 use crate::market_data;
 use crate::model::{exit_type_for_strategy, EntryType, ExitMode, StrategyMode};
 use crate::order_manager;
@@ -137,6 +138,9 @@ fn handle_signal(
         if let Some(min_tp_percent) = values.get("min_tp_percent").and_then(|v| v.as_f64()) {
             state.cfg.min_tp_percent = min_tp_percent.max(0.0);
         }
+        if let Some(min_sl_percent) = values.get("min_sl_percent").and_then(|v| v.as_f64()) {
+            state.cfg.min_sl_percent = min_sl_percent.max(0.0);
+        }
         if let Some(risk_target_percent) =
             values.get("risk_target_percent").and_then(|v| v.as_f64())
         {
@@ -186,13 +190,14 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% risk_target_percent={:.2}% required_samples={} exit={:?}",
+                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} exit={:?}",
                 state.allowed_direction,
                 state.cfg.strategy_mode.as_str(),
                 state.cfg.entry_type.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
+                state.cfg.min_sl_percent(),
                 state.cfg.risk_target_percent(),
                 state.cfg.required_samples(),
                 exit_type_for_strategy(state.cfg.strategy_mode)
@@ -262,11 +267,19 @@ fn handle_new_position(
         ..
     }) = state.position.entry_reason.as_ref()
     {
-        exit::mrc_crossing_plan(*target_price, *stop_price)
+        exit::mrc_crossing_plan(*target_price, *stop_price).and_then(|plan| {
+            guard::minimum_exit_distances::enforce_minimum_exit_distances(
+                plan,
+                entry_price,
+                side,
+                state.cfg.min_tp_percent(),
+                state.cfg.min_sl_percent(),
+            )
+        })
     } else {
         input.sug_info.as_ref().and_then(|sug_info| {
             let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-            exit::compute(
+            exit::build_exit_plan(
                 &snapshot,
                 &sug_snapshot,
                 &state.cascade_tf,
@@ -274,6 +287,8 @@ fn handle_new_position(
                 side,
                 exit::ExitPlanContext::Entry,
                 state.cfg.required_samples(),
+                &[],
+                0.0,
             )
         })
     };
@@ -379,6 +394,7 @@ mod tests {
         values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
         values.insert("entry_type".to_string(), serde_json::json!(0.0));
         values.insert("required_samples".to_string(), serde_json::json!(5.0));
+        values.insert("min_sl_percent".to_string(), serde_json::json!(0.75));
         values.insert("risk_target_percent".to_string(), serde_json::json!(1.25));
         let output = run(
             &input(ModuleEvent::Signal {
@@ -392,8 +408,10 @@ mod tests {
         assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcCrossing);
         assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
+        assert_eq!(state.cfg.min_sl_percent(), 0.75);
         assert_eq!(state.cfg.risk_target_percent(), 1.25);
         assert!(output.debug.contains("required_samples=5"));
+        assert!(output.debug.contains("min_sl_percent=0.75%"));
         assert!(output.debug.contains("risk_target_percent=1.25%"));
         assert!(output.debug.contains("entry=market"));
         assert_eq!(

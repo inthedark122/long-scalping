@@ -5,6 +5,7 @@ pub mod engine;
 mod execution;
 mod exit;
 mod format;
+mod guard;
 pub mod market_data;
 pub mod model;
 pub mod observer;

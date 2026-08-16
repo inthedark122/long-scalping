@@ -225,6 +225,90 @@ fn mrc_crossing_keeps_entry_tp_and_sl_on_realtime_updates() {
 }
 
 #[test]
+fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
+    let mut state = EngineState::default();
+    state.cfg.strategy_mode = StrategyMode::MrcCrossing;
+    state.cfg.min_tp_percent = 1.0;
+    state.cfg.min_sl_percent = 0.5;
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.position = position(PositionState::Long, 0.0);
+    state.position.take_profit = 0.0;
+    state.position.entry_reason = Some(EntryReason::MrcCrossing {
+        price: 100.0,
+        target_price: 100.2,
+        stop_price: 99.8,
+        probability: 0.8,
+        estimated_time_ms: 1_000.0,
+        source_line: 4,
+        target_line: 5,
+        favorable_move_pct: 0.2,
+        adverse_move_pct: -0.2,
+    });
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(state.position.take_profit, 101.0);
+    assert_eq!(state.position.stop_loss, 99.5);
+    assert_eq!(output.place_orders[0].enter_price, 101.0);
+}
+
+#[test]
+fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
+    let mut state = EngineState::default();
+    state.cfg.strategy_mode = StrategyMode::MrcCrossing;
+    state.cfg.min_tp_percent = 1.0;
+    state.cfg.min_sl_percent = 0.5;
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.position = position(PositionState::Short, 0.0);
+    state.position.take_profit = 0.0;
+    state.position.entry_reason = Some(EntryReason::MrcCrossing {
+        price: 100.0,
+        target_price: 99.8,
+        stop_price: 100.2,
+        probability: 0.8,
+        estimated_time_ms: 1_000.0,
+        source_line: 4,
+        target_line: 3,
+        favorable_move_pct: 0.2,
+        adverse_move_pct: -0.2,
+    });
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: None,
+                short: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(state.position.take_profit, 99.0);
+    assert!((state.position.stop_loss - 100.5).abs() < 1e-9);
+    assert_eq!(output.place_orders[0].enter_price, 99.0);
+}
+
+#[test]
 fn expired_mrc_limit_does_not_block_a_new_opposite_signal() {
     let mut state = EngineState::default();
     state.cfg.strategy_mode = StrategyMode::MrcCrossing;

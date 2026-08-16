@@ -1,5 +1,6 @@
 use crate::exit;
 use crate::format::{fmt_price_tick, tick_size};
+use crate::guard;
 use crate::model::IndicatorSnapshot;
 use crate::model::SugInfoSnapshot;
 use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
@@ -109,10 +110,18 @@ fn pre_entry_exit_plan(
         ..
     }) = reason
     {
-        return exit::mrc_crossing_plan(*target_price, *stop_price);
+        return exit::mrc_crossing_plan(*target_price, *stop_price).and_then(|plan| {
+            guard::minimum_exit_distances::enforce_minimum_exit_distances(
+                plan,
+                reference_price,
+                side,
+                state.cfg.min_tp_percent(),
+                state.cfg.min_sl_percent(),
+            )
+        });
     }
 
-    exit::compute_with_excluded_stop_losses_and_minimum(
+    exit::build_exit_plan(
         snapshot,
         sug_snapshot,
         &state.cascade_tf,
@@ -123,6 +132,15 @@ fn pre_entry_exit_plan(
         &[],
         state.cfg.min_tp_percent(),
     )
+    .and_then(|plan| {
+        guard::minimum_exit_distances::enforce_minimum_exit_distances(
+            plan,
+            reference_price,
+            side,
+            state.cfg.min_tp_percent(),
+            state.cfg.min_sl_percent(),
+        )
+    })
 }
 
 fn close_reason(reason: &str, state: &EngineState, price: f64, tick_size: f64) -> String {

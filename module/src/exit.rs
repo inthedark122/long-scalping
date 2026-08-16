@@ -1,5 +1,6 @@
 use crate::detection::{cascade, levels};
 use crate::format::tick_size;
+use crate::guard;
 use crate::model::{ExitMode, ExitType, IndicatorSnapshot, PositionState, SugInfoSnapshot};
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::state::{CascadeState, EngineState};
@@ -120,7 +121,7 @@ fn structural_plan(
     context: ExitPlanContext,
     required_samples: u32,
     excluded_stop_losses: &[levels::LevelPoint],
-    configured_minimum_percent: f64,
+    minimum_take_profit_percent: f64,
 ) -> Option<(levels::LevelPoint, levels::LevelPoint)> {
     let take_profit = structural_take_profit_level(
         levels,
@@ -129,7 +130,7 @@ fn structural_plan(
         side,
         context,
         required_samples,
-        configured_minimum_percent,
+        minimum_take_profit_percent,
     )?;
     match side {
         PositionState::Long => {
@@ -204,12 +205,12 @@ fn effective_minimum_percent(
     cascade: &CascadeState,
     price: f64,
     required_samples: u32,
-    configured_minimum_percent: f64,
+    minimum_take_profit_percent: f64,
 ) -> Option<f64> {
-    let configured_minimum_percent = configured_minimum_percent.max(0.0);
+    let minimum_take_profit_percent = minimum_take_profit_percent.max(0.0);
     match cascade_average_percent(cascade, price, required_samples) {
-        Some(cascade_minimum) => Some(cascade_minimum.max(configured_minimum_percent)),
-        None if configured_minimum_percent > 0.0 => Some(configured_minimum_percent),
+        Some(cascade_minimum) => Some(cascade_minimum.max(minimum_take_profit_percent)),
+        None if minimum_take_profit_percent > 0.0 => Some(minimum_take_profit_percent),
         None => None,
     }
 }
@@ -221,10 +222,15 @@ fn structural_take_profit_level(
     side: PositionState,
     context: ExitPlanContext,
     required_samples: u32,
-    configured_minimum_percent: f64,
+    minimum_take_profit_percent: f64,
 ) -> Option<levels::LevelPoint> {
     let minimum_percent = if context.enforces_cascade_minimum() {
-        effective_minimum_percent(cascade, price, required_samples, configured_minimum_percent)
+        effective_minimum_percent(
+            cascade,
+            price,
+            required_samples,
+            minimum_take_profit_percent,
+        )
     } else {
         None
     };
@@ -267,14 +273,17 @@ fn take_profit_meets_cascade_minimum(
     take_profit: f64,
     context: ExitPlanContext,
     required_samples: u32,
-    configured_minimum_percent: f64,
+    minimum_take_profit_percent: f64,
 ) -> bool {
     if !context.enforces_cascade_minimum() {
         return true;
     }
-    let Some(minimum_percent) =
-        effective_minimum_percent(cascade, price, required_samples, configured_minimum_percent)
-    else {
+    let Some(minimum_percent) = effective_minimum_percent(
+        cascade,
+        price,
+        required_samples,
+        minimum_take_profit_percent,
+    ) else {
         return true;
     };
     let distance_percent = match side {
@@ -374,28 +383,7 @@ fn movement_plan(
     }
 }
 
-pub fn compute(
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    context: ExitPlanContext,
-    required_samples: u32,
-) -> Option<ExitPlan> {
-    compute_with_excluded_stop_losses(
-        snapshot,
-        sug_snapshot,
-        cascade,
-        price,
-        side,
-        context,
-        required_samples,
-        &[],
-    )
-}
-
-pub fn compute_with_excluded_stop_losses(
+pub fn build_exit_plan(
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
     cascade: &CascadeState,
@@ -404,30 +392,7 @@ pub fn compute_with_excluded_stop_losses(
     context: ExitPlanContext,
     required_samples: u32,
     excluded_stop_losses: &[levels::LevelPoint],
-) -> Option<ExitPlan> {
-    compute_with_excluded_stop_losses_and_minimum(
-        snapshot,
-        sug_snapshot,
-        cascade,
-        price,
-        side,
-        context,
-        required_samples,
-        excluded_stop_losses,
-        0.0,
-    )
-}
-
-pub fn compute_with_excluded_stop_losses_and_minimum(
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    context: ExitPlanContext,
-    required_samples: u32,
-    excluded_stop_losses: &[levels::LevelPoint],
-    configured_minimum_percent: f64,
+    minimum_take_profit_percent: f64,
 ) -> Option<ExitPlan> {
     if !price.is_finite() || price <= 0.0 {
         return None;
@@ -442,10 +407,10 @@ pub fn compute_with_excluded_stop_losses_and_minimum(
         context,
         required_samples,
         excluded_stop_losses,
-        configured_minimum_percent,
+        minimum_take_profit_percent,
     );
 
-    if let Some(plan) = movement_plan(
+    let candidate = if let Some(plan) = movement_plan(
         snapshot,
         sug_snapshot,
         cascade,
@@ -461,63 +426,67 @@ pub fn compute_with_excluded_stop_losses_and_minimum(
             plan.take_profit.price(),
             context,
             required_samples,
-            configured_minimum_percent,
+            minimum_take_profit_percent,
         ) {
-            return Some(plan);
+            Some(plan)
+        } else {
+            None
         }
-    }
+    } else {
+        match side {
+            PositionState::Long => {
+                let Some(raw_tp) = structural_take_profit_level(
+                    &levels,
+                    cascade,
+                    price,
+                    side,
+                    context,
+                    required_samples,
+                    minimum_take_profit_percent,
+                ) else {
+                    return None;
+                };
+                let Some(raw_sl) =
+                    structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
+                else {
+                    return None;
+                };
 
-    match side {
-        PositionState::Long => {
-            let Some(raw_tp) = structural_take_profit_level(
-                &levels,
-                cascade,
-                price,
-                side,
-                context,
-                required_samples,
-                configured_minimum_percent,
-            ) else {
-                return None;
-            };
-            let Some(raw_sl) =
-                structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
-            else {
-                return None;
-            };
+                Some(ExitPlan {
+                    take_profit: TakeProfit::Structural { level: raw_tp },
+                    stop_loss: StopLoss::Structural { level: raw_sl },
+                    tp_reliable: true,
+                })
+            }
+            PositionState::Short => {
+                let Some(raw_tp) = structural_take_profit_level(
+                    &levels,
+                    cascade,
+                    price,
+                    side,
+                    context,
+                    required_samples,
+                    minimum_take_profit_percent,
+                ) else {
+                    return None;
+                };
+                let Some(raw_sl) =
+                    structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
+                else {
+                    return None;
+                };
 
-            Some(ExitPlan {
-                take_profit: TakeProfit::Structural { level: raw_tp },
-                stop_loss: StopLoss::Structural { level: raw_sl },
-                tp_reliable: true,
-            })
+                Some(ExitPlan {
+                    take_profit: TakeProfit::Structural { level: raw_tp },
+                    stop_loss: StopLoss::Structural { level: raw_sl },
+                    tp_reliable: true,
+                })
+            }
+            PositionState::Flat => None,
         }
-        PositionState::Short => {
-            let Some(raw_tp) = structural_take_profit_level(
-                &levels,
-                cascade,
-                price,
-                side,
-                context,
-                required_samples,
-                configured_minimum_percent,
-            ) else {
-                return None;
-            };
-            let Some(raw_sl) =
-                structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
-            else {
-                return None;
-            };
+    };
 
-            Some(ExitPlan {
-                take_profit: TakeProfit::Structural { level: raw_tp },
-                stop_loss: StopLoss::Structural { level: raw_sl },
-                tp_reliable: true,
-            })
-        }
-        PositionState::Flat => None,
-    }
+    candidate
 }
 
 fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
@@ -622,7 +591,7 @@ fn position_exit_plan(
     side: PositionState,
     context: ExitPlanContext,
 ) -> Option<ExitPlan> {
-    compute_with_excluded_stop_losses_and_minimum(
+    build_exit_plan(
         snapshot,
         sug_snapshot,
         &state.cascade_tf,
@@ -633,6 +602,15 @@ fn position_exit_plan(
         &state.processed_structural_stop_losses,
         state.cfg.min_tp_percent(),
     )
+    .and_then(|plan| {
+        guard::minimum_exit_distances::enforce_minimum_exit_distances(
+            plan,
+            reference_price,
+            side,
+            state.cfg.min_tp_percent(),
+            state.cfg.min_sl_percent(),
+        )
+    })
 }
 
 type ActiveExitResult = (
@@ -654,7 +632,15 @@ fn entry_exit_plan(
         ..
     }) = state.position.entry_reason.as_ref()
     {
-        mrc_crossing_plan(*target_price, *stop_price)
+        mrc_crossing_plan(*target_price, *stop_price).and_then(|plan| {
+            guard::minimum_exit_distances::enforce_minimum_exit_distances(
+                plan,
+                reference_price,
+                side,
+                state.cfg.min_tp_percent(),
+                state.cfg.min_sl_percent(),
+            )
+        })
     } else {
         position_exit_plan(
             state,
@@ -990,7 +976,7 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = compute(
+        let plan = build_exit_plan(
             &snapshot,
             &sug,
             &cascade,
@@ -998,6 +984,8 @@ mod tests {
             PositionState::Long,
             ExitPlanContext::Candidate,
             3,
+            &[],
+            0.0,
         )
         .unwrap();
         assert!(plan.take_profit.price() > 100.0);
@@ -1019,7 +1007,7 @@ mod tests {
             samples: 3,
             ..Default::default()
         };
-        let plan = compute(
+        let plan = build_exit_plan(
             &snapshot,
             &sug,
             &cascade,
@@ -1027,6 +1015,8 @@ mod tests {
             PositionState::Short,
             ExitPlanContext::Candidate,
             3,
+            &[],
+            0.0,
         )
         .unwrap();
         assert!(plan.take_profit.price() < 100.0);
@@ -1049,7 +1039,7 @@ mod tests {
         long_snapshot.tf15m.zz_buy_price = None;
         long_snapshot.tf15m.zz_sell_price = None;
         long_snapshot.tf1m.zz_buy_price = Some(94.0);
-        let long_plan = compute(
+        let long_plan = build_exit_plan(
             &long_snapshot,
             &SugInfoSnapshot::default(),
             &CascadeState::default(),
@@ -1057,6 +1047,8 @@ mod tests {
             PositionState::Long,
             ExitPlanContext::Candidate,
             3,
+            &[],
+            0.0,
         )
         .unwrap();
         assert!(long_plan.stop_loss.price() < 100.0);
@@ -1064,7 +1056,7 @@ mod tests {
         let short_snapshot = long_snapshot;
         let mut short_snapshot = short_snapshot;
         short_snapshot.tf1m.zz_sell_price = Some(106.0);
-        let short_plan = compute(
+        let short_plan = build_exit_plan(
             &short_snapshot,
             &SugInfoSnapshot::default(),
             &CascadeState::default(),
@@ -1072,6 +1064,8 @@ mod tests {
             PositionState::Short,
             ExitPlanContext::Candidate,
             3,
+            &[],
+            0.0,
         )
         .unwrap();
         assert!(short_plan.stop_loss.price() > 100.0);
@@ -1104,7 +1098,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(compute(
+        assert!(build_exit_plan(
             &snapshot,
             &sug,
             &cascade,
@@ -1112,6 +1106,8 @@ mod tests {
             PositionState::Long,
             ExitPlanContext::Entry,
             3,
+            &[],
+            0.0,
         )
         .is_none());
     }
@@ -1134,7 +1130,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = compute(
+        let plan = build_exit_plan(
             &snapshot,
             &SugInfoSnapshot::default(),
             &cascade,
@@ -1142,6 +1138,8 @@ mod tests {
             PositionState::Long,
             ExitPlanContext::Entry,
             3,
+            &[],
+            0.0,
         )
         .unwrap();
 
@@ -1151,7 +1149,7 @@ mod tests {
             .order_note()
             .contains("tp:structural|level="));
 
-        let configured_minimum_plan = compute_with_excluded_stop_losses_and_minimum(
+        let configured_minimum_plan = build_exit_plan(
             &snapshot,
             &SugInfoSnapshot::default(),
             &cascade,

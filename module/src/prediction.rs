@@ -77,7 +77,7 @@ fn candidate_exit_plan(
     side: PositionState,
     required_samples: u32,
 ) -> Option<crate::exit::ExitPlan> {
-    exit::compute(
+    exit::build_exit_plan(
         snapshot,
         sug_snapshot,
         cascade,
@@ -85,6 +85,8 @@ fn candidate_exit_plan(
         side,
         crate::exit::ExitPlanContext::Candidate,
         required_samples,
+        &[],
+        0.0,
     )
 }
 
