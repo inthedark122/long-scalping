@@ -1,5 +1,12 @@
 # Changelog
 
+# 1.0.93
+
+Safe one-candle limit-entry cancellation.
+
+- Cancel an expired limit entry without opening a replacement in the same evaluation.
+- Wait for the host to confirm cancellation before processing a new entry signal.
+
 # 1.0.92
 
 One-candle limit-entry expiry release.

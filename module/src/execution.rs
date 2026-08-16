@@ -342,10 +342,10 @@ pub fn evaluate_with_cascade(
         MarketState::Sideways => PositionState::Flat,
     };
     let decision_is_open = matches!(&decision.entry, EntryGate::Open { .. });
-    let expired_side = [PositionState::Long, PositionState::Short]
+    if let Some(side) = [PositionState::Long, PositionState::Short]
         .into_iter()
-        .find(|side| pending_limit_entry_expired(input, state, *side));
-    let expired_cancel = expired_side.map(|side| {
+        .find(|side| pending_limit_entry_expired(input, state, *side))
+    {
         let direction = match side {
             PositionState::Long => Direction::Long,
             PositionState::Short => Direction::Short,
@@ -357,54 +357,45 @@ pub fn evaluate_with_cascade(
             input.price,
             tick_size(input),
         );
-        (direction, reason)
-    });
-    if expired_side.is_some() {
         state.position.entry_reason = None;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
+
+        // Cancel the expired order first. The host still reports the old
+        // pending order in this evaluation, so opening a replacement in the
+        // same result can associate the new MRC exit levels with a different
+        // eventual fill. The next evaluation will process a fresh signal
+        // after the cancellation has been applied.
+        return Some(ExecutionResult {
+            close_positions: vec![close(direction, &reason)],
+            ..Default::default()
+        });
     }
 
-    let finish = |mut result: ExecutionResult| {
-        if let Some((direction, reason)) = expired_cancel.as_ref() {
-            result.close_positions.insert(0, close(*direction, reason));
-        }
-        Some(result)
-    };
-    let cancel_only = || {
-        expired_cancel
-            .as_ref()
-            .map(|(direction, reason)| ExecutionResult {
-                close_positions: vec![close(*direction, reason)],
-                ..Default::default()
-            })
-    };
+    let finish = |result: ExecutionResult| Some(result);
 
     if let Some(long_position) = input.positions.long.as_ref() {
         if !has_active_position(Some(long_position)) {
-            let expired_long = expired_side == Some(PositionState::Long);
-            if !expired_long {
-                if matches!(&decision.entry, EntryGate::Wait(_)) {
-                    return cancel_only();
-                }
-                let reason = entry_reason(decision).cloned();
-                state.position.entry_reason = reason;
-                if matches!(
-                    state.position.entry_reason,
-                    Some(EntryReason::MrcCrossing { .. })
-                ) {
-                    state.mrc_crossing_model.current_entry = None;
-                }
-                let update = created_position_update(input, state, PositionState::Long);
-                if update.is_some() {
-                    state.pending_entry_bar =
-                        (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
-                }
-                return finish(ExecutionResult {
-                    update_positions: update.into_iter().collect(),
-                    ..Default::default()
-                });
+            if matches!(&decision.entry, EntryGate::Wait(_)) {
+                return None;
             }
+            let reason = entry_reason(decision).cloned();
+            state.position.entry_reason = reason;
+            if matches!(
+                state.position.entry_reason,
+                Some(EntryReason::MrcCrossing { .. })
+            ) {
+                state.mrc_crossing_model.current_entry = None;
+            }
+            let update = created_position_update(input, state, PositionState::Long);
+            if update.is_some() {
+                state.pending_entry_bar =
+                    (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
+            }
+            return finish(ExecutionResult {
+                update_positions: update.into_iter().collect(),
+                ..Default::default()
+            });
         } else {
             let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
                 input,
@@ -424,29 +415,26 @@ pub fn evaluate_with_cascade(
 
     if let Some(short_position) = input.positions.short.as_ref() {
         if !has_active_position(Some(short_position)) {
-            let expired_short = expired_side == Some(PositionState::Short);
-            if !expired_short {
-                if matches!(&decision.entry, EntryGate::Wait(_)) {
-                    return cancel_only();
-                }
-                let reason = entry_reason(decision).cloned();
-                state.position.entry_reason = reason;
-                if matches!(
-                    state.position.entry_reason,
-                    Some(EntryReason::MrcCrossing { .. })
-                ) {
-                    state.mrc_crossing_model.current_entry = None;
-                }
-                let update = created_position_update(input, state, PositionState::Short);
-                if update.is_some() {
-                    state.pending_entry_bar =
-                        (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
-                }
-                return finish(ExecutionResult {
-                    update_positions: update.into_iter().collect(),
-                    ..Default::default()
-                });
+            if matches!(&decision.entry, EntryGate::Wait(_)) {
+                return None;
             }
+            let reason = entry_reason(decision).cloned();
+            state.position.entry_reason = reason;
+            if matches!(
+                state.position.entry_reason,
+                Some(EntryReason::MrcCrossing { .. })
+            ) {
+                state.mrc_crossing_model.current_entry = None;
+            }
+            let update = created_position_update(input, state, PositionState::Short);
+            if update.is_some() {
+                state.pending_entry_bar =
+                    (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
+            }
+            return finish(ExecutionResult {
+                update_positions: update.into_iter().collect(),
+                ..Default::default()
+            });
         } else {
             let (tp_orders, update_positions, cancel_orders) = exit::ensure_active_exit_order(
                 input,
@@ -481,7 +469,7 @@ pub fn evaluate_with_cascade(
     }
 
     if matches!(&decision.entry, EntryGate::Wait(_)) {
-        return cancel_only();
+        return None;
     }
 
     let base_amount = entry_budget(input, state);
@@ -536,33 +524,31 @@ pub fn evaluate_with_cascade(
     if decision_is_open {
         state.position.entry_reason = reason.clone();
     }
-    if expired_side.is_none() {
-        if let Some(pending_position) = pending_position(input, entry_side)
-            .filter(|position| !has_active_position(Some(position)))
-        {
-            if !entry_price.is_finite() || entry_price <= 0.0 {
-                return cancel_only();
-            }
-            if state.cfg.entry_type == EntryType::Limit {
-                let order_price = if mrc_entry {
-                    entry_price
-                } else {
-                    order_entry_price(input, entry_side, entry_price)
-                };
-                if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
-                    let direction = match entry_side {
-                        PositionState::Long => Direction::Long,
-                        PositionState::Short => Direction::Short,
-                        PositionState::Flat => Direction::Both,
-                    };
-                    return finish(ExecutionResult {
-                        update_positions: vec![update_position(direction, Some(order_price))],
-                        ..Default::default()
-                    });
-                }
-            }
-            return cancel_only();
+    if let Some(pending_position) =
+        pending_position(input, entry_side).filter(|position| !has_active_position(Some(position)))
+    {
+        if !entry_price.is_finite() || entry_price <= 0.0 {
+            return None;
         }
+        if state.cfg.entry_type == EntryType::Limit {
+            let order_price = if mrc_entry {
+                entry_price
+            } else {
+                order_entry_price(input, entry_side, entry_price)
+            };
+            if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
+                let direction = match entry_side {
+                    PositionState::Long => Direction::Long,
+                    PositionState::Short => Direction::Short,
+                    PositionState::Flat => Direction::Both,
+                };
+                return finish(ExecutionResult {
+                    update_positions: vec![update_position(direction, Some(order_price))],
+                    ..Default::default()
+                });
+            }
+        }
+        return None;
     }
 
     state.position.entry_reason = reason.clone();
@@ -694,7 +680,7 @@ pub fn evaluate_with_cascade(
             }],
             ..Default::default()
         }),
-        _ => cancel_only(),
+        _ => None,
     }
 }
 

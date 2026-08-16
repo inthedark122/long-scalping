@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.92",
+      "module_version": "1.0.93",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.92"
+          "module_version": "1.0.93"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.92 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing follows adjacent MRC line transitions inside a recent local cycle window, records market-price and MRC-range movement, and predicts the next line with timing and adaptive exits; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
+      "description": "Start the 1.0.93 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed. MRC Crossing follows adjacent MRC line transitions inside a recent local cycle window, records market-price and MRC-range movement, and predicts the next line with timing and adaptive exits; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
       "params": [
         {
           "code": "cap_init",
@@ -96,7 +96,7 @@
         {
           "code": "entry_type",
           "name": "Entry order",
-      "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; the current candle is evaluated for a fresh signal after expiration.",
+          "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation is confirmed.",
           "default": 1,
           "variant": "Select",
           "options": [
