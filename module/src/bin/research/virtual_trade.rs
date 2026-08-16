@@ -27,9 +27,13 @@ pub(crate) struct VirtualPosition {
     pub(crate) entry_price: f64,
     pub(crate) target_price: f64,
     pub(crate) stop_price: f64,
+    pub(crate) target_exit_order: &'static str,
+    pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
+    #[serde(skip_serializing)]
     pub(crate) max_favorable_price: f64,
+    #[serde(skip_serializing)]
     pub(crate) max_adverse_price: f64,
 }
 
@@ -49,11 +53,14 @@ pub(crate) struct VirtualTradeResult {
     pub(crate) entry_fee_pct: f64,
     pub(crate) exit_fee_pct: f64,
     pub(crate) exit_order_type: String,
+    #[serde(skip_serializing)]
     pub(crate) mfe_pct: f64,
+    #[serde(skip_serializing)]
     pub(crate) mae_pct: f64,
     pub(crate) opened_at: i64,
     pub(crate) closed_at: i64,
     pub(crate) exit_reason: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -69,7 +76,9 @@ pub(crate) struct VirtualTradeSummary {
     pub(crate) average_pnl_pct: f64,
     pub(crate) average_win_pnl_pct: f64,
     pub(crate) average_loss_pnl_pct: f64,
+    #[serde(skip_serializing)]
     pub(crate) average_mfe_pct: f64,
+    #[serde(skip_serializing)]
     pub(crate) average_mae_pct: f64,
     pub(crate) average_duration_ms: Option<f64>,
 }
@@ -150,8 +159,261 @@ pub(crate) struct TradeSetup {
     pub(crate) entry_price: f64,
     pub(crate) target_price: f64,
     pub(crate) stop_price: f64,
+    pub(crate) fill_side: i8,
+    pub(crate) target_exit_order: &'static str,
+    pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VirtualPredictionResult {
+    pub(crate) side: i8,
+    pub(crate) source_line: usize,
+    pub(crate) source_name: &'static str,
+    pub(crate) target_line: usize,
+    pub(crate) target_name: &'static str,
+    pub(crate) entry_price: f64,
+    pub(crate) target_price: f64,
+    pub(crate) stop_price: f64,
+    pub(crate) filled: bool,
+    pub(crate) outcome: &'static str,
+    pub(crate) created_at: i64,
+    pub(crate) resolved_at: i64,
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct VirtualPredictionSummary {
+    pub(crate) predictions: usize,
+    pub(crate) filled: usize,
+    pub(crate) reached_and_followed: usize,
+    pub(crate) not_reached_but_followed: usize,
+    pub(crate) prediction_broken: usize,
+    pub(crate) unresolved: usize,
+    pub(crate) followed_rate_pct: f64,
+    pub(crate) broken_rate_pct: f64,
+}
+
+impl VirtualPredictionSummary {
+    fn from_results(results: &[VirtualPredictionResult]) -> Self {
+        let predictions = results.len();
+        let filled = results.iter().filter(|result| result.filled).count();
+        let reached_and_followed = results
+            .iter()
+            .filter(|result| result.outcome == "reached_and_followed")
+            .count();
+        let not_reached_but_followed = results
+            .iter()
+            .filter(|result| result.outcome == "not_reached_but_followed")
+            .count();
+        let prediction_broken = results
+            .iter()
+            .filter(|result| result.outcome == "prediction_broken")
+            .count();
+        let unresolved = results
+            .iter()
+            .filter(|result| result.outcome == "unresolved")
+            .count();
+        let followed = reached_and_followed + not_reached_but_followed;
+        Self {
+            predictions,
+            filled,
+            reached_and_followed,
+            not_reached_but_followed,
+            prediction_broken,
+            unresolved,
+            followed_rate_pct: followed as f64 / predictions.max(1) as f64 * 100.0,
+            broken_rate_pct: prediction_broken as f64 / predictions.max(1) as f64 * 100.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingPrediction {
+    setup: TradeSetup,
+    next_candle: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ActivePrediction {
+    setup: TradeSetup,
+    filled: bool,
+}
+
+/// Evaluates every MRC prediction independently. It deliberately allows
+/// overlapping predictions because the research question is whether the
+/// learned movement keeps working, not whether a single-account position
+/// manager could hold all of them at once.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VirtualPredictionSimulator {
+    pending: Vec<PendingPrediction>,
+    active: Vec<ActivePrediction>,
+    results: Vec<VirtualPredictionResult>,
+}
+
+impl VirtualPredictionSimulator {
+    pub(crate) fn queue(&mut self, setup: TradeSetup) {
+        self.pending.push(PendingPrediction {
+            setup,
+            next_candle: true,
+        });
+    }
+
+    pub(crate) fn update(&mut self, row: &CandleRow) {
+        let pending = std::mem::take(&mut self.pending);
+        let mut newly_filled = Vec::new();
+        for mut prediction in pending {
+            let fills = prediction.next_candle
+                && row.time_ms > prediction.setup.opened_at
+                && if prediction.setup.side > 0 {
+                    row.low <= prediction.setup.entry_price
+                } else {
+                    row.high >= prediction.setup.entry_price
+                };
+            prediction.next_candle = false;
+            if fills {
+                newly_filled.push(ActivePrediction {
+                    setup: prediction.setup,
+                    filled: true,
+                });
+            } else {
+                self.pending.push(prediction);
+            }
+        }
+
+        let active = std::mem::take(&mut self.active);
+        for prediction in active {
+            let side = prediction.setup.side;
+            let hit_stop = if side > 0 {
+                row.low <= prediction.setup.stop_price
+            } else {
+                row.high >= prediction.setup.stop_price
+            };
+            let hit_target = if side > 0 {
+                row.high >= prediction.setup.target_price
+            } else {
+                row.low <= prediction.setup.target_price
+            };
+            if hit_stop {
+                self.finish_prediction(prediction, row.time_ms, "prediction_broken");
+            } else if hit_target {
+                let followed = prediction.filled;
+                self.finish_prediction(
+                    prediction,
+                    row.time_ms,
+                    if followed {
+                        "reached_and_followed"
+                    } else {
+                        "not_reached_but_followed"
+                    },
+                );
+            } else {
+                self.active.push(prediction);
+            }
+        }
+
+        self.active.extend(newly_filled);
+
+        // A limit prediction that did not fill is still useful evidence. It
+        // remains pending until its target/stop barrier is observed, while
+        // `next_candle` ensures the simulated order itself only had one fill
+        // candle, matching live execution.
+        let pending = std::mem::take(&mut self.pending);
+        for prediction in pending {
+            let side = prediction.setup.side;
+            let hit_stop = if side > 0 {
+                row.low <= prediction.setup.stop_price
+            } else {
+                row.high >= prediction.setup.stop_price
+            };
+            let hit_target = if side > 0 {
+                row.high >= prediction.setup.target_price
+            } else {
+                row.low <= prediction.setup.target_price
+            };
+            if hit_stop {
+                self.finish_prediction(
+                    ActivePrediction {
+                        setup: prediction.setup,
+                        filled: false,
+                    },
+                    row.time_ms,
+                    "prediction_broken",
+                );
+            } else if hit_target {
+                self.finish_prediction(
+                    ActivePrediction {
+                        setup: prediction.setup,
+                        filled: false,
+                    },
+                    row.time_ms,
+                    "not_reached_but_followed",
+                );
+            } else {
+                self.pending.push(prediction);
+            }
+        }
+    }
+
+    fn finish_prediction(
+        &mut self,
+        prediction: ActivePrediction,
+        resolved_at: i64,
+        outcome: &'static str,
+    ) {
+        let setup = prediction.setup;
+        self.results.push(VirtualPredictionResult {
+            side: setup.side,
+            source_line: setup.source_line,
+            source_name: setup.source_name,
+            target_line: setup.target_line,
+            target_name: setup.target_name,
+            entry_price: setup.entry_price,
+            target_price: setup.target_price,
+            stop_price: setup.stop_price,
+            filled: prediction.filled,
+            outcome,
+            created_at: setup.opened_at,
+            resolved_at,
+            reason: setup.reason,
+        });
+    }
+
+    pub(crate) fn finish(&mut self, row: &CandleRow) {
+        self.update(row);
+        let pending = std::mem::take(&mut self.pending);
+        for prediction in pending {
+            self.finish_prediction(
+                ActivePrediction {
+                    setup: prediction.setup,
+                    filled: false,
+                },
+                row.time_ms,
+                "unresolved",
+            );
+        }
+        let active = std::mem::take(&mut self.active);
+        for prediction in active {
+            self.finish_prediction(prediction, row.time_ms, "unresolved");
+        }
+    }
+
+    pub(crate) fn results(&self) -> Vec<VirtualPredictionResult> {
+        self.results.clone()
+    }
+
+    pub(crate) fn summary(&self) -> VirtualPredictionSummary {
+        VirtualPredictionSummary::from_results(&self.results)
+    }
+
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub(crate) fn active_count(&self) -> usize {
+        self.active.len()
+    }
 }
 
 impl TradeSetup {
@@ -172,6 +434,9 @@ impl TradeSetup {
             entry_price,
             target_price,
             stop_price,
+            fill_side: side,
+            target_exit_order: "limit",
+            stop_exit_order: "market",
             opened_at,
             reason: reason.into(),
         }
@@ -198,9 +463,24 @@ impl TradeSetup {
             entry_price,
             target_price,
             stop_price,
+            fill_side: side,
+            target_exit_order: "limit",
+            stop_exit_order: "market",
             opened_at,
             reason: reason.into(),
         }
+    }
+
+    pub(crate) fn with_execution(
+        mut self,
+        fill_side: i8,
+        target_exit_order: &'static str,
+        stop_exit_order: &'static str,
+    ) -> Self {
+        self.fill_side = fill_side;
+        self.target_exit_order = target_exit_order;
+        self.stop_exit_order = stop_exit_order;
+        self
     }
 }
 
@@ -208,7 +488,7 @@ impl TradeSetup {
 pub(crate) struct VirtualTradeSimulator {
     fees: FeeModel,
     active: Option<VirtualPosition>,
-    pending_next_candle: Option<TradeSetup>,
+    pending_next_candle: Option<(TradeSetup, i8)>,
     completed: Vec<VirtualTradeResult>,
 }
 
@@ -237,10 +517,14 @@ impl VirtualTradeSimulator {
     }
 
     pub(crate) fn queue_next_candle(&mut self, setup: TradeSetup) {
+        self.queue_next_candle_with_fill_side(setup.clone(), setup.fill_side);
+    }
+
+    fn queue_next_candle_with_fill_side(&mut self, setup: TradeSetup, fill_side: i8) {
         if self.active.is_some() || self.pending_next_candle.is_some() {
             return;
         }
-        self.pending_next_candle = Some(setup);
+        self.pending_next_candle = Some((setup, fill_side));
     }
 
     fn activate(&mut self, setup: TradeSetup, opened_at: i64) {
@@ -253,6 +537,8 @@ impl VirtualTradeSimulator {
             entry_price: setup.entry_price,
             target_price: setup.target_price,
             stop_price: setup.stop_price,
+            target_exit_order: setup.target_exit_order,
+            stop_exit_order: setup.stop_exit_order,
             opened_at,
             reason: setup.reason,
             max_favorable_price: setup.entry_price,
@@ -262,11 +548,11 @@ impl VirtualTradeSimulator {
 
     pub(crate) fn update(&mut self, row: &CandleRow) {
         if self.active.is_none() {
-            let Some(setup) = self.pending_next_candle.take() else {
+            let Some((setup, fill_side)) = self.pending_next_candle.take() else {
                 return;
             };
 
-            let fills = if setup.side > 0 {
+            let fills = if fill_side > 0 {
                 row.low <= setup.entry_price
             } else {
                 row.high >= setup.entry_price
@@ -305,9 +591,19 @@ impl VirtualTradeSimulator {
             return;
         };
         if hit_stop {
-            self.close_active(stop_price, row.time_ms, "stop", "market");
+            let exit_order = self
+                .active
+                .as_ref()
+                .map(|trade| trade.stop_exit_order)
+                .unwrap_or("market");
+            self.close_active(stop_price, row.time_ms, "stop", exit_order);
         } else if hit_target {
-            self.close_active(target_price, row.time_ms, "target", "limit");
+            let exit_order = self
+                .active
+                .as_ref()
+                .map(|trade| trade.target_exit_order)
+                .unwrap_or("limit");
+            self.close_active(target_price, row.time_ms, "target", exit_order);
         }
     }
 
@@ -327,7 +623,8 @@ impl VirtualTradeSimulator {
             (trade.entry_price - exit_price) / trade.entry_price * 100.0
         };
         let entry_fee_pct = self.fees.limit_fee_pct;
-        let exit_fee_rate = if exit_order_type == "limit" {
+        let fee_order_type = exit_order_type;
+        let exit_fee_rate = if fee_order_type == "limit" {
             self.fees.limit_fee_pct
         } else {
             self.fees.market_fee_pct
@@ -365,6 +662,7 @@ impl VirtualTradeSimulator {
             opened_at: trade.opened_at,
             closed_at,
             exit_reason: exit_reason.to_string(),
+            reason: trade.reason,
         });
     }
 

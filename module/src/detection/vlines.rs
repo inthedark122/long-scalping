@@ -4,9 +4,14 @@ use crate::state::{MrcCrossingState, MrcMovementSnapshot, VLineState};
 pub struct MrcCrossEvent {
     pub line_idx: u8,
     pub line: f64,
+    pub price: f64,
+    pub mrc_low: f64,
+    pub mrc_high: f64,
     pub direction: i8,
     pub tick: u64,
     pub now_ms: u64,
+    pub no_pullback_count: u32,
+    pub reverted_line: Option<u8>,
     pub completed_movement: Option<MrcMovementSnapshot>,
 }
 
@@ -23,7 +28,12 @@ fn completed_movement(crossing: &MrcCrossingState, now_ms: u64) -> Option<MrcMov
     Some(MrcMovementSnapshot {
         start_line,
         start_price: crossing.movement_start,
+        market_start_price: crossing.movement_market_start,
         target_price: crossing.movement_target,
+        target_low: crossing.movement_target_low,
+        target_high: crossing.movement_target_high,
+        mrc_low: crossing.movement_mrc_low,
+        mrc_high: crossing.movement_mrc_high,
         high: crossing.movement_high,
         low: crossing.movement_low,
         extreme: crossing.movement_extreme,
@@ -37,7 +47,9 @@ fn record_cross(
     crossing: &mut MrcCrossingState,
     line_idx: usize,
     line: f64,
-    next_line: Option<f64>,
+    next_line: Option<(u8, f64)>,
+    mrc_low: f64,
+    mrc_high: f64,
     price: f64,
     direction: i8,
     tick: u64,
@@ -84,19 +96,76 @@ fn record_cross(
     crossing.candle_cross_mask |= 1u16 << line_idx;
     crossing.last_direction = direction;
     crossing.movement_start = line;
-    crossing.movement_target = next_line.unwrap_or(0.0);
+    crossing.movement_market_start = price;
+    crossing.movement_target_line = next_line.map(|(line, _)| line);
+    crossing.movement_target = next_line.map(|(_, price)| price).unwrap_or(0.0);
+    crossing.movement_target_low = crossing.movement_target;
+    crossing.movement_target_high = crossing.movement_target;
+    crossing.movement_mrc_low = mrc_low;
+    crossing.movement_mrc_high = mrc_high;
     crossing.movement_high = price;
     crossing.movement_low = price;
     crossing.movement_extreme = price;
     crossing.movement_direction = direction;
+    let reverted_line = if direction > 0 {
+        crossing.reverted_long_line
+    } else {
+        crossing.reverted_short_line
+    };
     Some(MrcCrossEvent {
         line_idx: line_idx as u8,
         line,
+        price,
+        mrc_low,
+        mrc_high,
         direction,
         tick,
         now_ms,
+        no_pullback_count: crossing.no_pullback_count,
+        reverted_line,
         completed_movement,
     })
+}
+
+fn update_active_movement(crossing: &mut MrcCrossingState, lines: [f64; 9], price: f64) {
+    if crossing.movement_direction == 0 {
+        return;
+    }
+    crossing.movement_high = crossing.movement_high.max(price);
+    crossing.movement_low = if crossing.movement_low <= 0.0 {
+        price
+    } else {
+        crossing.movement_low.min(price)
+    };
+    crossing.movement_extreme = if crossing.movement_direction > 0 {
+        crossing.movement_extreme.max(price)
+    } else if crossing.movement_extreme <= 0.0 {
+        price
+    } else {
+        crossing.movement_extreme.min(price)
+    };
+    if lines[0].is_finite() && lines[0] > 0.0 {
+        crossing.movement_mrc_low = if crossing.movement_mrc_low <= 0.0 {
+            lines[0]
+        } else {
+            crossing.movement_mrc_low.min(lines[0])
+        };
+    }
+    if lines[8].is_finite() && lines[8] > 0.0 {
+        crossing.movement_mrc_high = crossing.movement_mrc_high.max(lines[8]);
+    }
+    if let Some(target_line) = crossing.movement_target_line {
+        if let Some(target) = lines.get(target_line as usize).copied() {
+            if target.is_finite() && target > 0.0 {
+                crossing.movement_target_low = if crossing.movement_target_low <= 0.0 {
+                    target
+                } else {
+                    crossing.movement_target_low.min(target)
+                };
+                crossing.movement_target_high = crossing.movement_target_high.max(target);
+            }
+        }
+    }
 }
 
 pub fn update(
@@ -131,6 +200,8 @@ pub fn update_with_events(
         }
         return Vec::new();
     };
+
+    update_active_movement(crossing, lines, price);
 
     let upward = price > previous_price;
     let downward = price < previous_price;
@@ -167,18 +238,23 @@ pub fn update_with_events(
     for (line_idx, line) in crossed {
         let direction = if upward { 1 } else { -1 };
         let next_line = if direction > 0 {
-            lines.get(line_idx + 1).copied()
+            lines
+                .get(line_idx + 1)
+                .copied()
+                .map(|price| ((line_idx + 1) as u8, price))
         } else {
             line_idx
                 .checked_sub(1)
-                .and_then(|idx| lines.get(idx).copied())
+                .and_then(|idx| lines.get(idx).copied().map(|price| (idx as u8, price)))
         };
         if let Some(event) = record_cross(
             vlines,
             crossing,
             line_idx,
             line,
-            next_line.filter(|value| value.is_finite() && *value > 0.0),
+            next_line.filter(|(_, value)| value.is_finite() && *value > 0.0),
+            lines[0],
+            lines[8],
             price,
             direction,
             tick,
@@ -188,27 +264,7 @@ pub fn update_with_events(
         }
     }
 
-    if crossing.movement_direction > 0 {
-        crossing.movement_high = crossing.movement_high.max(price);
-        crossing.movement_low = crossing.movement_low.min(price);
-        crossing.movement_extreme = crossing.movement_extreme.max(price);
-    } else if crossing.movement_direction < 0 {
-        crossing.movement_high = if crossing.movement_high <= 0.0 {
-            price
-        } else {
-            crossing.movement_high.max(price)
-        };
-        crossing.movement_low = if crossing.movement_low <= 0.0 {
-            price
-        } else {
-            crossing.movement_low.min(price)
-        };
-        crossing.movement_extreme = if crossing.movement_extreme <= 0.0 {
-            price
-        } else {
-            crossing.movement_extreme.min(price)
-        };
-    }
+    update_active_movement(crossing, lines, price);
     events
 }
 

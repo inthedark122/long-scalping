@@ -12,7 +12,7 @@ use crate::model::{
 use crate::state::EngineState;
 
 pub fn mrc_crossing_entry_gate(state: &EngineState) -> EntryGate {
-    if let Some(reason) = mrc_crossing::pending(&state.mrc_crossing_model) {
+    if let Some(reason) = mrc_crossing::current_entry(&state.mrc_crossing_model) {
         return EntryGate::Open {
             notes: vec![
                 "strategy=mrc-crossing".to_string(),
@@ -23,36 +23,88 @@ pub fn mrc_crossing_entry_gate(state: &EngineState) -> EntryGate {
                         _ => 0.0,
                     }
                 ),
+                match &reason {
+                    EntryReason::MrcCrossing {
+                        pattern,
+                        market_price,
+                        mrc_min,
+                        mrc_max,
+                        pattern_samples,
+                        context_samples,
+                        no_pullback_count,
+                        reverted_line,
+                        target_samples,
+                        movement_samples,
+                        next_line_crosses,
+                        support_resistance_moves,
+                        price_only_moves,
+                        successful_moves,
+                        failed_moves,
+                        movement_success_rate,
+                        expected_value_pct,
+                        expected_price_low,
+                        expected_price_high,
+                        ..
+                    } => format!(
+                        "cycle={} context_samples={} no_pullback={} reverted_line={} market_price={:.4} mrc_range={:.4}..{:.4} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={}",
+                        pattern
+                            .iter()
+                            .map(|line| mrc_crossing::LINE_LABELS[*line as usize])
+                            .collect::<Vec<_>>()
+                        .join(">"),
+                        context_samples,
+                        no_pullback_count,
+                        reverted_line
+                            .map(|line| mrc_crossing::LINE_LABELS[line as usize])
+                            .unwrap_or("na"),
+                        market_price,
+                        mrc_min,
+                        mrc_max,
+                        pattern_samples,
+                        target_samples,
+                        movement_samples,
+                        next_line_crosses,
+                        support_resistance_moves,
+                        price_only_moves,
+                        successful_moves,
+                        failed_moves,
+                        movement_success_rate,
+                        expected_value_pct,
+                        expected_price_low,
+                        expected_price_high,
+                        mrc_crossing::price_projection(
+                            crate::detection::mrc_crossing::reason_direction(&reason),
+                            *mrc_min,
+                            *mrc_max,
+                            *expected_price_low,
+                            *expected_price_high,
+                        )
+                    ),
+                    _ => "cycle=na".to_string(),
+                },
             ],
             reason: EntryOpenReason::Entry(reason),
         };
     }
-    if mrc_crossing::warmup_samples(&state.mrc_crossing_model) < state.cfg.required_samples() {
-        mrc_wait_entry_gate(state, MrcWaitReason::Warmup)
-    } else {
-        mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
-    }
+    mrc_wait_entry_gate(state, MrcWaitReason::Crossing)
 }
 
-pub fn mrc_wait_entry_gate(state: &EngineState, wait_reason: MrcWaitReason) -> EntryGate {
+pub fn mrc_wait_entry_gate(_state: &EngineState, wait_reason: MrcWaitReason) -> EntryGate {
     let (reason, solutions, notes) = match wait_reason {
         MrcWaitReason::Crossing => (
             "mrc-wait-crossing".to_string(),
             vec![EntryWaitSolution::MrcCrossing],
             vec!["waiting for a new MRC crossing with a directional target".to_string()],
         ),
-        MrcWaitReason::Warmup => (
-            "mrc-warmup".to_string(),
-            vec![EntryWaitSolution::WaitForSamples {
-                required: state.cfg.required_samples(),
-                current: mrc_crossing::warmup_samples(&state.mrc_crossing_model),
-            }],
-            vec!["MRC crossing-pattern history is not entry-ready".to_string()],
-        ),
         MrcWaitReason::NoDirectionalTarget => (
             "mrc-no-directional-target".to_string(),
             vec![EntryWaitSolution::MrcDirectionalTarget],
             vec!["MRC crossing has no directional target".to_string()],
+        ),
+        MrcWaitReason::NoReliablePrediction => (
+            "mrc-no-reliable-prediction".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec!["MRC history has no reliable directional prediction".to_string()],
         ),
     };
     EntryGate::Wait(EntryWait {
@@ -881,7 +933,7 @@ pub fn entry_gate(
 mod tests {
     use super::*;
     use crate::model::{Candle, MrcBands, SugInfoSnapshot, TimeframeSnapshot};
-    use crate::state::EngineState;
+    use crate::state::{EngineState, MrcHistoryEvent};
 
     fn snapshot() -> IndicatorSnapshot {
         IndicatorSnapshot {
@@ -1048,30 +1100,100 @@ mod tests {
     }
 
     #[test]
-    fn mrc_wait_without_pending_entry_reports_sample_progress_until_ready() {
+    fn mrc_wait_without_pending_entry_waits_for_crossing() {
         let mut state = EngineState::default();
         state.cfg.required_samples = 10;
 
         let EntryGate::Wait(wait) = mrc_crossing_entry_gate(&state) else {
             panic!("MRC without a pending entry should wait");
         };
-        assert_eq!(wait.reason, "mrc-warmup");
-        assert_eq!(
-            wait.solutions,
-            vec![EntryWaitSolution::WaitForSamples {
-                required: 10,
-                current: 0,
-            }]
-        );
+        assert_eq!(wait.reason, "mrc-wait-crossing");
+        assert_eq!(wait.solutions, vec![EntryWaitSolution::MrcCrossing]);
     }
 
     #[test]
     fn mrc_wait_without_pending_entry_keeps_crossing_wait_when_warm() {
         let mut state = EngineState::default();
         state.cfg.required_samples = 1;
-        state.mrc_crossing_model.pattern_len = 3;
-        state.mrc_crossing_model.pattern_lines = [3, 4, 5];
-        state.mrc_crossing_model.patterns[3][4][5].next[6].count = 1;
+        state.mrc_crossing_model.history = vec![
+            MrcHistoryEvent {
+                line: 3,
+                direction: 1,
+                now_ms: 1_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 4,
+                direction: 1,
+                now_ms: 2_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: 3_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 6,
+                direction: 1,
+                now_ms: 4_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 3,
+                direction: 1,
+                now_ms: 5_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 4,
+                direction: 1,
+                now_ms: 6_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: 7_000,
+                market_price: 0.0,
+                mrc_low: 0.0,
+                mrc_high: 0.0,
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+        ];
 
         let EntryGate::Wait(wait) = mrc_crossing_entry_gate(&state) else {
             panic!("MRC without a pending entry should wait for a crossing");

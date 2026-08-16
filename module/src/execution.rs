@@ -56,20 +56,77 @@ fn open_note(
                 EntryReason::Structural { price } => {
                     format!("{} price={:.4}", reason.label(), price)
                 }
-                EntryReason::MrcCrossing {
-                    price,
-                    target_price,
-                    stop_price,
+                    EntryReason::MrcCrossing {
+                        price,
+                        market_price,
+                        mrc_min,
+                        mrc_max,
+                        target_price,
+                        stop_price,
+                        source_line,
+                        target_line,
+                    pattern,
+                    pattern_elapsed_ms,
+                    pattern_samples,
+                    context_samples,
+                    no_pullback_count,
+                    reverted_line,
+                    target_samples,
+                    movement_samples,
+                    next_line_crosses,
+                    support_resistance_moves,
+                    price_only_moves,
+                    successful_moves,
+                    failed_moves,
                     probability,
-                    estimated_time_ms,
+                        movement_success_rate,
+                        expected_value_pct,
+                        expected_price_low,
+                        expected_price_high,
+                        estimated_time_ms,
                     ..
                 } => format!(
-                    "{} price={:.4} target={:.4} stop={:.4} probability={:.3} eta_ms={:.0}",
+                    "{} line_price={:.4} market_price={:.4} mrc_range={:.4}..{:.4} source_line={} predicted_target_line={} target={:.4} stop={:.4} cycle={} context_samples={} no_pullback={} reverted_line={} elapsed_ms={:?} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} probability={:.3} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={} eta_ms={:.0}",
                     reason.label(),
                     price,
+                    market_price,
+                    mrc_min,
+                    mrc_max,
+                    crate::detection::mrc_crossing::LINE_LABELS[*source_line as usize],
+                    crate::detection::mrc_crossing::LINE_LABELS[*target_line as usize],
                     target_price,
                     stop_price,
+                    pattern
+                        .iter()
+                        .map(|line| crate::detection::mrc_crossing::LINE_LABELS[*line as usize])
+                        .collect::<Vec<_>>()
+                        .join(">"),
+                    context_samples,
+                    no_pullback_count,
+                    reverted_line
+                        .map(|line| crate::detection::mrc_crossing::LINE_LABELS[line as usize])
+                        .unwrap_or("na"),
+                    pattern_elapsed_ms,
+                    pattern_samples,
+                    target_samples,
+                    movement_samples,
+                    next_line_crosses,
+                    support_resistance_moves,
+                    price_only_moves,
+                    successful_moves,
+                    failed_moves,
                     probability,
+                    movement_success_rate,
+                    expected_value_pct,
+                    expected_price_low,
+                    expected_price_high,
+                    crate::detection::mrc_crossing::price_projection(
+                        crate::detection::mrc_crossing::reason_direction(&reason),
+                        *mrc_min,
+                        *mrc_max,
+                        *expected_price_low,
+                        *expected_price_high,
+                    ),
                     estimated_time_ms
                 ),
             })
@@ -100,27 +157,10 @@ fn pre_entry_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
     sug_snapshot: &SugInfoSnapshot,
-    reason: Option<&EntryReason>,
+    _reason: Option<&EntryReason>,
     reference_price: f64,
     side: PositionState,
 ) -> Option<exit::ExitPlan> {
-    if let Some(EntryReason::MrcCrossing {
-        target_price,
-        stop_price,
-        ..
-    }) = reason
-    {
-        return exit::mrc_crossing_plan(*target_price, *stop_price).and_then(|plan| {
-            guard::minimum_exit_distances::enforce_minimum_exit_distances(
-                plan,
-                reference_price,
-                side,
-                state.cfg.min_tp_percent(),
-                state.cfg.min_sl_percent(),
-            )
-        });
-    }
-
     exit::build_exit_plan(
         snapshot,
         sug_snapshot,
@@ -344,7 +384,7 @@ pub fn evaluate_with_cascade(
         });
     if expired_side.is_some() {
         state.position.entry_reason = None;
-        state.mrc_crossing_model.pending_entry = None;
+        state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
     }
 
@@ -378,7 +418,7 @@ pub fn evaluate_with_cascade(
                     state.position.entry_reason,
                     Some(EntryReason::MrcCrossing { .. })
                 ) {
-                    state.mrc_crossing_model.pending_entry = None;
+                    state.mrc_crossing_model.current_entry = None;
                 }
                 let update = created_position_update(input, state, PositionState::Long);
                 if replace_expired_long || update.is_some() {
@@ -422,7 +462,7 @@ pub fn evaluate_with_cascade(
                     state.position.entry_reason,
                     Some(EntryReason::MrcCrossing { .. })
                 ) {
-                    state.mrc_crossing_model.pending_entry = None;
+                    state.mrc_crossing_model.current_entry = None;
                 }
                 let update = created_position_update(input, state, PositionState::Short);
                 if replace_expired_short || update.is_some() {
@@ -503,7 +543,10 @@ pub fn evaluate_with_cascade(
         };
         if !crate::detection::mrc_crossing::valid_price_levels(
             direction,
-            input.price,
+            reason
+                .as_ref()
+                .map(EntryReason::price)
+                .unwrap_or(input.price),
             *target_price,
             *stop_price,
             Some(input.symbol_info.price_tick_size),
@@ -524,7 +567,11 @@ pub fn evaluate_with_cascade(
             return cancel_only();
         }
         if state.cfg.entry_type == EntryType::Limit {
-            let order_price = order_entry_price(input, entry_side, entry_price);
+            let order_price = if mrc_entry {
+                entry_price
+            } else {
+                order_entry_price(input, entry_side, entry_price)
+            };
             if (pending_position.entry_price - order_price).abs() > f64::EPSILON {
                 let direction = match entry_side {
                     PositionState::Long => Direction::Long,
@@ -542,11 +589,15 @@ pub fn evaluate_with_cascade(
 
     state.position.entry_reason = reason.clone();
     if mrc_entry {
-        state.mrc_crossing_model.pending_entry = None;
+        state.mrc_crossing_model.current_entry = None;
     }
     state.pending_entry_bar = (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
 
-    let order_price = order_entry_price(input, entry_side, entry_price);
+    let order_price = if mrc_entry {
+        entry_price
+    } else {
+        order_entry_price(input, entry_side, entry_price)
+    };
     let sizing_reference_price = match state.cfg.entry_type {
         EntryType::Market => input.price,
         EntryType::Limit => order_price,
@@ -723,6 +774,26 @@ mod tests {
         }
     }
 
+    fn mrc_exit_snapshot() -> IndicatorSnapshot {
+        let mut snapshot = IndicatorSnapshot::default();
+        snapshot.tf1m.mrc = crate::model::MrcBands {
+            down_big: 80.0,
+            down_outer: 85.0,
+            down_small: 90.0,
+            down_inner: 95.0,
+            mean_line: 100.0,
+            up_inner: 104.0,
+            up_small: 110.0,
+            up_outer: 115.0,
+            up_big: 120.0,
+            current_cross: 0.0,
+            mean_line_slope: 0.0,
+        };
+        snapshot.tf1m.zz_buy_price = Some(96.0);
+        snapshot.tf1m.zz_sell_price = Some(104.0);
+        snapshot
+    }
+
     fn movement_decision(market_state: MarketState, price: f64) -> TradeDecision {
         TradeDecision {
             market_state,
@@ -742,11 +813,31 @@ mod tests {
                 notes: vec!["strategy=mrc-crossing".to_string()],
                 reason: crate::model::EntryOpenReason::Entry(EntryReason::MrcCrossing {
                     price: 101.0,
+                    market_price: 101.0,
+                    mrc_min: 90.0,
+                    mrc_max: 110.0,
                     target_price: 104.0,
                     stop_price: 96.0,
                     source_line: 4,
                     target_line: 5,
+                    pattern: vec![4, 5],
+                    pattern_elapsed_ms: vec![0, 12_000],
+                    pattern_samples: 1,
+                    context_samples: 0,
+                    no_pullback_count: 0,
+                    reverted_line: None,
+                    target_samples: 1,
+                    movement_samples: 1,
+                    next_line_crosses: 1,
+                    support_resistance_moves: 0,
+                    price_only_moves: 0,
+                    successful_moves: 1,
+                    failed_moves: 0,
                     probability: 0.75,
+                    movement_success_rate: 1.0,
+                    expected_value_pct: 3.0,
+                    expected_price_low: 100.0,
+                    expected_price_high: 104.0,
                     estimated_time_ms: 12_000.0,
                     favorable_move_pct: 3.0,
                     adverse_move_pct: -1.0,
@@ -829,7 +920,7 @@ mod tests {
         let result = evaluate(
             &input(),
             &mut state,
-            &IndicatorSnapshot::default(),
+            &mrc_exit_snapshot(),
             &crate::model::SugInfoSnapshot::default(),
             &mrc_decision(MarketState::Long),
         )
@@ -872,7 +963,7 @@ mod tests {
         let result = evaluate(
             &inp,
             &mut state,
-            &IndicatorSnapshot::default(),
+            &mrc_exit_snapshot(),
             &crate::model::SugInfoSnapshot::default(),
             &mrc_decision(MarketState::Long),
         )
@@ -952,7 +1043,7 @@ mod tests {
 
         assert_eq!(result.open_positions.len(), 1);
         assert_eq!(result.open_positions[0].order_type, ModuleOrderType::Limit);
-        assert_eq!(result.open_positions[0].enter_price, Some(99.98));
+        assert_eq!(result.open_positions[0].enter_price, Some(101.0));
     }
 
     #[test]

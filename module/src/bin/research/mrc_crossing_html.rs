@@ -18,10 +18,16 @@ pub(crate) fn write_report(
         "history_requested_1m": history_requested,
         "history_loaded_1m": minute_count,
         "history_loaded_1h": hourly_count,
-        "latest_event_time_ms": report.latest_event.map(|event| event.time_ms),
+        "latest_event_time_ms": report.latest_event.as_ref().map(|event| event.time_ms),
         "trade_summary": report.trade_summary,
         "trades": report.trades,
         "open_trade": report.open_trade,
+        "prediction_summary": report.prediction_summary,
+        "predictions": report.predictions,
+        "pending_predictions": report.pending_predictions,
+        "active_predictions": report.active_predictions,
+        "events": report.events,
+        "forecast": report.forecast,
     });
     let payload = serde_json::to_string(&data)?.replace('<', "\\u003c");
     let html = TEMPLATE.replace("__DATA__", &payload);
@@ -94,9 +100,18 @@ const TEMPLATE: &str = r###"<!doctype html>
     th:first-child, td:first-child,
     th:nth-child(2), td:nth-child(2),
     th:nth-child(3), td:nth-child(3) { text-align: left; }
+    .trade-reason td {
+      white-space: normal;
+      text-align: left;
+      color: var(--muted);
+      padding-top: 4px;
+      padding-bottom: 12px;
+    }
+    .trade-reason-label { color: var(--blue); font-weight: 600; }
     .positive { color: var(--green); }
     .negative { color: var(--red); }
     .open { color: var(--blue); }
+    code { color: var(--text); white-space: normal; }
     @media (max-width: 700px) {
       .page { padding: 16px; }
       .chart-wrap { height: 260px; }
@@ -129,19 +144,42 @@ const TEMPLATE: &str = r###"<!doctype html>
               <th>#</th><th>Side</th><th>Route</th><th>Opened</th>
               <th>Entry</th><th>Target</th><th>Stop</th><th>Closed</th>
               <th>Exit</th><th>Outcome</th><th>Gross PnL</th><th>Fees</th><th>Net PnL</th>
-              <th>MFE</th><th>MAE</th><th>Duration</th>
+              <th>Duration</th>
             </tr>
           </thead>
           <tbody id="positions"></tbody>
         </table>
       </div>
     </section>
+
+    <section class="panel">
+      <h2>Prediction outcomes</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Side</th><th>Route</th><th>Created</th>
+              <th>Entry</th><th>Target</th><th>Stop</th><th>Resolved</th>
+              <th>Filled</th><th>Outcome</th><th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="predictions"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Crossing / price trace</h2>
+      <div id="crossings" class="table-wrap"></div>
+    </section>
   </main>
 
   <script>
     const DATA = __DATA__;
     const trades = DATA.trades || [];
-    const summary = DATA.trade_summary || {};
+    const tradeSummary = DATA.trade_summary || {};
+    const predictions = DATA.predictions || [];
+    const summary = DATA.prediction_summary || {};
     const esc = (value) => String(value ?? "")
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -164,22 +202,66 @@ const TEMPLATE: &str = r###"<!doctype html>
       (DATA.latest_event_time_ms ? " · as of " + date(DATA.latest_event_time_ms) : "");
 
     const cardData = [
-      ["Trades", summary.trades || 0],
-      ["Win rate", Number(summary.win_rate_pct || 0).toFixed(1) + "%"],
-      ["Gross PnL", Number(summary.total_gross_pnl_pct || 0).toFixed(4) + "%"],
-      ["Fees", Number(summary.total_fees_pct || 0).toFixed(4) + "%"],
-      ["Net PnL", Number(summary.total_pnl_pct || 0).toFixed(4) + "%"],
-      ["Max drawdown", Number(summary.max_drawdown_pct || 0).toFixed(4) + "%"],
-      ["Average PnL", Number(summary.average_pnl_pct || 0).toFixed(4) + "%"],
-      ["Average duration", summary.average_duration_ms
-        ? (Number(summary.average_duration_ms) / 60000).toFixed(2) + "m" : "—"],
+      ["Positions", tradeSummary.trades || 0],
+      ["Win rate", Number(tradeSummary.win_rate_pct || 0).toFixed(1) + "%"],
+      ["Net PnL", Number(tradeSummary.total_pnl_pct || 0).toFixed(4) + "%"],
+      ["Fees", Number(tradeSummary.total_fees_pct || 0).toFixed(4) + "%"],
+      ["Max drawdown", Number(tradeSummary.max_drawdown_pct || 0).toFixed(4) + "%"],
+      ["Avg duration", tradeSummary.average_duration_ms
+        ? (Number(tradeSummary.average_duration_ms) / 60000).toFixed(2) + "m" : "—"],
+      ["Predictions", summary.predictions || 0],
+      ["Filled predictions", summary.filled || 0],
+      ["Follow rate", Number(summary.followed_rate_pct || 0).toFixed(1) + "%"],
     ];
     document.getElementById("cards").innerHTML = cardData.map(([label, value]) =>
       '<div class="card"><div class="card-label">' + esc(label) +
       '</div><div class="card-value">' + esc(value) + '</div></div>'
     ).join("");
 
-    const rows = trades.map((trade, index) => {
+    const crossings = DATA.events || [];
+    const crossingRows = crossings.slice(-500).reverse().map((event) => {
+      const direction = Number(event.direction || 0) > 0 ? "UP" : "DOWN";
+      const target = (event.trade_target_name || event.target_name)
+        ? (event.trade_target_name || event.target_name) + " @ " + price(event.target_price)
+        : "—";
+      const expected = event.expected_price_low != null
+        ? price(event.expected_price_low) + ".." + price(event.expected_price_high) +
+          " (" + esc(event.direction > 0
+            ? (event.expected_price_high > event.mrc_max ? "above_mrc_max"
+              : event.expected_price_high < event.mrc_max ? "below_mrc_max" : "same_mrc_max")
+            : (event.expected_price_low < event.mrc_min ? "below_mrc_min"
+              : event.expected_price_low > event.mrc_min ? "above_mrc_min" : "same_mrc_min")) + ")"
+        : "—";
+      const realizedPrice = event.realized_price_low != null
+        ? price(event.realized_price_low) + ".." + price(event.realized_price_high)
+        : "—";
+      const targetRange = event.realized_target_low != null
+        ? price(event.realized_target_low) + ".." + price(event.realized_target_high)
+        : "—";
+      const evidence = event.target_line == null
+        ? "no local transition context=" + event.context_samples
+        : "context=" + event.context_samples +
+          " no_pullback=" + event.no_pullback_count +
+          " reverted=" + (event.reverted_line_name || "na") +
+          " next=" + event.next_line_crosses +
+          " support/resistance=" + event.support_resistance_moves +
+          " price-only=" + event.price_only_moves;
+      return '<tr><td>' + esc(date(event.time_ms)) + '</td><td>' + direction +
+        ' ' + esc(event.line_name) + '</td><td>' + price(event.market_price) +
+        '</td><td>' + price(event.mrc_min) + '..' + price(event.mrc_max) +
+        '</td><td>' + esc(target) + '</td><td>' + expected +
+        '</td><td>' + realizedPrice + '</td><td>' + targetRange +
+        '</td><td><code>' + esc(event.mrc_trace || "—") + '</code></td><td>' +
+        esc(evidence) + '</td></tr>';
+    }).join("");
+    document.getElementById("crossings").innerHTML = crossings.length
+      ? '<table><thead><tr><th>Time</th><th>Cross</th><th>Market price</th>' +
+        '<th>MRC min..max</th><th>Prediction</th><th>Expected price</th>' +
+        '<th>Observed price low..high</th><th>Target MRC low..high</th>' +
+        '<th>MRC movement</th><th>Evidence</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
+      : '<div class="subtle">No crossing observations</div>';
+
+    const positionRows = trades.map((trade, index) => {
       const side = trade.side > 0 ? "LONG" : "SHORT";
       const route = side + " " + trade.source_name + " → " + trade.target_name;
       const pnlClass = signedClass(trade.pnl_pct);
@@ -197,25 +279,44 @@ const TEMPLATE: &str = r###"<!doctype html>
         '<td>' + money(trade.gross_pnl_pct) + '</td>' +
         '<td class="negative">-' + money(Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0)) + '</td>' +
         '<td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td>' +
-        '<td class="positive">' + money(trade.mfe_pct) + '</td>' +
-        '<td class="negative">' + money(-Math.abs(Number(trade.mae_pct || 0))) + '</td>' +
         '<td>' + duration(trade.opened_at, trade.closed_at) + '</td>' +
-        '</tr>';
+        '</tr>' +
+        '<tr class="trade-reason"><td colspan="14"><span class="trade-reason-label">Entry reason:</span> ' +
+        esc(trade.reason || "—") + '</td></tr>';
     });
     if (DATA.open_trade) {
       const trade = DATA.open_trade;
       const side = trade.side > 0 ? "LONG" : "SHORT";
-      rows.push(
-        '<tr class="open"><td>open</td><td>' + side + '</td><td>' +
-        esc(side + " " + trade.source_name + " → " + trade.target_name) +
-        '</td><td>' + esc(date(trade.opened_at)) + '</td><td>' +
-        price(trade.entry_price) + '</td><td>' + price(trade.target_price) +
-        '</td><td>' + price(trade.stop_price) +
-        '</td><td>—</td><td>—</td><td>OPEN</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>'
+      const route = side + " " + trade.source_name + " → " + trade.target_name;
+      positionRows.push(
+        '<tr class="open"><td>open</td><td>' + esc(side) + '</td><td>' + esc(route) +
+        '</td><td>' + esc(date(trade.opened_at)) + '</td><td>' + price(trade.entry_price) +
+        '</td><td>' + price(trade.target_price) + '</td><td>' + price(trade.stop_price) +
+        '</td><td>—</td><td>—</td><td>OPEN</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>' +
+        '<tr class="trade-reason"><td colspan="14"><span class="trade-reason-label">Entry reason:</span> ' +
+        esc(trade.reason || "—") + '</td></tr>'
       );
     }
-    document.getElementById("positions").innerHTML = rows.join("") ||
-      '<tr><td colspan="16" class="subtle">No positions</td></tr>';
+    document.getElementById("positions").innerHTML = positionRows.join("") ||
+      '<tr><td colspan="14" class="subtle">No positions</td></tr>';
+
+    const predictionRows = predictions.map((prediction, index) => {
+      const side = prediction.side > 0 ? "LONG" : "SHORT";
+      const route = side + " " + prediction.source_name + " → " + prediction.target_name;
+      const outcomeClass = prediction.outcome === "prediction_broken" ? "negative"
+        : prediction.outcome === "unresolved" ? "" : "positive";
+      return '<tr>' +
+        '<td>' + (index + 1) + '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td>' +
+        '<td>' + esc(date(prediction.created_at)) + '</td><td>' + price(prediction.entry_price) + '</td>' +
+        '<td>' + price(prediction.target_price) + '</td><td>' + price(prediction.stop_price) + '</td>' +
+        '<td>' + esc(date(prediction.resolved_at)) + '</td><td>' + (prediction.filled ? "yes" : "no") + '</td>' +
+        '<td class="' + outcomeClass + '">' + esc(prediction.outcome) + '</td>' +
+        '<td>' + duration(prediction.created_at, prediction.resolved_at) + '</td></tr>' +
+        '<tr class="trade-reason"><td colspan="11"><span class="trade-reason-label">Prediction reason:</span> ' +
+        esc(prediction.reason || "—") + '</td></tr>';
+    });
+    document.getElementById("predictions").innerHTML = predictionRows.join("") ||
+      '<tr><td colspan="11" class="subtle">No predictions</td></tr>';
 
     function drawChart() {
       const canvas = document.getElementById("pnl-chart");
@@ -289,7 +390,7 @@ const TEMPLATE: &str = r###"<!doctype html>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::research::mrc_crossing::TradeSummary;
+    use crate::research::virtual_trade::{VirtualPredictionSummary, VirtualTradeSummary};
 
     #[test]
     fn generated_report_is_standalone_html() {
@@ -308,9 +409,13 @@ mod tests {
                 likely_destinations: Vec::new(),
             },
             events: Vec::new(),
-            trade_summary: TradeSummary::default(),
+            trade_summary: VirtualTradeSummary::default(),
             trades: Vec::new(),
             open_trade: None,
+            prediction_summary: VirtualPredictionSummary::default(),
+            predictions: Vec::new(),
+            pending_predictions: 0,
+            active_predictions: 0,
         };
         let data = json!({
             "symbol_key": "TEST",
@@ -319,10 +424,15 @@ mod tests {
             "history_loaded_1h": 10,
             "trade_summary": report.trade_summary,
             "trades": report.trades,
+            "open_trade": report.open_trade,
+            "prediction_summary": report.prediction_summary,
+            "predictions": report.predictions,
         });
         let html = TEMPLATE.replace("__DATA__", &serde_json::to_string(&data).unwrap());
         assert!(html.contains("<canvas id=\"pnl-chart\"></canvas>"));
         assert!(html.contains("Positions"));
+        assert!(html.contains("Entry reason:"));
         assert!(html.contains("Cumulative PnL"));
+        assert!(html.contains("Prediction outcomes"));
     }
 }

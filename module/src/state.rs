@@ -47,7 +47,13 @@ pub struct MrcCrossingState {
     pub reverted_long_line: Option<u8>,
     pub reverted_short_line: Option<u8>,
     pub movement_start: f64,
+    pub movement_market_start: f64,
     pub movement_target: f64,
+    pub movement_target_line: Option<u8>,
+    pub movement_target_low: f64,
+    pub movement_target_high: f64,
+    pub movement_mrc_low: f64,
+    pub movement_mrc_high: f64,
     pub movement_high: f64,
     pub movement_low: f64,
     pub movement_extreme: f64,
@@ -58,7 +64,12 @@ pub struct MrcCrossingState {
 pub struct MrcMovementSnapshot {
     pub start_line: u8,
     pub start_price: f64,
+    pub market_start_price: f64,
     pub target_price: f64,
+    pub target_low: f64,
+    pub target_high: f64,
+    pub mrc_low: f64,
+    pub mrc_high: f64,
     pub high: f64,
     pub low: f64,
     pub extreme: f64,
@@ -66,12 +77,19 @@ pub struct MrcMovementSnapshot {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MrcForecastStats {
     pub count: u32,
+    pub movement_samples: u32,
+    pub next_line_cross_count: u32,
+    pub support_resistance_count: u32,
+    pub price_only_count: u32,
+    pub success_count: u32,
+    pub failure_count: u32,
     pub duration_sum_ms: u64,
     pub favorable_pct_sum: f64,
     pub adverse_pct_sum: f64,
+    pub outcome_pct_sum: f64,
 }
 
 impl MrcForecastStats {
@@ -80,56 +98,57 @@ impl MrcForecastStats {
     }
 
     pub fn average_favorable_pct(self) -> Option<f64> {
-        (self.count > 0).then_some(self.favorable_pct_sum / self.count as f64)
+        (self.movement_samples > 0).then_some(self.favorable_pct_sum / self.movement_samples as f64)
     }
 
     pub fn average_adverse_pct(self) -> Option<f64> {
-        (self.count > 0).then_some(self.adverse_pct_sum / self.count as f64)
+        (self.movement_samples > 0).then_some(self.adverse_pct_sum / self.movement_samples as f64)
+    }
+
+    pub fn movement_success_rate(self) -> Option<f64> {
+        (self.movement_samples > 0)
+            .then_some(self.success_count as f64 / self.movement_samples as f64)
+    }
+
+    pub fn expected_value_pct(self) -> Option<f64> {
+        (self.movement_samples > 0).then_some(self.outcome_pct_sum / self.movement_samples as f64)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MrcPatternStats {
-    pub next: [MrcForecastStats; 9],
+pub struct MrcHistoryEvent {
+    pub line: u8,
+    pub direction: i8,
+    pub now_ms: u64,
+    pub market_price: f64,
+    pub mrc_low: f64,
+    pub mrc_high: f64,
+    pub no_pullback_count: u32,
+    pub reverted_line: Option<u8>,
+    pub completed_movement: Option<MrcMovementSnapshot>,
 }
-
-impl Default for MrcPatternStats {
-    fn default() -> Self {
-        Self {
-            next: [MrcForecastStats::default(); 9],
-        }
-    }
-}
-
-impl MrcPatternStats {
-    pub fn observations(&self) -> u32 {
-        self.next.iter().map(|stats| stats.count).sum()
-    }
-}
-
-pub const MRC_PATTERN_LENGTH: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct MrcCrossingModel {
-    pub patterns: [[[MrcPatternStats; 9]; 9]; 9],
-    pub pattern_lines: [u8; MRC_PATTERN_LENGTH],
-    pub pattern_len: usize,
+    /// Recent crossing cycles used for local transition learning. The detector
+    /// keeps this bounded instead of matching against the complete history.
+    pub history: Vec<MrcHistoryEvent>,
+    pub seeded_from_history: bool,
     pub last_line: Option<u8>,
     pub last_direction: i8,
     pub last_event_ms: u64,
-    pub pending_entry: Option<EntryReason>,
+    pub current_entry: Option<EntryReason>,
 }
 
 impl Default for MrcCrossingModel {
     fn default() -> Self {
         Self {
-            patterns: [[[MrcPatternStats::default(); 9]; 9]; 9],
-            pattern_lines: [0; MRC_PATTERN_LENGTH],
-            pattern_len: 0,
+            history: Vec::new(),
+            seeded_from_history: false,
             last_line: None,
             last_direction: 0,
             last_event_ms: 0,
-            pending_entry: None,
+            current_entry: None,
         }
     }
 }
@@ -148,7 +167,13 @@ impl Default for MrcCrossingState {
             reverted_long_line: None,
             reverted_short_line: None,
             movement_start: 0.0,
+            movement_market_start: 0.0,
             movement_target: 0.0,
+            movement_target_line: None,
+            movement_target_low: 0.0,
+            movement_target_high: 0.0,
+            movement_mrc_low: 0.0,
+            movement_mrc_high: 0.0,
             movement_high: 0.0,
             movement_low: 0.0,
             movement_extreme: 0.0,

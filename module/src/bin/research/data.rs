@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use long_scalping::model::MrcBands;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,7 @@ pub(crate) struct CandleRow {
 pub(crate) struct CacheSettings {
     pub(crate) enabled: bool,
     pub(crate) clear: bool,
+    pub(crate) refresh: bool,
 }
 
 impl Default for CacheSettings {
@@ -43,6 +45,7 @@ impl Default for CacheSettings {
         Self {
             enabled: true,
             clear: false,
+            refresh: false,
         }
     }
 }
@@ -169,6 +172,7 @@ fn cache_document_is_usable(
     symbol_key: &str,
     timeframe: u64,
     indicator_name: Option<&str>,
+    allow_gaps: bool,
 ) -> Option<Vec<CandleRow>> {
     if document.version != CACHE_VERSION
         || document.symbol_key != symbol_key
@@ -178,7 +182,7 @@ fn cache_document_is_usable(
         return None;
     }
     let rows = trim_rows_to_window(document.rows, timeframe);
-    (!rows.is_empty() && !rows_have_gap(&rows, timeframe)).then_some(rows)
+    (!rows.is_empty() && (allow_gaps || !rows_have_gap(&rows, timeframe))).then_some(rows)
 }
 
 fn read_cache(
@@ -186,10 +190,11 @@ fn read_cache(
     symbol_key: &str,
     timeframe: u64,
     indicator_name: Option<&str>,
+    allow_gaps: bool,
 ) -> Option<Vec<CandleRow>> {
     let contents = fs::read_to_string(path).ok()?;
     let document = serde_json::from_str::<CacheDocument>(&contents).ok()?;
-    cache_document_is_usable(document, symbol_key, timeframe, indicator_name)
+    cache_document_is_usable(document, symbol_key, timeframe, indicator_name, allow_gaps)
 }
 
 fn write_cache(
@@ -225,12 +230,28 @@ fn fetch_history_uncached(
     limit: usize,
     indicator_name: Option<&str>,
 ) -> Result<Vec<CandleRow>, Box<dyn Error>> {
+    let started = Instant::now();
+    eprintln!(
+        "[mrc-research][fetch] start symbol={} timeframe={} limit={} indicator={:?}",
+        symbol_key, timeframe, limit, indicator_name
+    );
     let mut merged = BTreeMap::<i64, CandleRow>::new();
     let mut offset = 0usize;
     while merged.len() < limit {
         let page_limit = (limit - merged.len()).min(API_PAGE_LIMIT);
+        eprintln!(
+            "[mrc-research][fetch] request symbol={} timeframe={} offset={} page_limit={}",
+            symbol_key, timeframe, offset, page_limit
+        );
         let page = fetch_history_page(symbol_key, timeframe, page_limit, offset, indicator_name)?;
         if page.is_empty() {
+            eprintln!(
+                "[mrc-research][fetch] empty page symbol={} timeframe={} offset={} elapsed_ms={}",
+                symbol_key,
+                timeframe,
+                offset,
+                started.elapsed().as_millis()
+            );
             break;
         }
 
@@ -243,6 +264,16 @@ fn fetch_history_uncached(
         }
         offset = offset.saturating_add(page_len);
 
+        eprintln!(
+            "[mrc-research][fetch] page symbol={} timeframe={} offset={} rows={} total_rows={} elapsed_ms={}",
+            symbol_key,
+            timeframe,
+            offset.saturating_sub(page_len),
+            page_len,
+            merged.len(),
+            started.elapsed().as_millis()
+        );
+
         if merged.len() == previous_len || page_len < page_limit {
             break;
         }
@@ -253,6 +284,13 @@ fn fetch_history_uncached(
     if rows.len() > limit {
         rows.drain(..rows.len() - limit);
     }
+    eprintln!(
+        "[mrc-research][fetch] complete symbol={} timeframe={} rows={} elapsed_ms={}",
+        symbol_key,
+        timeframe,
+        rows.len(),
+        started.elapsed().as_millis()
+    );
     Ok(rows)
 }
 
@@ -266,10 +304,22 @@ fn refresh_cached_rows(
         return fetch_history_uncached(symbol_key, timeframe, API_PAGE_LIMIT, indicator_name);
     };
     let interval_ms = (timeframe as i64).saturating_mul(1_000);
+    let started = Instant::now();
+    eprintln!(
+        "[mrc-research][cache-refresh] start symbol={} timeframe={} cached_rows={} cached_latest={} ",
+        symbol_key,
+        timeframe,
+        cached.len(),
+        cached_latest
+    );
     let mut incoming = Vec::new();
     let mut offset = 0usize;
 
     loop {
+        eprintln!(
+            "[mrc-research][cache-refresh] request symbol={} timeframe={} offset={}",
+            symbol_key, timeframe, offset
+        );
         let page = fetch_history_page(
             symbol_key,
             timeframe,
@@ -286,6 +336,15 @@ fn refresh_cached_rows(
             .first()
             .is_some_and(|row| row.time_ms <= cached_latest.saturating_add(interval_ms));
         incoming.extend(page);
+        eprintln!(
+            "[mrc-research][cache-refresh] page symbol={} timeframe={} offset={} rows={} incoming_rows={} elapsed_ms={}",
+            symbol_key,
+            timeframe,
+            offset,
+            page_len,
+            incoming.len(),
+            started.elapsed().as_millis()
+        );
         if bridged || page_len < API_PAGE_LIMIT {
             break;
         }
@@ -296,6 +355,13 @@ fn refresh_cached_rows(
     if rows_have_gap(&rows, timeframe) {
         return Err("cached candle range contains a timestamp gap".into());
     }
+    eprintln!(
+        "[mrc-research][cache-refresh] complete symbol={} timeframe={} rows={} elapsed_ms={}",
+        symbol_key,
+        timeframe,
+        rows.len(),
+        started.elapsed().as_millis()
+    );
     Ok(rows)
 }
 
@@ -427,18 +493,73 @@ pub(crate) fn fetch_history_for_timeframe_cached(
         timeframe,
         indicator_name,
     );
+    eprintln!(
+        "[mrc-research][cache] lookup symbol={} timeframe={} limit={} path={} enabled={} clear={} refresh={}",
+        symbol_key,
+        timeframe,
+        limit,
+        path.display(),
+        settings.enabled,
+        settings.clear,
+        settings.refresh
+    );
     if settings.clear {
         let _ = fs::remove_file(&path);
+        eprintln!(
+            "[mrc-research][cache] cleared symbol={} timeframe={} path={}",
+            symbol_key,
+            timeframe,
+            path.display()
+        );
     }
 
-    let Some(cached) = read_cache(&path, symbol_key, timeframe, indicator_name) else {
+    let Some(cached) = read_cache(
+        &path,
+        symbol_key,
+        timeframe,
+        indicator_name,
+        !settings.refresh,
+    ) else {
+        eprintln!(
+            "[mrc-research][cache] miss symbol={} timeframe={} path={}",
+            symbol_key,
+            timeframe,
+            path.display()
+        );
         let rows = trim_rows_to_window(
             fetch_history_uncached(symbol_key, timeframe, limit, indicator_name)?,
             timeframe,
         );
         write_cache(&path, symbol_key, timeframe, indicator_name, &rows)?;
+        eprintln!(
+            "[mrc-research][cache] rebuilt symbol={} timeframe={} rows={} path={}",
+            symbol_key,
+            timeframe,
+            rows.len(),
+            path.display()
+        );
         return Ok((rows, CacheStatus::Rebuilt));
     };
+    eprintln!(
+        "[mrc-research][cache] hit-before-refresh symbol={} timeframe={} rows={} latest={}",
+        symbol_key,
+        timeframe,
+        cached.len(),
+        cached.last().map(|row| row.time_ms).unwrap_or_default()
+    );
+    if !settings.refresh {
+        let rows = cached.into_iter().rev().take(limit).collect::<Vec<_>>();
+        let rows = rows.into_iter().rev().collect::<Vec<_>>();
+        eprintln!(
+            "[mrc-research][cache] complete symbol={} timeframe={} status={} rows={} path={} api_refresh=false",
+            symbol_key,
+            timeframe,
+            CacheStatus::Hit,
+            rows.len(),
+            path.display()
+        );
+        return Ok((rows, CacheStatus::Hit));
+    }
 
     let (mut rows, mut status) =
         match refresh_cached_rows(symbol_key, timeframe, indicator_name, &cached) {
@@ -469,7 +590,16 @@ pub(crate) fn fetch_history_for_timeframe_cached(
     write_cache(&path, symbol_key, timeframe, indicator_name, &rows)?;
 
     let rows = rows.into_iter().rev().take(limit).collect::<Vec<_>>();
-    Ok((rows.into_iter().rev().collect(), status))
+    let rows = rows.into_iter().rev().collect::<Vec<_>>();
+    eprintln!(
+        "[mrc-research][cache] complete symbol={} timeframe={} status={} rows={} path={}",
+        symbol_key,
+        timeframe,
+        status,
+        rows.len(),
+        path.display()
+    );
+    Ok((rows, status))
 }
 
 pub(crate) fn fetch_history_for_timeframe(

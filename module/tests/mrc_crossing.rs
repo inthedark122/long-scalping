@@ -1,7 +1,8 @@
+use long_scalping::detection::mrc_cross_analysis::BarrierState;
 use long_scalping::detection::mrc_crossing::{self, MrcWaitReason};
 use long_scalping::detection::vlines::MrcCrossEvent;
 use long_scalping::model::EntryReason;
-use long_scalping::state::{MrcCrossingModel, MrcForecastStats, MrcMovementSnapshot};
+use long_scalping::state::{MrcCrossingModel, MrcHistoryEvent, MrcMovementSnapshot};
 
 fn lines() -> [f64; 9] {
     [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0]
@@ -11,103 +12,455 @@ fn event(line_idx: u8, now_ms: u64) -> MrcCrossEvent {
     MrcCrossEvent {
         line_idx,
         line: lines()[line_idx as usize],
+        price: lines()[line_idx as usize],
+        mrc_low: lines()[0],
+        mrc_high: lines()[8],
         direction: 1,
         tick: now_ms / 1_000,
         now_ms,
+        no_pullback_count: 0,
+        reverted_line: None,
         completed_movement: None,
     }
 }
 
-fn learned_model(count: u32) -> MrcCrossingModel {
+fn successful_movement() -> MrcMovementSnapshot {
+    MrcMovementSnapshot {
+        start_line: 5,
+        start_price: 104.0,
+        market_start_price: 104.0,
+        target_price: 106.0,
+        target_low: 106.0,
+        target_high: 106.0,
+        mrc_low: 90.0,
+        mrc_high: 110.0,
+        high: 106.0,
+        low: 103.0,
+        extreme: 106.0,
+        direction: 1,
+        duration_ms: 2_000,
+    }
+}
+
+fn learned_model(samples: usize) -> MrcCrossingModel {
     let mut model = MrcCrossingModel::default();
-    model.pattern_len = 2;
-    model.pattern_lines[0] = 3;
-    model.pattern_lines[1] = 4;
-    model.patterns[3][4][5].next[6] = MrcForecastStats {
-        count,
-        duration_sum_ms: count as u64 * 2_000,
-        favorable_pct_sum: count as f64 * 2.0,
-        adverse_pct_sum: count as f64 * -0.5,
-    };
+    for sample in 0..samples {
+        let base = sample as u64 * 10_000;
+        for (offset, line) in [3, 4, 5, 6].into_iter().enumerate() {
+            model.history.push(MrcHistoryEvent {
+                line,
+                direction: 1,
+                now_ms: base + offset as u64 * 1_000,
+                market_price: lines()[line as usize],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: (line == 6).then_some(successful_movement()),
+            });
+        }
+    }
+    let base = samples as u64 * 10_000;
+    model.history.extend([
+        MrcHistoryEvent {
+            line: 3,
+            direction: 1,
+            now_ms: base,
+            market_price: lines()[3],
+            mrc_low: lines()[0],
+            mrc_high: lines()[8],
+            no_pullback_count: 0,
+            reverted_line: None,
+            completed_movement: None,
+        },
+        MrcHistoryEvent {
+            line: 4,
+            direction: 1,
+            now_ms: base + 1_000,
+            market_price: lines()[4],
+            mrc_low: lines()[0],
+            mrc_high: lines()[8],
+            no_pullback_count: 0,
+            reverted_line: None,
+            completed_movement: None,
+        },
+    ]);
+    model.last_line = Some(4);
+    model.last_direction = 1;
     model
 }
 
 #[test]
-fn required_samples_is_the_minimum_for_the_exact_three_line_pattern() {
-    let mut model = learned_model(2);
-    let observation = mrc_crossing::observe(&mut model, &[event(5, 10_000)], lines(), 3);
+fn prediction_uses_observed_adjacent_transition_without_a_sample_gate() {
+    let mut model = learned_model(0);
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 30_000)], lines());
 
-    assert_eq!(observation.samples, 2);
-    assert_eq!(observation.wait_reason, Some(MrcWaitReason::Warmup));
+    assert_eq!(observation.samples, 0);
+    assert_eq!(
+        observation.wait_reason,
+        Some(MrcWaitReason::NoReliablePrediction)
+    );
     assert!(observation.entry.is_none());
-    assert!(model.pending_entry.is_none());
+    assert!(model.current_entry.is_none());
 
     let mut model = learned_model(3);
-    let observation = mrc_crossing::observe(&mut model, &[event(5, 10_000)], lines(), 3);
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 40_000)], lines());
     let Some(EntryReason::MrcCrossing {
         source_line,
         target_line,
+        pattern,
+        pattern_samples,
+        target_samples,
+        movement_samples,
+        successful_moves,
+        failed_moves,
         probability,
+        movement_success_rate,
         estimated_time_ms,
-        favorable_move_pct,
-        adverse_move_pct,
         ..
     }) = observation.entry
     else {
-        panic!("three learned observations should produce a forecast entry");
+        panic!("three historical cases should produce a forecast entry");
     };
 
     assert_eq!((source_line, target_line), (5, 6));
+    assert_eq!(pattern.last(), Some(&5));
+    assert!(pattern.len() >= 2);
+    assert_eq!(pattern_samples, 3);
+    assert_eq!(target_samples, 3);
+    assert_eq!(movement_samples, 3);
+    assert_eq!(successful_moves, 3);
+    assert_eq!(failed_moves, 0);
     assert_eq!(probability, 1.0);
+    assert_eq!(movement_success_rate, 1.0);
     assert_eq!(estimated_time_ms, 2_000.0);
-    assert_eq!(favorable_move_pct, 2.0);
-    assert_eq!(adverse_move_pct, -0.5);
 }
 
 #[test]
-fn a_new_event_updates_the_three_line_pattern_with_movement_metrics() {
+fn prediction_ignores_the_earlier_crossing_context() {
     let mut model = MrcCrossingModel::default();
-    model.pattern_len = 3;
-    model.pattern_lines = [1, 2, 3];
+    for (index, target) in [6, 6, 7, 6].into_iter().enumerate() {
+        let base = index as u64 * 10_000;
+        model.history.extend([
+            MrcHistoryEvent {
+                line: index as u8,
+                direction: 1,
+                now_ms: base,
+                market_price: lines()[index],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: base + 1_000,
+                market_price: lines()[5],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: target,
+                direction: 1,
+                now_ms: base + 2_000,
+                market_price: lines()[target as usize],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: (target == 6).then_some(successful_movement()),
+            },
+        ]);
+    }
+
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 50_000)], lines());
+    let Some(EntryReason::MrcCrossing {
+        pattern,
+        pattern_samples,
+        target_samples,
+        probability,
+        ..
+    }) = observation.entry
+    else {
+        panic!("an observed adjacent transition should produce a prediction");
+    };
+    assert_eq!(pattern.last(), Some(&5));
+    assert!(pattern.len() >= 2);
+    assert_eq!(pattern_samples, 4);
+    assert_eq!(target_samples, 3);
+    assert_eq!(probability, 0.75);
+}
+
+#[test]
+fn crossing_observation_keeps_market_price_and_mrc_range() {
+    let mut model = learned_model(3);
+    let mut crossing = event(5, 40_000);
+    crossing.price = 103.5;
+    crossing.mrc_low = 89.5;
+    crossing.mrc_high = 111.0;
+
+    let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
+    let event = &observation.events[0];
+    assert_eq!(event.market_price, 103.5);
+    assert_eq!(event.mrc_min, 89.5);
+    assert_eq!(event.mrc_max, 111.0);
+
+    let Some(EntryReason::MrcCrossing {
+        market_price,
+        mrc_min,
+        mrc_max,
+        expected_price_low,
+        expected_price_high,
+        ..
+    }) = observation.entry
+    else {
+        panic!("the observed adjacent transition should produce an entry");
+    };
+    assert_eq!(market_price, 103.5);
+    assert_eq!(mrc_min, 89.5);
+    assert_eq!(mrc_max, 111.0);
+    assert!(expected_price_low < expected_price_high);
+}
+
+#[test]
+fn reverted_opposite_line_is_a_barrier_until_it_is_crossed() {
+    let mut model = learned_model(3);
+    let crossing = long_scalping::state::MrcCrossingState {
+        reverted_short_line: Some(6),
+        ..Default::default()
+    };
+    let observation = mrc_crossing::observe_with_context(
+        &mut model,
+        &[event(5, 40_000)],
+        lines(),
+        &crossing,
+        Default::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+
+    assert_eq!(observation.events[0].barrier_line, Some(6));
+    assert_eq!(
+        observation.events[0].barrier_state,
+        BarrierState::Approaching
+    );
+    assert!(observation.entry.is_none());
+    assert_eq!(observation.wait_reason, Some(MrcWaitReason::Crossing));
+}
+
+#[test]
+fn movement_data_is_stored_with_the_crossing_that_realized_it() {
+    let mut model = MrcCrossingModel::default();
     let crossing = MrcCrossEvent {
-        completed_movement: Some(MrcMovementSnapshot {
-            start_line: 3,
-            start_price: 94.0,
-            target_price: 96.0,
-            high: 96.0,
-            low: 93.0,
-            extreme: 96.0,
-            direction: 1,
-            duration_ms: 4_000,
-        }),
+        completed_movement: Some(successful_movement()),
         ..event(4, 14_000)
     };
 
-    let observation = mrc_crossing::observe(&mut model, &[crossing], lines(), 3);
-    let stats = model.patterns[1][2][3].next[4];
+    let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
 
-    assert_eq!(stats.count, 1);
-    assert_eq!(stats.average_duration_ms(), Some(4_000.0));
+    assert_eq!(model.history.len(), 1);
     assert_eq!(
-        stats.average_favorable_pct(),
-        Some((96.0 - 94.0) / 94.0 * 100.0)
+        model.history[0].completed_movement,
+        crossing.completed_movement
     );
     assert_eq!(
-        stats.average_adverse_pct(),
-        Some((93.0 - 94.0) / 94.0 * 100.0)
+        observation.wait_reason,
+        Some(MrcWaitReason::NoReliablePrediction)
     );
-    assert_eq!(model.pattern_lines, [2, 3, 4]);
-    assert_eq!(observation.wait_reason, Some(MrcWaitReason::Warmup));
 }
 
 #[test]
-fn pending_entry_is_only_for_the_current_observation() {
-    let mut model = learned_model(3);
-    let first = mrc_crossing::observe(&mut model, &[event(5, 10_000)], lines(), 3);
-    assert!(first.entry.is_some());
-    assert!(model.pending_entry.is_some());
+fn prediction_keeps_support_resistance_in_probability() {
+    let mut model = MrcCrossingModel::default();
+    for (index, target) in [6, 6, 4].into_iter().enumerate() {
+        let base = index as u64 * 10_000;
+        model.history.extend([
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: base,
+                market_price: lines()[5],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: target,
+                direction: 1,
+                now_ms: base + 1_000,
+                market_price: lines()[target as usize],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: Some(successful_movement()),
+            },
+        ]);
+    }
 
-    let next = mrc_crossing::observe(&mut model, &[], lines(), 3);
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 40_000)], lines());
+    let Some(EntryReason::MrcCrossing {
+        target_line,
+        probability,
+        next_line_crosses,
+        support_resistance_moves,
+        ..
+    }) = observation.entry
+    else {
+        panic!("the continuation route should remain tradable");
+    };
+
+    assert_eq!(target_line, 6);
+    assert!((probability - (2.0 / 3.0)).abs() < 1e-12);
+    assert_eq!(next_line_crosses, 2);
+    assert_eq!(support_resistance_moves, 1);
+}
+
+#[test]
+fn prediction_uses_pullback_and_revert_context_when_available() {
+    let mut model = MrcCrossingModel::default();
+    for index in 0..2u64 {
+        let base = index * 10_000;
+        model.history.extend([
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: base,
+                market_price: lines()[5],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 6,
+                direction: 1,
+                now_ms: base + 1_000,
+                market_price: lines()[6],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: Some(successful_movement()),
+            },
+        ]);
+    }
+    for index in 0..3u64 {
+        let base = 30_000 + index * 10_000;
+        model.history.extend([
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: base,
+                market_price: lines()[5],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 2,
+                reverted_line: Some(4),
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: 4,
+                direction: 1,
+                now_ms: base + 1_000,
+                market_price: lines()[4],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 2,
+                reverted_line: Some(4),
+                completed_movement: Some(successful_movement()),
+            },
+        ]);
+    }
+
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 70_000)], lines());
+    let Some(EntryReason::MrcCrossing {
+        target_line,
+        context_samples,
+        no_pullback_count,
+        reverted_line,
+        probability,
+        ..
+    }) = observation.entry
+    else {
+        panic!("matching pullback/revert context should produce a prediction");
+    };
+
+    assert_eq!(target_line, 6);
+    assert_eq!(context_samples, 2);
+    assert_eq!(no_pullback_count, 0);
+    assert_eq!(reverted_line, None);
+    assert_eq!(probability, 1.0);
+}
+
+#[test]
+fn dominant_prediction_uses_the_core_opposite_direction() {
+    let mut model = MrcCrossingModel::default();
+    for (index, target) in [4, 4, 6].into_iter().enumerate() {
+        let base = index as u64 * 10_000;
+        model.history.extend([
+            MrcHistoryEvent {
+                line: 5,
+                direction: 1,
+                now_ms: base,
+                market_price: lines()[5],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: None,
+            },
+            MrcHistoryEvent {
+                line: target,
+                direction: 1,
+                now_ms: base + 1_000,
+                market_price: lines()[target as usize],
+                mrc_low: lines()[0],
+                mrc_high: lines()[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: Some(successful_movement()),
+            },
+        ]);
+    }
+
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 40_000)], lines());
+    let Some(entry) = observation.entry else {
+        panic!("a dominant predicted reversal should be tradable");
+    };
+    assert_eq!(mrc_crossing::reason_direction(&entry), 1);
+    let EntryReason::MrcCrossing {
+        price,
+        target_price,
+        stop_price,
+        ..
+    } = &entry
+    else {
+        panic!("the core MRC entry should include directional exits");
+    };
+    assert!(target_price > price);
+    assert!(stop_price < price);
+    let event = &observation.events[0];
+    assert_eq!(event.target_line, Some(4));
+    assert!((event.probability.unwrap() - (2.0 / 3.0)).abs() < 1e-12);
+    assert_eq!(event.support_resistance_moves, 2);
+}
+
+#[test]
+fn current_entry_is_only_for_the_current_observation() {
+    let mut model = learned_model(3);
+    let first = mrc_crossing::observe(&mut model, &[event(5, 40_000)], lines());
+    assert!(first.entry.is_some());
+    assert!(model.current_entry.is_some());
+
+    let next = mrc_crossing::observe(&mut model, &[], lines());
     assert!(next.entry.is_none());
-    assert!(model.pending_entry.is_none());
+    assert!(model.current_entry.is_none());
 }

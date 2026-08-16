@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.88 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing learns exact three-line crossings from the configured minimum samples and uses learned next-line probability, timing, and movement; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
+      "description": "Start the 1.0.88 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing follows adjacent MRC line transitions inside a recent local cycle window, records market-price and MRC-range movement, and predicts the next line with timing and adaptive exits; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
       "params": [
         {
           "code": "cap_init",
@@ -89,7 +89,7 @@
         {
           "code": "required_samples",
           "name": "Required samples",
-          "description": "Common sample requirement for MRC, movement, and SUG entry logic. Set to 0 to allow entry without learned samples; default 3.",
+          "description": "Sample requirement for movement and SUG entry logic. MRC Crossing entry prediction uses its recent local cycle observations and does not gate on this value; default 3.",
           "default": 3,
           "variant": "Number"
         },

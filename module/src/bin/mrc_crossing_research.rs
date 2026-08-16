@@ -3,9 +3,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use long_scalping::model::Config;
-use long_scalping::state::MRC_PATTERN_LENGTH;
+use std::time::Instant;
 
 mod research;
 
@@ -18,7 +16,7 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--end-time UNIX_MS] [--required-samples N] [--no-cache] [--clear-cache] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -82,7 +80,7 @@ fn print_trade_log(report: &AnalysisReport) {
     println!("positions:");
     for (index, trade) in report.trades.iter().enumerate() {
         println!(
-            "  #{} {} {} -> {} entry={:.6} target={:.6} stop={:.6} exit={:.6} outcome={} gross={:+.4}% net={:+.4}% fees={:.4}% mfe={:.4}% mae={:.4}% duration={}",
+            "  #{} {} {} -> {} entry={:.6} target={:.6} stop={:.6} exit={:.6} outcome={} gross={:+.4}% net={:+.4}% fees={:.4}% duration={}",
             index + 1,
             if trade.side > 0 { "LONG" } else { "SHORT" },
             trade.source_name,
@@ -95,12 +93,11 @@ fn print_trade_log(report: &AnalysisReport) {
             trade.gross_pnl_pct,
             trade.pnl_pct,
             trade.entry_fee_pct + trade.exit_fee_pct,
-            trade.mfe_pct,
-            trade.mae_pct,
             format_minutes(Some(
                 trade.closed_at.saturating_sub(trade.opened_at) as f64
             )),
         );
+        println!("      reason={}", trade.reason);
     }
     if let Some(trade) = &report.open_trade {
         println!(
@@ -131,12 +128,23 @@ fn print_summary(
     println!("history                : 1m={minute_count} 1h={hourly_count}");
     println!("cache                  : 1m={minute_cache} 1h={hourly_cache}");
     println!("crossings              : {}", report.crossing_count);
-    println!("learned pattern routes  : {}", report.pattern_count);
-    if let Some(event) = report.latest_event {
+    println!(
+        "positions              : {} wins={} losses={} win_rate={:.1}% gross={:+.3}% fees={:.3}% net={:+.3}% max_drawdown={:.3}%",
+        report.trade_summary.trades,
+        report.trade_summary.wins,
+        report.trade_summary.losses,
+        report.trade_summary.win_rate_pct,
+        report.trade_summary.total_gross_pnl_pct,
+        report.trade_summary.total_fees_pct,
+        report.trade_summary.total_pnl_pct,
+        report.trade_summary.max_drawdown_pct,
+    );
+    if let Some(event) = report.latest_event.as_ref() {
         println!(
             "latest                 : {} line={} direction={}",
             event.time_ms, event.line_name, event.direction,
         );
+        println!("mrc_cross             : {}", event.mrc_trace);
     }
     println!("forecast source        : {:?}", report.forecast.source_name);
     println!("forecast condition     : {}", report.forecast.condition);
@@ -154,44 +162,29 @@ fn print_summary(
         format_minutes(report.forecast.estimated_time_ms)
     );
     if !report.forecast.likely_destinations.is_empty() {
-        println!("likely destinations:");
         for destination in &report.forecast.likely_destinations {
             println!(
-                "  {} -> {} probability={:.1}% time={}",
-                destination.pattern_names.join(" -> "),
+                "forecast target       : {} probability={:.1}% time={}",
                 destination.to_name,
                 destination.probability * 100.0,
                 format_minutes(destination.average_duration_ms),
             );
         }
     }
-    let mean_patterns = report
-        .patterns
-        .iter()
-        .filter(|pattern| pattern.pattern[2] == 4)
-        .collect::<Vec<_>>();
-    if !mean_patterns.is_empty() {
-        println!("patterns ending at mean-line:");
-        for pattern in mean_patterns {
-            println!(
-                "  {} -> {} probability={:.1}% time={}",
-                pattern.pattern_names.join(" -> "),
-                pattern.to_name,
-                pattern.probability * 100.0,
-                format_minutes(pattern.average_duration_ms),
-            );
-        }
-    }
     println!(
-        "virtual trades         : {} wins={} losses={} win_rate={:.1}% gross={:.3}% fees={:.3}% net={:.3}% max_drawdown={:.3}%",
-        report.trade_summary.trades,
-        report.trade_summary.wins,
-        report.trade_summary.losses,
-        report.trade_summary.win_rate_pct,
-        report.trade_summary.total_gross_pnl_pct,
-        report.trade_summary.total_fees_pct,
-        report.trade_summary.total_pnl_pct,
-        report.trade_summary.max_drawdown_pct,
+        "virtual predictions    : {} filled={} followed={} reached={} missed_entry={} broken={} unresolved={} followed_rate={:.1}% broken_rate={:.1}% active={} pending={}",
+        report.prediction_summary.predictions,
+        report.prediction_summary.filled,
+        report.prediction_summary.reached_and_followed
+            + report.prediction_summary.not_reached_but_followed,
+        report.prediction_summary.reached_and_followed,
+        report.prediction_summary.not_reached_but_followed,
+        report.prediction_summary.prediction_broken,
+        report.prediction_summary.unresolved,
+        report.prediction_summary.followed_rate_pct,
+        report.prediction_summary.broken_rate_pct,
+        report.active_predictions,
+        report.pending_predictions,
     );
     if print_positions {
         print_trade_log(report);
@@ -206,11 +199,22 @@ fn analyze_symbol(
     symbol_key: &str,
     history: usize,
     end_time_ms: Option<i64>,
-    required_samples: u32,
     cache_settings: CacheSettings,
 ) -> Result<(usize, usize, CacheStatus, CacheStatus, AnalysisReport), Box<dyn Error>> {
+    let started = Instant::now();
+    eprintln!(
+        "[mrc-research][symbol] start symbol={} history={} end_time_ms={:?}",
+        symbol_key, history, end_time_ms
+    );
     let (minute, minute_cache) =
         fetch_history_for_timeframe_cached(symbol_key, 60, history, None, cache_settings)?;
+    eprintln!(
+        "[mrc-research][symbol] loaded-1m symbol={} rows={} cache_status={} elapsed_ms={}",
+        symbol_key,
+        minute.len(),
+        minute_cache,
+        started.elapsed().as_millis()
+    );
     let minute = minute
         .into_iter()
         .filter(|row| end_time_ms.is_none_or(|end| row.time_ms < end))
@@ -218,7 +222,14 @@ fn analyze_symbol(
     let hourly_limit = hourly_history_limit(history);
     let (hourly, hourly_cache) =
         fetch_history_for_timeframe_cached(symbol_key, 3_600, hourly_limit, None, cache_settings)?;
-    let mut analyzer = Analyzer::new(required_samples);
+    eprintln!(
+        "[mrc-research][symbol] loaded-1h symbol={} rows={} cache_status={} elapsed_ms={}",
+        symbol_key,
+        hourly.len(),
+        hourly_cache,
+        started.elapsed().as_millis()
+    );
+    let mut analyzer = Analyzer::new();
     let mut hourly_index = 0usize;
     let mut active_ntps = Vec::new();
 
@@ -236,21 +247,26 @@ fn analyze_symbol(
         analyzer.finish(last);
     }
 
-    Ok((
-        minute.len(),
-        hourly.len(),
-        minute_cache,
-        hourly_cache,
-        analyzer.report(),
-    ))
+    Ok((minute.len(), hourly.len(), minute_cache, hourly_cache, {
+        let report = analyzer.report();
+        eprintln!(
+                "[mrc-research][symbol] complete symbol={} rows_1m={} crossings={} trades={} elapsed_ms={}",
+                symbol_key,
+                minute.len(),
+                report.crossing_count,
+                report.prediction_summary.predictions,
+                started.elapsed().as_millis()
+            );
+        report
+    }))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut symbol_keys = Vec::new();
     let mut history = 500usize;
     let mut end_time_ms = None::<i64>;
-    let mut required_samples = Config::default().required_samples();
     let mut output = None::<String>;
     let mut html = None::<String>;
     let mut cache_settings = CacheSettings::default();
@@ -279,16 +295,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 end_time_ms = args[index + 1].parse().ok();
                 index += 2;
             }
-            "--required-samples" if args.get(index + 1).is_some() => {
-                required_samples = args[index + 1].parse().unwrap_or(required_samples);
-                index += 2;
-            }
             "--no-cache" => {
                 cache_settings.enabled = false;
                 index += 1;
             }
             "--clear-cache" => {
                 cache_settings.clear = true;
+                index += 1;
+            }
+            "--refresh-cache" => {
+                cache_settings.refresh = true;
                 index += 1;
             }
             "--output" if args.get(index + 1).is_some() => {
@@ -311,6 +327,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         symbol_keys.push(DEFAULT_SYMBOL_KEY.to_string());
     }
     symbol_keys.dedup();
+    eprintln!(
+        "[mrc-research] start cwd={} symbols={:?} history={} end_time_ms={:?} cache_enabled={} cache_clear={} cache_refresh={} output={:?} html={:?}",
+        std::env::current_dir()?.display(),
+        symbol_keys,
+        history,
+        end_time_ms,
+        cache_settings.enabled,
+        cache_settings.clear,
+        cache_settings.refresh,
+        output,
+        html
+    );
     let multiple_symbols = symbol_keys.len() > 1;
     let print_positions = html.is_none();
 
@@ -322,13 +350,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, hourly_count, minute_cache, hourly_cache, report) = analyze_symbol(
-            symbol_key,
-            history,
-            end_time_ms,
-            required_samples,
-            cache_settings,
-        )?;
+        let (minute_count, hourly_count, minute_cache, hourly_cache, report) =
+            analyze_symbol(symbol_key, history, end_time_ms, cache_settings)?;
         print_summary(
             symbol_key,
             minute_count,
@@ -344,10 +367,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "symbol_key": symbol_key,
                 "history_requested_1m": history,
                 "end_time_ms": end_time_ms,
-                "required_samples": required_samples,
                 "cache": {"1m": minute_cache.to_string(), "1h": hourly_cache.to_string()},
                 "history_loaded": {"1m": minute_count, "1h": hourly_count},
-                "crossing_features": {"evidence": "MRC line crossing", "pattern_length": MRC_PATTERN_LENGTH, "required_samples": required_samples},
+                "trade_summary": report.trade_summary,
+                "trades": report.trades,
+                "open_trade": report.open_trade,
+                "crossing_features": {"evidence": "recent adjacent MRC transition observations", "learning_window": "recent five direction changes"},
                 "analysis": &report,
             });
             fs::write(&path, serde_json::to_string_pretty(&document)?)?;
@@ -368,6 +393,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             let file_url = absolute_path.to_string_lossy().replace(' ', "%20");
             println!("open html              : file://{file_url}");
         }
+        eprintln!(
+            "[mrc-research] symbol-finished symbol={} elapsed_ms={}",
+            symbol_key,
+            started.elapsed().as_millis()
+        );
     }
+    eprintln!(
+        "[mrc-research] complete symbols={} elapsed_ms={}",
+        symbol_keys.len(),
+        started.elapsed().as_millis()
+    );
     Ok(())
 }
