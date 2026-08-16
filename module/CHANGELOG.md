@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.87
+
+MRC Crossing model release.
+
+- Replace the previous MRC reclaim transition logic with exact three-line crossing samples.
+- Use the configured minimum samples to learn next-line probability, expected timing, and movement.
+- Expire unfilled limit entries after one candle through the common execution path while continuing to evaluate fresh signals.
+
 # 1.0.86
 
 MRC Reclaim fixed-exit release.

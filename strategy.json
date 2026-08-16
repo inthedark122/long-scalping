@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.86",
+      "module_version": "1.0.87",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.86"
+          "module_version": "1.0.87"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.86 release using compiled defaults or cap_init/trading_amount/min_tp_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; an unfilled MRC limit entry is cancelled and rescheduled when its target is touched. MRC, movement, and SUG entry logic use the configured sample requirement. Stairs uses LevelExit; MRC Reclaim keeps its entry target and adjacent-line stop fixed during normal realtime evaluations, then moves TP by 2 ticks from the current price after the virtual stop is crossed.",
+      "description": "Start the 1.0.87 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle and the current candle is evaluated for a fresh signal. MRC Crossing learns exact three-line crossings from the configured minimum samples and uses learned next-line probability, timing, and movement; configured minimum TP and SL distances apply to MRC exits; cascade movement remains separate. Stairs uses LevelExit.",
       "params": [
         {
           "code": "cap_init",
@@ -56,6 +56,13 @@
           "variant": "Number"
         },
         {
+          "code": "min_sl_percent",
+          "name": "Minimum SL %",
+          "description": "Minimum MRC stop-loss distance. The learned MRC stop is expanded away from entry when it is closer; 0 disables this minimum.",
+          "default": 0.0,
+          "variant": "Number"
+        },
+        {
           "code": "risk_target_percent",
           "name": "Risk target %",
           "description": "Optional target price-movement risk. When greater than 0, reduce the aggregate entry size when the projected stop-loss distance is wider than this percentage; 0 disables the adjustment.",
@@ -65,7 +72,7 @@
         {
           "code": "strategy_mode",
           "name": "Strategy",
-          "description": "Choose the existing Stairs strategy or MRC Reclaim. The selection takes effect on Start.",
+          "description": "Choose the existing Stairs strategy or MRC Crossing. The selection takes effect on Start.",
           "default": 0,
           "variant": "Select",
           "options": [
@@ -74,7 +81,7 @@
               "value": 0.0
             },
             {
-              "label": "MRC Reclaim",
+              "label": "MRC Crossing",
               "value": 1.0
             }
           ]
@@ -89,7 +96,7 @@
         {
           "code": "entry_type",
           "name": "Entry order",
-          "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed. For MRC, an unfilled limit entry is cancelled and rescheduled when the target is touched.",
+      "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. For MRC Crossing, configured minimum TP and SL distances apply to the learned exit; the current candle is evaluated for a fresh signal after expiration.",
           "default": 1,
           "variant": "Select",
           "options": [
