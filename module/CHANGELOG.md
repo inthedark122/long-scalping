@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.90
+
+Strategy-provided MRC exit release.
+
+- Use the MRC strategy's exact target and stop levels through the shared exit flow.
+- Preserve strategy-provided TP/SL for pending, initial, and active positions.
+- Keep the global minimum TP/SL guard applied to all strategy exits.
+
 # 1.0.89
 
 MRC opposite-direction core release.
