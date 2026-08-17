@@ -25,6 +25,7 @@ pub fn mrc_crossing_entry_gate(state: &EngineState) -> EntryGate {
                 ),
                 match &reason {
                     EntryReason::MrcCrossing {
+                        pattern_kind,
                         pattern,
                         market_price,
                         mrc_min,
@@ -46,7 +47,8 @@ pub fn mrc_crossing_entry_gate(state: &EngineState) -> EntryGate {
                         expected_price_high,
                         ..
                     } => format!(
-                        "cycle={} context_samples={} no_pullback={} reverted_line={} market_price={:.4} mrc_range={:.4}..{:.4} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={}",
+                        "pattern={} cycle={} context_samples={} no_pullback={} reverted_line={} market_price={:.4} mrc_range={:.4}..{:.4} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={}",
+                        pattern_kind,
                         pattern
                             .iter()
                             .map(|line| mrc_crossing::LINE_LABELS[*line as usize])

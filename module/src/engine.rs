@@ -635,20 +635,48 @@ fn process_realtime(
                         .last()
                         .map(|event| {
                             format!(
-                                "barrier={}:{} predicted={} trade={} trigger_move_pct={} cascade_dir={} cascade_strength={:.3} volume_gain={:.3}",
+                                "pattern={} steps={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} probability={}/{}={:.4} history_scope={} trigger_move_pct={} cascade_dir={} cascade_strength={:.3} volume_gain={:.3}",
+                                event
+                                    .pattern_kind
+                                    .map(|kind| kind.as_str())
+                                    .unwrap_or("none"),
+                                event.pattern_steps,
                                 event.barrier_state.as_str(),
                                 event
                                     .barrier_line
                                     .map(|line| mrc_crossing::LINE_LABELS[line as usize])
                                     .unwrap_or("na"),
                                 event
+                                    .barrier_line
+                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
+                                    .unwrap_or("na"),
+                                event.barrier_price.unwrap_or(0.0),
+                                event
                                     .target_line
                                     .map(|line| mrc_crossing::LINE_LABELS[line as usize])
                                     .unwrap_or("na"),
+                                event.predicted_line_price.unwrap_or(0.0),
                                 event
-                                    .trade_target_line
+                                    .predicted_direction,
+                                event.trade_direction,
+                                event
+                                    .take_profit_line
                                     .map(|line| mrc_crossing::LINE_LABELS[line as usize])
                                     .unwrap_or("na"),
+                                event.target_price.unwrap_or(0.0),
+                                event
+                                    .stop_loss_line
+                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
+                                    .unwrap_or("na"),
+                                event.stop_price.unwrap_or(0.0),
+                                event.target_samples,
+                                event.pattern_samples,
+                                event.probability.unwrap_or(0.0),
+                                if event.context_samples > 0 {
+                                    "contextual"
+                                } else {
+                                    "broad-fallback"
+                                },
                                 event
                                     .effective_move_pct
                                     .map(|value| format!("{value:.4}%"))

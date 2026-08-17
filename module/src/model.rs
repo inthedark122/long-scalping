@@ -355,6 +355,7 @@ pub enum EntryReason {
         stop_price: f64,
         source_line: u8,
         target_line: u8,
+        pattern_kind: String,
         pattern: Vec<u8>,
         pattern_elapsed_ms: Vec<u64>,
         pattern_samples: u32,

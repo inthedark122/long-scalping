@@ -164,7 +164,8 @@ fn print_summary(
     if !report.forecast.likely_destinations.is_empty() {
         for destination in &report.forecast.likely_destinations {
             println!(
-                "forecast target       : {} probability={:.1}% time={}",
+                "forecast pattern      : {} target={} probability={:.1}% time={}",
+                destination.pattern_kind,
                 destination.to_name,
                 destination.probability * 100.0,
                 format_minutes(destination.average_duration_ms),
@@ -186,6 +187,31 @@ fn print_summary(
         report.active_predictions,
         report.pending_predictions,
     );
+    if !report.pattern_win_rates.is_empty() {
+        println!("win rate by pattern:");
+        for pattern in &report.pattern_win_rates {
+            println!(
+                "  pattern={} matches={} filled={} closed={} wins={} losses={} win_rate={:.1}% probability_avg={:.1}% probability_range={:.1}..{:.1}% followed={} broken={} gross={:+.3}% fees={:.3}% net={:+.3}% avg_win={:+.3}% avg_loss={:+.3}%",
+                pattern.pattern,
+                pattern.matches,
+                pattern.filled_predictions,
+                pattern.closed_positions,
+                pattern.wins,
+                pattern.losses,
+                pattern.win_rate_pct,
+                pattern.average_probability_pct,
+                pattern.minimum_probability_pct,
+                pattern.maximum_probability_pct,
+                pattern.followed_predictions,
+                pattern.broken_predictions,
+                pattern.total_gross_pnl_pct,
+                pattern.total_fees_pct,
+                pattern.total_pnl_pct,
+                pattern.average_win_pnl_pct,
+                pattern.average_loss_pnl_pct,
+            );
+        }
+    }
     if print_positions {
         print_trade_log(report);
     }

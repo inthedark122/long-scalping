@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use long_scalping::detection::{cascade, mrc_cross_analysis, mrc_crossing, vlines};
@@ -144,6 +145,24 @@ fn format_mrc_trace(
     )
 }
 
+fn direction_name(direction: i8) -> &'static str {
+    match direction {
+        1 => "long",
+        -1 => "short",
+        _ => "na",
+    }
+}
+
+fn history_scope(context_samples: u32, has_prediction: bool) -> &'static str {
+    if !has_prediction {
+        "none"
+    } else if context_samples > 0 {
+        "contextual"
+    } else {
+        "broad-fallback"
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CrossingEvent {
     pub(crate) time_ms: i64,
@@ -157,9 +176,20 @@ pub(crate) struct CrossingEvent {
     pub(crate) mrc_max: f64,
     pub(crate) mrc_trace: String,
     pub(crate) barrier_line: Option<usize>,
+    pub(crate) barrier_line_name: Option<&'static str>,
+    pub(crate) barrier_price: Option<f64>,
     pub(crate) barrier_state: String,
+    pub(crate) history_scope: &'static str,
+    pub(crate) pattern_kind: Option<&'static str>,
+    pub(crate) pattern_steps: u32,
+    pub(crate) pattern_elapsed_ms: u64,
     pub(crate) predicted_direction: i8,
     pub(crate) trade_direction: i8,
+    pub(crate) predicted_line_price: Option<f64>,
+    pub(crate) take_profit_line: Option<usize>,
+    pub(crate) take_profit_name: Option<&'static str>,
+    pub(crate) stop_loss_line: Option<usize>,
+    pub(crate) stop_loss_name: Option<&'static str>,
     pub(crate) trade_target_line: Option<usize>,
     pub(crate) trade_target_name: Option<&'static str>,
     pub(crate) effective_move_pct: Option<f64>,
@@ -206,10 +236,37 @@ pub(crate) struct CrossingEvent {
     pub(crate) realized_target_high: Option<f64>,
     pub(crate) realized_mrc_low: Option<f64>,
     pub(crate) realized_mrc_high: Option<f64>,
+    pub(crate) pattern_key: String,
+}
+
+fn format_pattern_key(event: &CrossingEvent) -> String {
+    event.pattern_kind.unwrap_or("none").to_string()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PatternWinRateReport {
+    pub(crate) pattern: String,
+    pub(crate) matches: usize,
+    pub(crate) filled_predictions: usize,
+    pub(crate) closed_positions: usize,
+    pub(crate) wins: usize,
+    pub(crate) losses: usize,
+    pub(crate) win_rate_pct: f64,
+    pub(crate) average_probability_pct: f64,
+    pub(crate) minimum_probability_pct: f64,
+    pub(crate) maximum_probability_pct: f64,
+    pub(crate) total_gross_pnl_pct: f64,
+    pub(crate) total_fees_pct: f64,
+    pub(crate) total_pnl_pct: f64,
+    pub(crate) average_win_pnl_pct: f64,
+    pub(crate) average_loss_pnl_pct: f64,
+    pub(crate) followed_predictions: usize,
+    pub(crate) broken_predictions: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PatternReport {
+    pub(crate) pattern_kind: &'static str,
     pub(crate) pattern: Vec<usize>,
     pub(crate) pattern_names: Vec<&'static str>,
     pub(crate) to: usize,
@@ -253,6 +310,116 @@ pub(crate) struct AnalysisReport {
     pub(crate) predictions: Vec<VirtualPredictionResult>,
     pub(crate) pending_predictions: usize,
     pub(crate) active_predictions: usize,
+    pub(crate) pattern_win_rates: Vec<PatternWinRateReport>,
+}
+
+fn pattern_win_rate_reports(
+    trades: &[VirtualTradeResult],
+    predictions: &[VirtualPredictionResult],
+) -> Vec<PatternWinRateReport> {
+    let mut grouped_trades: BTreeMap<String, Vec<&VirtualTradeResult>> = BTreeMap::new();
+    for trade in trades {
+        grouped_trades
+            .entry(trade.pattern_key.clone())
+            .or_default()
+            .push(trade);
+    }
+    let mut grouped_predictions: BTreeMap<String, Vec<&VirtualPredictionResult>> = BTreeMap::new();
+    for prediction in predictions {
+        grouped_predictions
+            .entry(prediction.pattern_key.clone())
+            .or_default()
+            .push(prediction);
+    }
+    let pattern_keys = grouped_trades
+        .keys()
+        .chain(grouped_predictions.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut reports = pattern_keys
+        .into_iter()
+        .map(|pattern| {
+            let trades = grouped_trades.get(&pattern).cloned().unwrap_or_default();
+            let predictions = grouped_predictions
+                .get(&pattern)
+                .cloned()
+                .unwrap_or_default();
+            let wins = trades.iter().filter(|trade| trade.pnl_pct > 0.0).count();
+            let losses = trades.len().saturating_sub(wins);
+            let probabilities = predictions
+                .iter()
+                .filter_map(|prediction| prediction.prediction_probability)
+                .collect::<Vec<_>>();
+            let average_probability_pct = if probabilities.is_empty() {
+                0.0
+            } else {
+                probabilities.iter().sum::<f64>() / probabilities.len() as f64 * 100.0
+            };
+            let minimum_probability_pct = probabilities
+                .iter()
+                .copied()
+                .reduce(f64::min)
+                .unwrap_or(0.0)
+                * 100.0;
+            let maximum_probability_pct = probabilities
+                .iter()
+                .copied()
+                .reduce(f64::max)
+                .unwrap_or(0.0)
+                * 100.0;
+            let winning_pnl = trades
+                .iter()
+                .filter(|trade| trade.pnl_pct > 0.0)
+                .map(|trade| trade.pnl_pct)
+                .sum::<f64>();
+            let losing_pnl = trades
+                .iter()
+                .filter(|trade| trade.pnl_pct <= 0.0)
+                .map(|trade| trade.pnl_pct)
+                .sum::<f64>();
+            PatternWinRateReport {
+                pattern,
+                matches: predictions.len(),
+                filled_predictions: predictions
+                    .iter()
+                    .filter(|prediction| prediction.filled)
+                    .count(),
+                closed_positions: trades.len(),
+                wins,
+                losses,
+                win_rate_pct: wins as f64 / trades.len().max(1) as f64 * 100.0,
+                average_probability_pct,
+                minimum_probability_pct,
+                maximum_probability_pct,
+                total_gross_pnl_pct: trades.iter().map(|trade| trade.gross_pnl_pct).sum(),
+                total_fees_pct: trades
+                    .iter()
+                    .map(|trade| trade.entry_fee_pct + trade.exit_fee_pct)
+                    .sum(),
+                total_pnl_pct: trades.iter().map(|trade| trade.pnl_pct).sum(),
+                average_win_pnl_pct: winning_pnl / wins.max(1) as f64,
+                average_loss_pnl_pct: losing_pnl / losses.max(1) as f64,
+                followed_predictions: predictions
+                    .iter()
+                    .filter(|prediction| {
+                        prediction.outcome == "reached_and_followed"
+                            || prediction.outcome == "not_reached_but_followed"
+                    })
+                    .count(),
+                broken_predictions: predictions
+                    .iter()
+                    .filter(|prediction| prediction.outcome == "prediction_broken")
+                    .count(),
+            }
+        })
+        .collect::<Vec<_>>();
+    reports.sort_by(|left, right| {
+        right
+            .matches
+            .cmp(&left.matches)
+            .then_with(|| left.pattern.cmp(&right.pattern))
+    });
+    reports
 }
 
 #[derive(Debug, Clone)]
@@ -349,9 +516,14 @@ impl Analyzer {
                 self.started_at.elapsed().as_millis()
             );
         }
+        let crossed_lines = crossed
+            .iter()
+            .map(|event| event.line_idx as usize)
+            .collect::<Vec<_>>();
+        self.predictions.observe_crossings(&crossed_lines);
         for event in observation.events {
             let previous_time_ms = self.events.last().map(|previous| previous.time_ms);
-            let crossing_event = CrossingEvent {
+            let mut crossing_event = CrossingEvent {
                 time_ms: event.now_ms as i64,
                 elapsed_ms: previous_time_ms
                     .map(|previous| (event.now_ms as i64).saturating_sub(previous) as u64)
@@ -364,9 +536,20 @@ impl Analyzer {
                 mrc_min: event.mrc_min,
                 mrc_max: event.mrc_max,
                 barrier_line: event.barrier_line.map(|line| line as usize),
+                barrier_line_name: event.barrier_line.map(|line| LABELS[line as usize]),
+                barrier_price: event.barrier_price,
                 barrier_state: event.barrier_state.as_str().to_string(),
+                history_scope: history_scope(event.context_samples, event.target_line.is_some()),
+                pattern_kind: event.pattern_kind.map(|kind| kind.as_str()),
+                pattern_steps: event.pattern_steps,
+                pattern_elapsed_ms: event.pattern_elapsed_ms,
                 predicted_direction: event.predicted_direction,
                 trade_direction: event.trade_direction,
+                predicted_line_price: event.predicted_line_price,
+                take_profit_line: event.take_profit_line.map(|line| line as usize),
+                take_profit_name: event.take_profit_line.map(|line| LABELS[line as usize]),
+                stop_loss_line: event.stop_loss_line.map(|line| line as usize),
+                stop_loss_name: event.stop_loss_line.map(|line| LABELS[line as usize]),
                 trade_target_line: event.trade_target_line.map(|line| line as usize),
                 trade_target_name: event.trade_target_line.map(|line| LABELS[line as usize]),
                 effective_move_pct: event.effective_move_pct,
@@ -426,7 +609,9 @@ impl Analyzer {
                 realized_target_high: event.realized_target_high,
                 realized_mrc_low: event.realized_mrc_low,
                 realized_mrc_high: event.realized_mrc_high,
+                pattern_key: String::new(),
             };
+            crossing_event.pattern_key = format_pattern_key(&crossing_event);
             if event.tradeable() {
                 if let (
                     Some(target_line),
@@ -496,32 +681,59 @@ impl Analyzer {
         ) {
             return;
         }
-        let pattern = prediction
-            .pattern
-            .iter()
-            .map(|line| LABELS[*line as usize])
-            .collect::<Vec<_>>()
-            .join(">");
         let reason = format!(
-            "mrc-prediction cycle={} context_samples={} no_pullback={} reverted_line={} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} probability={:.4} movement_success_rate={:.4} expected_move_pct={:.4} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
-            pattern,
+            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} history_scope={} context_samples={} no_pullback={} reverted_line={} probability={}/{}={:.4} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={:.0} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
+            event.pattern_key,
+            event.pattern_steps,
+            event.pattern_elapsed_ms,
+            event.line_name,
+            event.target_name.unwrap_or("na"),
+            prediction.predicted_line_price.unwrap_or(0.0),
+            direction_name(prediction.predicted_direction),
+            direction_name(prediction.trade_direction),
+            prediction.barrier_state.as_str(),
+            prediction
+                .barrier_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            prediction
+                .barrier_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            prediction.barrier_price.unwrap_or(0.0),
+            prediction
+                .take_profit_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            target_price,
+            prediction
+                .stop_loss_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            stop_price,
+            entry_price,
+            event.history_scope,
             prediction.context_samples,
             prediction.no_pullback_count,
             prediction
                 .reverted_line
                 .map(|line| LABELS[line as usize])
                 .unwrap_or("na"),
-            prediction.pattern_samples,
             prediction.target_samples,
+            prediction.pattern_samples,
+            prediction.probability.unwrap_or(0.0),
+            prediction.pattern_samples,
             prediction.movement_samples,
             prediction.next_line_crosses,
             prediction.support_resistance_moves,
             prediction.price_only_moves,
             prediction.successful_moves,
             prediction.failed_moves,
-            prediction.probability.unwrap_or(0.0),
             prediction.movement_success_rate.unwrap_or(0.0),
             prediction.expected_value_pct.unwrap_or(0.0),
+            prediction.favorable_move_pct.unwrap_or(0.0),
+            prediction.adverse_move_pct.unwrap_or(0.0),
+            prediction.estimated_time_ms.unwrap_or(0.0),
             prediction.market_price,
             prediction.mrc_min,
             prediction.mrc_max,
@@ -547,7 +759,8 @@ impl Analyzer {
             row.time_ms,
             reason,
         )
-        .with_execution(-prediction.trade_direction, "market", "limit");
+        .with_execution(prediction.trade_direction, "market", "limit")
+        .with_pattern_evidence(event.pattern_key.clone(), prediction.probability);
         self.trades.queue_next_candle(setup.clone());
         self.predictions.queue(setup);
     }
@@ -570,11 +783,16 @@ impl Analyzer {
             predictions: self.predictions.results(),
             pending_predictions: self.predictions.pending_count(),
             active_predictions: self.predictions.active_count(),
+            pattern_win_rates: pattern_win_rate_reports(
+                &self.trades.completed(),
+                &self.predictions.results(),
+            ),
         }
     }
 }
 
 fn pattern_report(
+    pattern_kind: &'static str,
     pattern: &[u8],
     to: usize,
     stats: long_scalping::state::MrcForecastStats,
@@ -584,6 +802,7 @@ fn pattern_report(
     price_only_moves: u32,
 ) -> PatternReport {
     PatternReport {
+        pattern_kind,
         pattern: pattern.iter().map(|line| *line as usize).collect(),
         pattern_names: pattern.iter().map(|line| LABELS[*line as usize]).collect(),
         to,
@@ -626,6 +845,7 @@ fn forecast(latest: Option<CrossingEvent>, model: &MrcCrossingModel) -> Forecast
         };
     };
     let destination = pattern_report(
+        prediction.pattern_kind.as_str(),
         &prediction.pattern,
         prediction.target_line as usize,
         prediction.stats,
@@ -637,7 +857,7 @@ fn forecast(latest: Option<CrossingEvent>, model: &MrcCrossingModel) -> Forecast
     Forecast {
         source_line: Some(latest.line),
         source_name: Some(latest.line_name),
-        condition: "local-adjacent-transition-prediction",
+        condition: "classified-local-pattern-prediction",
         sample_count: prediction.samples as usize,
         probability_next_crossing: Some(prediction.probability),
         estimated_time_ms: prediction.stats.average_duration_ms(),

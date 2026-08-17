@@ -42,6 +42,24 @@ fn successful_movement() -> MrcMovementSnapshot {
     }
 }
 
+fn successful_short_movement() -> MrcMovementSnapshot {
+    MrcMovementSnapshot {
+        start_line: 5,
+        start_price: 104.0,
+        market_start_price: 104.0,
+        target_price: 102.0,
+        target_low: 102.0,
+        target_high: 102.0,
+        mrc_low: 90.0,
+        mrc_high: 110.0,
+        high: 105.0,
+        low: 102.0,
+        extreme: 102.0,
+        direction: -1,
+        duration_ms: 2_000,
+    }
+}
+
 fn learned_model(samples: usize) -> MrcCrossingModel {
     let mut model = MrcCrossingModel::default();
     for sample in 0..samples {
@@ -137,7 +155,7 @@ fn prediction_uses_observed_adjacent_transition_without_a_sample_gate() {
 }
 
 #[test]
-fn prediction_ignores_the_earlier_crossing_context() {
+fn pattern_prediction_requires_supporting_target_evidence() {
     let mut model = MrcCrossingModel::default();
     for (index, target) in [6, 6, 7, 6].into_iter().enumerate() {
         let base = index as u64 * 10_000;
@@ -179,21 +197,11 @@ fn prediction_ignores_the_earlier_crossing_context() {
     }
 
     let observation = mrc_crossing::observe(&mut model, &[event(5, 50_000)], lines());
-    let Some(EntryReason::MrcCrossing {
-        pattern,
-        pattern_samples,
-        target_samples,
-        probability,
-        ..
-    }) = observation.entry
-    else {
-        panic!("an observed adjacent transition should produce a prediction");
-    };
-    assert_eq!(pattern.last(), Some(&5));
-    assert!(pattern.len() >= 2);
-    assert_eq!(pattern_samples, 4);
-    assert_eq!(target_samples, 3);
-    assert_eq!(probability, 0.75);
+    assert!(observation.entry.is_none());
+    assert_eq!(
+        observation.wait_reason,
+        Some(MrcWaitReason::NoReliablePrediction)
+    );
 }
 
 #[test]
@@ -401,14 +409,14 @@ fn prediction_uses_pullback_and_revert_context_when_available() {
 }
 
 #[test]
-fn dominant_prediction_uses_the_core_opposite_direction() {
+fn pattern_prediction_follows_fast_break_return_direction() {
     let mut model = MrcCrossingModel::default();
-    for (index, target) in [4, 4, 6].into_iter().enumerate() {
+    for (index, target) in [4, 6].into_iter().enumerate() {
         let base = index as u64 * 10_000;
         model.history.extend([
             MrcHistoryEvent {
                 line: 5,
-                direction: 1,
+                direction: -1,
                 now_ms: base,
                 market_price: lines()[5],
                 mrc_low: lines()[0],
@@ -426,16 +434,18 @@ fn dominant_prediction_uses_the_core_opposite_direction() {
                 mrc_high: lines()[8],
                 no_pullback_count: 0,
                 reverted_line: None,
-                completed_movement: Some(successful_movement()),
+                completed_movement: Some(successful_short_movement()),
             },
         ]);
     }
 
-    let observation = mrc_crossing::observe(&mut model, &[event(5, 40_000)], lines());
+    let mut crossing = event(5, 40_000);
+    crossing.price = 104.5;
+    let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
     let Some(entry) = observation.entry else {
-        panic!("a dominant predicted reversal should be tradable");
+        panic!("a learned fast break-return should be tradable");
     };
-    assert_eq!(mrc_crossing::reason_direction(&entry), 1);
+    assert_eq!(mrc_crossing::reason_direction(&entry), -1);
     let EntryReason::MrcCrossing {
         price,
         target_price,
@@ -445,12 +455,22 @@ fn dominant_prediction_uses_the_core_opposite_direction() {
     else {
         panic!("the core MRC entry should include directional exits");
     };
-    assert!(target_price > price);
-    assert!(stop_price < price);
+    assert_eq!(*price, 104.5);
+    assert!(target_price < price);
+    assert!(stop_price > price);
     let event = &observation.events[0];
     assert_eq!(event.target_line, Some(4));
-    assert!((event.probability.unwrap() - (2.0 / 3.0)).abs() < 1e-12);
-    assert_eq!(event.support_resistance_moves, 2);
+    assert_eq!(
+        event.pattern_kind.map(|kind| kind.as_str()),
+        Some("FAST_BREAK_RETURN")
+    );
+    assert_eq!(event.take_profit_line, Some(4));
+    assert_eq!(event.stop_loss_line, Some(6));
+    assert_eq!(event.target_price, Some(lines()[4]));
+    assert_eq!(event.stop_price, Some(lines()[6]));
+    assert!((event.probability.unwrap() - 0.5).abs() < 1e-12);
+    assert_eq!(event.next_line_crosses, 1);
+    assert_eq!(event.support_resistance_moves, 1);
 }
 
 #[test]

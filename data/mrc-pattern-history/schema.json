@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mrc-pattern-observation-v1",
+  "title": "MRC pattern observation",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "observed_at_ms",
+    "symbol",
+    "source_run",
+    "patterns",
+    "movement",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "observed_at_ms": { "type": "integer", "minimum": 0 },
+    "symbol": { "type": "string", "minLength": 1 },
+    "source_run": { "type": "string", "minLength": 1 },
+    "patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "STAIRS_UP",
+          "STAIRS_DOWN",
+          "FAST_BREAK_RETURN",
+          "RANGE_CYCLE_SIDEWAY",
+          "TRENDING_CYCLE",
+          "PULLBACK_TO_INNER",
+          "OUTWARD_CONTINUATION"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "movement": {
+      "type": "object",
+      "required": [
+        "source_line",
+        "destination_line",
+        "direction",
+        "elapsed_ms",
+        "favorable_move_pct",
+        "adverse_move_pct"
+      ],
+      "properties": {
+        "source_line": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "destination_line": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "direction": { "enum": ["up", "down"] },
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "favorable_move_pct": { "type": "number" },
+        "adverse_move_pct": { "type": "number" },
+        "furthest_line_before_return": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 8
+        },
+        "returned_to_source_line": { "type": "boolean" },
+        "price_change_pct": { "type": ["number", "null"] },
+        "mrc_range_pct": { "type": ["number", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["movement_success"],
+      "properties": {
+        "movement_success": { "type": ["boolean", "null"] },
+        "filled": { "type": ["boolean", "null"] },
+        "trade_win": { "type": ["boolean", "null"] },
+        "net_pnl_pct": { "type": ["number", "null"] },
+        "exit_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

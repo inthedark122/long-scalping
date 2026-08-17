@@ -99,6 +99,31 @@ fn virtual_predictions_can_overlap_and_keep_fill_outcomes_separate() {
 }
 
 #[test]
+fn prediction_tracks_furthest_line_before_returning_to_source() {
+    let mut simulator = VirtualPredictionSimulator::default();
+    simulator.queue(TradeSetup::with_levels(
+        1,
+        4,
+        "mean",
+        5,
+        "up_inner",
+        100.0,
+        102.0,
+        98.0,
+        0,
+        "line path",
+    ));
+
+    simulator.observe_crossings(&[5, 6, 5, 4, 8]);
+    simulator.finish(&row(60_000, 100.0, 100.0, 100.0));
+
+    let result = &simulator.results()[0];
+    assert_eq!(result.furthest_line_before_return, Some(6));
+    assert_eq!(result.furthest_line_before_return_name, Some("up_small"));
+    assert!(result.returned_to_source_line);
+}
+
+#[test]
 fn core_position_keeps_original_fill_and_swapped_trade_levels() {
     let mut simulator = VirtualTradeSimulator::default();
     simulator.queue_next_candle(

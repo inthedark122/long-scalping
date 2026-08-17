@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.94
+
+Pattern-driven MRC entry and exit pricing.
+
+- Use the crossing market price as the MRC entry anchor instead of historical favorable movement.
+- Keep favorable movement as projection evidence and select TP/SL from current MRC levels around the actual entry.
+- Add stable MRC pattern classification and pattern-grouped research reporting.
+
 # 1.0.93
 
 Safe one-candle limit-entry cancellation.

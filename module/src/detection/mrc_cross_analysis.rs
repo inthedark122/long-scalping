@@ -1,5 +1,6 @@
 use crate::detection::cascade::{CascadeSignal, MovementPhase};
 use crate::detection::mrc_crossing::MrcPrediction;
+use crate::detection::mrc_pattern_classification::MrcPatternKind;
 use crate::detection::vlines::MrcCrossEvent;
 use crate::state::{MrcCrossingState, MrcMovementSnapshot};
 
@@ -32,13 +33,23 @@ pub struct MrcCrossAnalysis {
     pub direction: i8,
     pub now_ms: u64,
     pub barrier_line: Option<u8>,
+    pub barrier_price: Option<f64>,
     pub barrier_state: BarrierState,
     pub target_line: Option<u8>,
+    pub predicted_line_price: Option<f64>,
     pub trade_target_line: Option<u8>,
+    /// The MRC line used as the actual take-profit level for the executed side.
+    /// This is separate from `target_line`, which is the learned destination.
+    pub take_profit_line: Option<u8>,
+    /// The MRC line used as the actual stop-loss level for the executed side.
+    pub stop_loss_line: Option<u8>,
     pub target_price: Option<f64>,
     pub stop_price: Option<f64>,
     pub predicted_direction: i8,
     pub trade_direction: i8,
+    pub pattern_kind: Option<MrcPatternKind>,
+    pub pattern_steps: u32,
+    pub pattern_elapsed_ms: u64,
     pub probability: Option<f64>,
     pub estimated_time_ms: Option<f64>,
     pub favorable_move_pct: Option<f64>,
@@ -85,10 +96,9 @@ pub struct MrcCrossAnalysis {
 
 impl MrcCrossAnalysis {
     pub fn tradeable(&self) -> bool {
-        let base_trade_direction = -self.trade_direction;
         let barrier_allows_trade = match self.barrier_state {
             BarrierState::Approaching => false,
-            BarrierState::Rejected => base_trade_direction != self.predicted_direction,
+            BarrierState::Rejected => true,
             BarrierState::None | BarrierState::ConfirmedBreak => true,
         };
         barrier_allows_trade
@@ -176,6 +186,31 @@ fn adjacent_line(source: u8, direction: i8) -> Option<u8> {
     }
 }
 
+fn nearest_adverse_line(lines: [f64; 9], entry_price: f64, direction: i8) -> Option<u8> {
+    if !entry_price.is_finite() || entry_price <= 0.0 {
+        return None;
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .filter(|(_, line)| line.is_finite() && *line > 0.0)
+        .filter(|(_, line)| {
+            if direction > 0 {
+                *line < entry_price
+            } else {
+                *line > entry_price
+            }
+        })
+        .min_by(|(_, left), (_, right)| {
+            let left_distance = (*left - entry_price).abs();
+            let right_distance = (*right - entry_price).abs();
+            left_distance
+                .partial_cmp(&right_distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(line, _)| line as u8)
+}
+
 pub fn build(
     event: &MrcCrossEvent,
     prediction: Option<&MrcPrediction>,
@@ -233,13 +268,20 @@ pub fn build(
         direction: event.direction,
         now_ms: event.now_ms,
         barrier_line,
+        barrier_price: barrier_line.and_then(|line| lines.get(line as usize).copied()),
         barrier_state,
         target_line: None,
+        predicted_line_price: None,
         trade_target_line: None,
+        take_profit_line: None,
+        stop_loss_line: None,
         target_price: None,
         stop_price: None,
         predicted_direction: 0,
         trade_direction: 0,
+        pattern_kind: None,
+        pattern_steps: 0,
+        pattern_elapsed_ms: 0,
         probability: None,
         estimated_time_ms: None,
         favorable_move_pct: None,
@@ -287,70 +329,67 @@ pub fn build(
     let Some(prediction) = prediction else {
         return analysis;
     };
-    let predicted_direction = line_direction(event.line_idx, prediction.target_line);
-    let base_trade_direction = if prediction.probability > 0.5 {
-        predicted_direction
-    } else {
-        -predicted_direction
-    };
-    let trade_direction = -base_trade_direction;
+    let predicted_direction = prediction.pattern_direction;
+    let trade_direction = predicted_direction;
     let favorable_move_pct = prediction.stats.average_favorable_pct();
     let adverse_move_pct = prediction.stats.average_adverse_pct();
-    let effective_move_pct = if base_trade_direction == predicted_direction {
-        favorable_move_pct.or(cascade_move_pct)
-    } else {
-        adverse_move_pct.map(f64::abs).or(cascade_move_pct)
-    }
-    .filter(|value| value.is_finite() && *value > 0.0);
-    let effective_entry_price = effective_move_pct
-        .map(|move_pct| event.line * (1.0 + base_trade_direction as f64 * move_pct / 100.0));
+    let effective_move_pct = favorable_move_pct
+        .or(cascade_move_pct)
+        .filter(|value| value.is_finite() && *value > 0.0);
+    let predicted_end_price = effective_move_pct
+        .map(|move_pct| event.line * (1.0 + trade_direction as f64 * move_pct / 100.0));
+    let entry_price = event.price;
     // The learned movement is the trigger distance from the crossed line. If
     // that distance already reaches the predicted line, that line is the
     // entry barrier, not a profitable exit. Continue to the next line for
     // the actual trade target; the original prediction remains visible as
     // `target_line`.
-    let predicted_target_price = lines
+    let learned_line_price = lines
         .get(prediction.target_line as usize)
         .copied()
         .unwrap_or(0.0);
-    let reaches_predicted_target = effective_entry_price.is_some_and(|entry| {
-        if base_trade_direction > 0 {
-            entry >= predicted_target_price
+    let reaches_predicted_target = entry_price.is_finite() && entry_price > 0.0 && {
+        if trade_direction > 0 {
+            entry_price >= learned_line_price
         } else {
-            entry <= predicted_target_price
+            entry_price <= learned_line_price
         }
-    });
-    let trade_target_line =
-        if base_trade_direction == predicted_direction && reaches_predicted_target {
-            adjacent_line(prediction.target_line, base_trade_direction)
-        } else if base_trade_direction == predicted_direction {
-            Some(prediction.target_line)
-        } else {
-            adjacent_line(event.line_idx, base_trade_direction)
-        };
+    };
+    let trade_target_line = if reaches_predicted_target {
+        adjacent_line(prediction.target_line, trade_direction)
+    } else {
+        Some(prediction.target_line)
+    };
     let (expected_price_low, expected_price_high) = projected_price_range(
         event.price,
-        base_trade_direction,
+        trade_direction,
         favorable_move_pct.unwrap_or(0.0),
         adverse_move_pct.unwrap_or(0.0),
     );
     let predicted_target_price =
         trade_target_line.and_then(|line| lines.get(line as usize).copied());
-    let predicted_stop_price = adjacent_line(event.line_idx, -base_trade_direction)
-        .and_then(|line| lines.get(line as usize).copied());
+    let stop_loss_line = nearest_adverse_line(lines, entry_price, trade_direction)
+        .or_else(|| adjacent_line(event.line_idx, -trade_direction));
+    let predicted_stop_price = stop_loss_line.and_then(|line| lines.get(line as usize).copied());
     analysis.target_line = Some(prediction.target_line);
+    analysis.predicted_line_price = Some(learned_line_price);
     analysis.trade_target_line = trade_target_line;
-    analysis.target_price = predicted_stop_price;
-    analysis.stop_price = predicted_target_price;
+    analysis.take_profit_line = trade_target_line;
+    analysis.stop_loss_line = stop_loss_line;
+    analysis.target_price = predicted_target_price;
+    analysis.stop_price = predicted_stop_price;
     analysis.predicted_direction = predicted_direction;
     analysis.trade_direction = trade_direction;
+    analysis.pattern_kind = Some(prediction.pattern_kind);
+    analysis.pattern_steps = prediction.pattern_steps;
+    analysis.pattern_elapsed_ms = prediction.pattern_elapsed_ms;
     analysis.probability = Some(prediction.probability);
     analysis.estimated_time_ms = prediction.stats.average_duration_ms();
     analysis.favorable_move_pct = favorable_move_pct;
     analysis.adverse_move_pct = adverse_move_pct;
     analysis.effective_move_pct = effective_move_pct;
-    analysis.effective_entry_price = effective_entry_price;
-    analysis.predicted_end_price = effective_entry_price;
+    analysis.effective_entry_price = Some(entry_price);
+    analysis.predicted_end_price = predicted_end_price;
     analysis.pattern = prediction.pattern.clone();
     analysis.pattern_samples = prediction.samples;
     analysis.context_samples = prediction.context_samples;

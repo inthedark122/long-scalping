@@ -31,6 +31,8 @@ pub(crate) struct VirtualPosition {
     pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
+    pub(crate) pattern_key: String,
+    pub(crate) prediction_probability: Option<f64>,
     #[serde(skip_serializing)]
     pub(crate) max_favorable_price: f64,
     #[serde(skip_serializing)]
@@ -61,6 +63,8 @@ pub(crate) struct VirtualTradeResult {
     pub(crate) closed_at: i64,
     pub(crate) exit_reason: String,
     pub(crate) reason: String,
+    pub(crate) pattern_key: String,
+    pub(crate) prediction_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -164,6 +168,8 @@ pub(crate) struct TradeSetup {
     pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
+    pub(crate) pattern_key: String,
+    pub(crate) prediction_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,6 +187,11 @@ pub(crate) struct VirtualPredictionResult {
     pub(crate) created_at: i64,
     pub(crate) resolved_at: i64,
     pub(crate) reason: String,
+    pub(crate) pattern_key: String,
+    pub(crate) prediction_probability: Option<f64>,
+    pub(crate) furthest_line_before_return: Option<usize>,
+    pub(crate) furthest_line_before_return_name: Option<&'static str>,
+    pub(crate) returned_to_source_line: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -233,12 +244,48 @@ impl VirtualPredictionSummary {
 struct PendingPrediction {
     setup: TradeSetup,
     next_candle: bool,
+    furthest_line_before_return: Option<usize>,
+    returned_to_source_line: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ActivePrediction {
     setup: TradeSetup,
     filled: bool,
+    furthest_line_before_return: Option<usize>,
+    returned_to_source_line: bool,
+}
+
+fn line_name(line: Option<usize>) -> Option<&'static str> {
+    line.and_then(|line| {
+        long_scalping::detection::mrc_crossing::LINE_LABELS
+            .get(line)
+            .copied()
+    })
+}
+
+fn observe_prediction_line(
+    setup: &TradeSetup,
+    line: usize,
+    furthest_line_before_return: &mut Option<usize>,
+    returned_to_source_line: &mut bool,
+) {
+    if *returned_to_source_line || line >= long_scalping::detection::mrc_crossing::LINE_LABELS.len()
+    {
+        return;
+    }
+    if line == setup.source_line {
+        if furthest_line_before_return.is_some() {
+            *returned_to_source_line = true;
+        }
+        return;
+    }
+    let distance = line.abs_diff(setup.source_line);
+    if furthest_line_before_return
+        .is_none_or(|current| distance > current.abs_diff(setup.source_line))
+    {
+        *furthest_line_before_return = Some(line);
+    }
 }
 
 /// Evaluates every MRC prediction independently. It deliberately allows
@@ -257,7 +304,30 @@ impl VirtualPredictionSimulator {
         self.pending.push(PendingPrediction {
             setup,
             next_candle: true,
+            furthest_line_before_return: None,
+            returned_to_source_line: false,
         });
+    }
+
+    pub(crate) fn observe_crossings(&mut self, crossed_lines: &[usize]) {
+        for &line in crossed_lines {
+            for prediction in &mut self.pending {
+                observe_prediction_line(
+                    &prediction.setup,
+                    line,
+                    &mut prediction.furthest_line_before_return,
+                    &mut prediction.returned_to_source_line,
+                );
+            }
+            for prediction in &mut self.active {
+                observe_prediction_line(
+                    &prediction.setup,
+                    line,
+                    &mut prediction.furthest_line_before_return,
+                    &mut prediction.returned_to_source_line,
+                );
+            }
+        }
     }
 
     pub(crate) fn update(&mut self, row: &CandleRow) {
@@ -276,6 +346,8 @@ impl VirtualPredictionSimulator {
                 newly_filled.push(ActivePrediction {
                     setup: prediction.setup,
                     filled: true,
+                    furthest_line_before_return: prediction.furthest_line_before_return,
+                    returned_to_source_line: prediction.returned_to_source_line,
                 });
             } else {
                 self.pending.push(prediction);
@@ -337,6 +409,8 @@ impl VirtualPredictionSimulator {
                     ActivePrediction {
                         setup: prediction.setup,
                         filled: false,
+                        furthest_line_before_return: prediction.furthest_line_before_return,
+                        returned_to_source_line: prediction.returned_to_source_line,
                     },
                     row.time_ms,
                     "prediction_broken",
@@ -346,6 +420,8 @@ impl VirtualPredictionSimulator {
                     ActivePrediction {
                         setup: prediction.setup,
                         filled: false,
+                        furthest_line_before_return: prediction.furthest_line_before_return,
+                        returned_to_source_line: prediction.returned_to_source_line,
                     },
                     row.time_ms,
                     "not_reached_but_followed",
@@ -377,6 +453,11 @@ impl VirtualPredictionSimulator {
             created_at: setup.opened_at,
             resolved_at,
             reason: setup.reason,
+            pattern_key: setup.pattern_key,
+            prediction_probability: setup.prediction_probability,
+            furthest_line_before_return: prediction.furthest_line_before_return,
+            furthest_line_before_return_name: line_name(prediction.furthest_line_before_return),
+            returned_to_source_line: prediction.returned_to_source_line,
         });
     }
 
@@ -388,6 +469,8 @@ impl VirtualPredictionSimulator {
                 ActivePrediction {
                     setup: prediction.setup,
                     filled: false,
+                    furthest_line_before_return: prediction.furthest_line_before_return,
+                    returned_to_source_line: prediction.returned_to_source_line,
                 },
                 row.time_ms,
                 "unresolved",
@@ -439,6 +522,8 @@ impl TradeSetup {
             stop_exit_order: "market",
             opened_at,
             reason: reason.into(),
+            pattern_key: "generic".to_string(),
+            prediction_probability: None,
         }
     }
 
@@ -468,6 +553,8 @@ impl TradeSetup {
             stop_exit_order: "market",
             opened_at,
             reason: reason.into(),
+            pattern_key: format!("{source_name}->{target_name}"),
+            prediction_probability: None,
         }
     }
 
@@ -480,6 +567,16 @@ impl TradeSetup {
         self.fill_side = fill_side;
         self.target_exit_order = target_exit_order;
         self.stop_exit_order = stop_exit_order;
+        self
+    }
+
+    pub(crate) fn with_pattern_evidence(
+        mut self,
+        pattern_key: impl Into<String>,
+        prediction_probability: Option<f64>,
+    ) -> Self {
+        self.pattern_key = pattern_key.into();
+        self.prediction_probability = prediction_probability;
         self
     }
 }
@@ -541,6 +638,8 @@ impl VirtualTradeSimulator {
             stop_exit_order: setup.stop_exit_order,
             opened_at,
             reason: setup.reason,
+            pattern_key: setup.pattern_key,
+            prediction_probability: setup.prediction_probability,
             max_favorable_price: setup.entry_price,
             max_adverse_price: setup.entry_price,
         });
@@ -663,6 +762,8 @@ impl VirtualTradeSimulator {
             closed_at,
             exit_reason: exit_reason.to_string(),
             reason: trade.reason,
+            pattern_key: trade.pattern_key,
+            prediction_probability: trade.prediction_probability,
         });
     }
 
