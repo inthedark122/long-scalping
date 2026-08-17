@@ -1,22 +1,23 @@
-# Structural scalping handoff
+# Adaptive pattern-engine handoff
 
-Last updated 2026-07-06.
+Last updated 2026-08-17.
 
 ## Baseline
 
-This repo now tracks the current release only.
+This repo tracks the current adaptive MRC pattern release only.
 
 - Rust crate: `module/`
 - Runtime model: one position at a time
-- Market states: `Long`, `Short`, `Sideways`
-- Primary regime: `5m`
-- Execution: `1m`
-- Fallback confirmation: `15m`
-- Context blocker: `1h`
+- Input: 1m/5m MRC lines, volume, candles, and live price
+- Classification: all seven MRC patterns are evaluated for every observation
+- Selection: the highest-scoring tradable pattern remains active until a challenger beats it by the switch margin
+- Learning: each pattern stores observations, trades, wins, net PnL, and an EMA of realized net PnL
+- Continuation: successful staircase/outward legs advance to the next MRC line instead of stopping after one leg
 
 ## Config surface
 
-The Start signal exposes two variables: `cap_init` and `trading_amount`.
+The Start signal exposes sizing, exit, and execution controls. There is no manual
+strategy-mode selector: the pattern engine is always active.
 
 - Type: percentage
 - Range: `0` to `100`
@@ -29,30 +30,26 @@ The Start signal exposes two variables: `cap_init` and `trading_amount`.
 
 ## Rust layout
 
-The module has been reset into a concern-based pipeline:
-
-- `model.rs`: shared enums and structs
-- `market_data.rs`: indicator and candle extraction
-- `detection/mrc.rs`: band zone and slope
-- `detection/cascade.rs`: candle-path movement tracking
-- `detection/vlines.rs`: MRC crossing memory
-- `detection/regime.rs`: `5m` classification plus `15m` fallback and `1h` blocker
-- `decision.rs`: final market decision
-- `execution.rs`: entry, stop, TP, cooldown, post-SL sizing
-- `debug.rs`: compact runtime summary
-- `engine.rs`: event routing
+- `detection/mrc_pattern_classification.rs`: stable pattern vocabulary and independent matchers
+- `detection/mrc_crossing.rs`: candidate prediction, per-pattern learning, sticky selector, and entry plans
+- `detection/mrc_cross_analysis.rs`: MRC line movement, target progression, and directional levels
+- `state.rs`: event history, active selection, and realized performance ledger
+- `engine.rs`: live event routing and execution integration
+- `bin/research/mrc_crossing.rs`: parallel virtual-account research for every pattern
+- `bin/research/mrc_crossing_html.rs`: adaptive selector and per-pattern report output
+- `execution.rs` / `exit.rs`: exchange-safe one-position and exit mechanics
 
 ## Execution rules
 
 - Flat state can open either a long or a short, never both.
-- `Sideways` opens nothing.
+- Only the selected pattern can open a position.
 - Existing positions are not reversed in the same tick.
-- Exit priority is hard stop, then TP on pullback, then regime invalidation.
-- After stop loss, the engine applies cooldown and reduced re-entry sizing.
+- Continuation patterns can re-plan the next adjacent MRC line while the active movement remains valid.
+- A realized trade result is attributed to the pattern that opened it.
 
 ## Validation
 
-- `cargo check --target wasm32-wasip1`
-- `cargo test --target x86_64-unknown-linux-gnu`
+- `cargo test`
+- `cargo test --features mrc-research,native-tools`
 
 Both are expected to pass before build or deploy work.

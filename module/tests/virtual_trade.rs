@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[path = "../src/bin/research/data.rs"]
 mod data;
 #[path = "../src/bin/research/virtual_trade.rs"]
@@ -13,11 +15,8 @@ fn candle(time_ms: i64, high: f64, low: f64, close: f64) -> CandleRow {
         high,
         low,
         close,
-        zz_dir: 0,
-        zz_break_price: 0.0,
         gain: 0.0,
         buy_sell_gain: 0.0,
-        ntps: 0,
         mrc: Default::default(),
     }
 }

@@ -1,11 +1,8 @@
-use crate::builder::BuiltStrategy;
-use crate::detection::levels::LevelPoint;
-use crate::model::MarketState;
 use crate::model::{
-    exit_type_for_strategy, Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot,
-    PositionState,
+    Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
+    MRC_CROSSING_EXIT_TYPE,
 };
-use crate::observer::{DirectionChangeHistory, TpRepriceHistory, VolumeGainTracker};
+use crate::observer::{TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::indicator_access::IndicatorHistory;
@@ -77,6 +74,53 @@ pub struct MrcMovementSnapshot {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PatternPerformance {
+    pub observations: u64,
+    pub trades: u64,
+    pub wins: u64,
+    pub pnl_sum_pct: f64,
+    pub ema_pnl_pct: f64,
+    pub last_pnl_pct: f64,
+}
+
+impl PatternPerformance {
+    pub fn observe(&mut self) {
+        self.observations = self.observations.saturating_add(1);
+    }
+
+    pub fn record_trade(&mut self, pnl_pct: f64) {
+        if !pnl_pct.is_finite() {
+            return;
+        }
+        self.trades = self.trades.saturating_add(1);
+        self.wins = self.wins.saturating_add(u64::from(pnl_pct > 0.0));
+        self.pnl_sum_pct += pnl_pct;
+        self.last_pnl_pct = pnl_pct;
+        self.ema_pnl_pct = if self.trades == 1 {
+            pnl_pct
+        } else {
+            self.ema_pnl_pct * 0.80 + pnl_pct * 0.20
+        };
+    }
+
+    pub fn win_rate(self) -> f64 {
+        if self.trades == 0 {
+            0.0
+        } else {
+            self.wins as f64 / self.trades as f64
+        }
+    }
+
+    pub fn average_pnl_pct(self) -> f64 {
+        if self.trades == 0 {
+            0.0
+        } else {
+            self.pnl_sum_pct / self.trades as f64
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MrcForecastStats {
     pub count: u32,
@@ -138,6 +182,11 @@ pub struct MrcCrossingModel {
     pub last_direction: i8,
     pub last_event_ms: u64,
     pub current_entry: Option<EntryReason>,
+    pub pattern_performance: [PatternPerformance; 7],
+    pub active_pattern: Option<u8>,
+    pub active_pattern_score: f64,
+    pub active_pattern_since_ms: u64,
+    pub last_plan_key: Option<(u8, u8, u8)>,
 }
 
 impl Default for MrcCrossingModel {
@@ -149,6 +198,11 @@ impl Default for MrcCrossingModel {
             last_direction: 0,
             last_event_ms: 0,
             current_entry: None,
+            pattern_performance: [PatternPerformance::default(); 7],
+            active_pattern: None,
+            active_pattern_score: 0.0,
+            active_pattern_since_ms: 0,
+            last_plan_key: None,
         }
     }
 }
@@ -182,55 +236,6 @@ impl Default for MrcCrossingState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CascadeMovement {
-    pub high: f64,
-    pub low: f64,
-    pub dir: i8,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CascadeState {
-    pub last_close: f64,
-    pub dir: i8,
-    pub run_extreme: f64,
-    pub run_size: f64,
-    pub avg_size: f64,
-    pub samples: u32,
-    pub last_break: f64,
-    pub cas_dir: i8,
-    pub cas_high: f64,
-    pub cas_low: f64,
-    pub cas_candles: u32,
-    pub sizes: [f64; 30],
-    pub sizes_pos: usize,
-    pub sizes_len: usize,
-    pub breaks: [f64; 5],
-    pub break_n: usize,
-    pub movement_history: [CascadeMovement; 30],
-    pub movement_history_pos: usize,
-    pub movement_history_len: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingEntryState {
-    pub direction: MarketState,
-    pub armed_tick: u64,
-    pub price: f64,
-    pub reason: String,
-}
-
-impl Default for PendingEntryState {
-    fn default() -> Self {
-        Self {
-            direction: MarketState::Sideways,
-            armed_tick: 0,
-            price: 0.0,
-            reason: "na".to_string(),
-        }
-    }
-}
-
 pub struct EngineState {
     pub ticks: u64,
     pub bar_1m: u64,
@@ -247,18 +252,12 @@ pub struct EngineState {
     pub mrc_crossing: MrcCrossingState,
     pub mrc_crossing_model: MrcCrossingModel,
     pub pending_entry_bar: Option<u64>,
-    pub structural_stop_loss: Option<LevelPoint>,
-    pub processed_structural_stop_losses: Vec<LevelPoint>,
     pub volume_gain: VolumeGainTracker,
-    pub direction_history: DirectionChangeHistory,
     pub direction_source: String,
     pub direction_reason: String,
     pub tp_reprice_history: TpRepriceHistory,
     pub mrc_risk: MrcRiskManager,
-    pub movement_entry_pending: Option<PendingEntryState>,
-    pub cascade_tf: CascadeState,
     pub exit_memory: ExitMemory,
-    pub strategy_builder: Option<BuiltStrategy>,
     pub last_error: Option<String>,
     pub last_snapshot: Option<IndicatorSnapshot>,
 }
@@ -279,18 +278,12 @@ impl Default for EngineState {
             mrc_crossing: MrcCrossingState::default(),
             mrc_crossing_model: MrcCrossingModel::default(),
             pending_entry_bar: None,
-            structural_stop_loss: None,
-            processed_structural_stop_losses: Vec::new(),
             volume_gain: VolumeGainTracker::default(),
-            direction_history: DirectionChangeHistory::default(),
-            direction_source: "regime".to_string(),
+            direction_source: "pattern-selector".to_string(),
             direction_reason: "na".to_string(),
             tp_reprice_history: TpRepriceHistory::default(),
             mrc_risk: MrcRiskManager::default(),
-            movement_entry_pending: None,
-            cascade_tf: CascadeState::default(),
             exit_memory: ExitMemory::default(),
-            strategy_builder: None,
             last_error: None,
             last_snapshot: None,
         }
@@ -299,13 +292,26 @@ impl Default for EngineState {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedState {
+    #[serde(default)]
     ticks: u64,
+    #[serde(default)]
     bar_1m: u64,
+    #[serde(default)]
     cfg: Config,
+    #[serde(default)]
     cfg_loaded: bool,
+    #[serde(default)]
     trade_budget: f64,
+    #[serde(default)]
     position: PositionState,
+    #[serde(default)]
     exit_memory: ExitMemory,
+    #[serde(default)]
+    pattern_performance: [PatternPerformance; 7],
+    #[serde(default)]
+    active_pattern: Option<u8>,
+    #[serde(default)]
+    active_pattern_score: f64,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -317,8 +323,32 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         trade_budget: state.trade_budget,
         position: state.position.side,
         exit_memory: state.exit_memory,
+        pattern_performance: state.mrc_crossing_model.pattern_performance,
+        active_pattern: state.mrc_crossing_model.active_pattern,
+        active_pattern_score: state.mrc_crossing_model.active_pattern_score,
     })
     .ok()
+}
+
+pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let Ok(persisted) = serde_json::from_value::<PersistedState>(value.clone()) else {
+        return false;
+    };
+
+    state.ticks = persisted.ticks;
+    state.bar_1m = persisted.bar_1m;
+    state.cfg = persisted.cfg;
+    state.cfg_loaded = persisted.cfg_loaded;
+    state.trade_budget = persisted.trade_budget;
+    state.position.side = persisted.position;
+    state.exit_memory = persisted.exit_memory;
+    state.mrc_crossing_model.pattern_performance = persisted.pattern_performance;
+    state.mrc_crossing_model.active_pattern = persisted.active_pattern.filter(|index| *index < 7);
+    state.mrc_crossing_model.active_pattern_score = persisted.active_pattern_score;
+    true
 }
 
 pub fn sync_position_state(
@@ -337,8 +367,6 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Long
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
-                state.structural_stop_loss = None;
-                state.processed_structural_stop_losses.clear();
                 state.position = PositionRuntime {
                     side: PositionState::Long,
                     entry_price: entry,
@@ -348,8 +376,8 @@ pub fn sync_position_state(
                     stop_loss: 0.0,
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
-                    exit_mode: ExitMode::Structural,
-                    exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
+                    exit_mode: ExitMode::Fixed,
+                    exit_type: MRC_CROSSING_EXIT_TYPE,
                     entry_reason: state.position.entry_reason.clone(),
                 };
             } else {
@@ -361,8 +389,6 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Short
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
-                state.structural_stop_loss = None;
-                state.processed_structural_stop_losses.clear();
                 state.position = PositionRuntime {
                     side: PositionState::Short,
                     entry_price: entry,
@@ -372,8 +398,8 @@ pub fn sync_position_state(
                     stop_loss: 0.0,
                     stop_loss_reason: String::new(),
                     exit_tp_reliable: false,
-                    exit_mode: ExitMode::Structural,
-                    exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
+                    exit_mode: ExitMode::Fixed,
+                    exit_type: MRC_CROSSING_EXIT_TYPE,
                     entry_reason: state.position.entry_reason.clone(),
                 };
             } else {
@@ -382,8 +408,6 @@ pub fn sync_position_state(
             }
         }
         _ => {
-            state.structural_stop_loss = None;
-            state.processed_structural_stop_losses.clear();
             state.position = PositionRuntime::default();
         }
     }

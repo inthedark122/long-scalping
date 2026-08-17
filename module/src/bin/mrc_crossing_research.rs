@@ -117,16 +117,14 @@ fn print_trade_log(report: &AnalysisReport) {
 fn print_summary(
     symbol_key: &str,
     minute_count: usize,
-    hourly_count: usize,
     minute_cache: CacheStatus,
-    hourly_cache: CacheStatus,
     report: &AnalysisReport,
     print_positions: bool,
 ) {
     println!("MRC CROSSING RESEARCH");
     println!("symbol                 : {symbol_key}");
-    println!("history                : 1m={minute_count} 1h={hourly_count}");
-    println!("cache                  : 1m={minute_cache} 1h={hourly_cache}");
+    println!("history                : 1m={minute_count}");
+    println!("cache                  : 1m={minute_cache}");
     println!("crossings              : {}", report.crossing_count);
     println!(
         "positions              : {} wins={} losses={} win_rate={:.1}% gross={:+.3}% fees={:.3}% net={:+.3}% max_drawdown={:.3}%",
@@ -150,24 +148,15 @@ fn print_summary(
     println!("forecast condition     : {}", report.forecast.condition);
     println!("forecast samples       : {}", report.forecast.sample_count);
     println!(
-        "probability next cross : {}",
-        report
-            .forecast
-            .probability_next_crossing
-            .map(|value| format!("{:.1}%", value * 100.0))
-            .unwrap_or_else(|| "n/a".to_string())
-    );
-    println!(
         "estimated time         : {}",
         format_minutes(report.forecast.estimated_time_ms)
     );
     if !report.forecast.likely_destinations.is_empty() {
         for destination in &report.forecast.likely_destinations {
             println!(
-                "forecast pattern      : {} target={} probability={:.1}% time={}",
+                "forecast pattern      : {} target={} time={}",
                 destination.pattern_kind,
                 destination.to_name,
-                destination.probability * 100.0,
                 format_minutes(destination.average_duration_ms),
             );
         }
@@ -187,11 +176,29 @@ fn print_summary(
         report.active_predictions,
         report.pending_predictions,
     );
+    println!(
+        "active pattern         : {:?} score={:+.4}%",
+        report.active_pattern, report.active_pattern_score,
+    );
+    println!("adaptive pattern PnL:");
+    for pattern in &report.pattern_performance {
+        println!(
+            "  pattern={} observations={} trades={} win_rate={:.1}% total={:+.3}% avg={:+.3}% ema={:+.3}% last={:+.3}%",
+            pattern.pattern,
+            pattern.observations,
+            pattern.trades,
+            pattern.win_rate_pct,
+            pattern.total_pnl_pct,
+            pattern.average_pnl_pct,
+            pattern.ema_pnl_pct,
+            pattern.last_pnl_pct,
+        );
+    }
     if !report.pattern_win_rates.is_empty() {
         println!("win rate by pattern:");
         for pattern in &report.pattern_win_rates {
             println!(
-                "  pattern={} matches={} filled={} closed={} wins={} losses={} win_rate={:.1}% probability_avg={:.1}% probability_range={:.1}..{:.1}% followed={} broken={} gross={:+.3}% fees={:.3}% net={:+.3}% avg_win={:+.3}% avg_loss={:+.3}%",
+                "  pattern={} matches={} filled={} closed={} wins={} losses={} win_rate={:.1}% followed={} broken={} gross={:+.3}% fees={:.3}% net={:+.3}% avg_win={:+.3}% avg_loss={:+.3}%",
                 pattern.pattern,
                 pattern.matches,
                 pattern.filled_predictions,
@@ -199,9 +206,6 @@ fn print_summary(
                 pattern.wins,
                 pattern.losses,
                 pattern.win_rate_pct,
-                pattern.average_probability_pct,
-                pattern.minimum_probability_pct,
-                pattern.maximum_probability_pct,
                 pattern.followed_predictions,
                 pattern.broken_predictions,
                 pattern.total_gross_pnl_pct,
@@ -217,16 +221,12 @@ fn print_summary(
     }
 }
 
-fn hourly_history_limit(minute_history: usize) -> usize {
-    ((minute_history + 59) / 60 + 10).max(10)
-}
-
 fn analyze_symbol(
     symbol_key: &str,
     history: usize,
     end_time_ms: Option<i64>,
     cache_settings: CacheSettings,
-) -> Result<(usize, usize, CacheStatus, CacheStatus, AnalysisReport), Box<dyn Error>> {
+) -> Result<(usize, CacheStatus, AnalysisReport), Box<dyn Error>> {
     let started = Instant::now();
     eprintln!(
         "[mrc-research][symbol] start symbol={} history={} end_time_ms={:?}",
@@ -245,35 +245,16 @@ fn analyze_symbol(
         .into_iter()
         .filter(|row| end_time_ms.is_none_or(|end| row.time_ms < end))
         .collect::<Vec<_>>();
-    let hourly_limit = hourly_history_limit(history);
-    let (hourly, hourly_cache) =
-        fetch_history_for_timeframe_cached(symbol_key, 3_600, hourly_limit, None, cache_settings)?;
-    eprintln!(
-        "[mrc-research][symbol] loaded-1h symbol={} rows={} cache_status={} elapsed_ms={}",
-        symbol_key,
-        hourly.len(),
-        hourly_cache,
-        started.elapsed().as_millis()
-    );
     let mut analyzer = Analyzer::new();
-    let mut hourly_index = 0usize;
-    let mut active_ntps = Vec::new();
 
     for row in &minute {
-        while hourly_index < hourly.len() && hourly[hourly_index].time_ms <= row.time_ms {
-            active_ntps.push(hourly[hourly_index].ntps);
-            if active_ntps.len() > 10 {
-                active_ntps.remove(0);
-            }
-            hourly_index += 1;
-        }
-        analyzer.observe(row, &active_ntps);
+        analyzer.observe(row);
     }
     if let Some(last) = minute.last() {
         analyzer.finish(last);
     }
 
-    Ok((minute.len(), hourly.len(), minute_cache, hourly_cache, {
+    Ok((minute.len(), minute_cache, {
         let report = analyzer.report();
         eprintln!(
                 "[mrc-research][symbol] complete symbol={} rows_1m={} crossings={} trades={} elapsed_ms={}",
@@ -376,14 +357,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, hourly_count, minute_cache, hourly_cache, report) =
+        let (minute_count, minute_cache, report) =
             analyze_symbol(symbol_key, history, end_time_ms, cache_settings)?;
         print_summary(
             symbol_key,
             minute_count,
-            hourly_count,
             minute_cache,
-            hourly_cache,
             &report,
             print_positions,
         );
@@ -393,8 +372,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "symbol_key": symbol_key,
                 "history_requested_1m": history,
                 "end_time_ms": end_time_ms,
-                "cache": {"1m": minute_cache.to_string(), "1h": hourly_cache.to_string()},
-                "history_loaded": {"1m": minute_count, "1h": hourly_count},
+                "cache": {"1m": minute_cache.to_string()},
+                "history_loaded": {"1m": minute_count},
                 "trade_summary": report.trade_summary,
                 "trades": report.trades,
                 "open_trade": report.open_trade,
@@ -411,7 +390,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_key,
                 history,
                 minute_count,
-                hourly_count,
                 &report,
             )?;
             println!("html report            : {}", path.display());

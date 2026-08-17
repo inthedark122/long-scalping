@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 BASE_URL = "https://okx.tg.trading.sinvoid.me/api/indicators"
 DEFAULT_SYMBOL = "OKX#ETH-USDT-SWAP#SWAP"
-TIMEFRAMES = [60, 300, 900, 3600]
+TIMEFRAMES = [60, 300]
 
 
 def fetch(symbol_key: str, timeframe: int) -> dict:
@@ -26,10 +26,6 @@ def fmt(value, digits=2):
     if value is None:
         return "n/a"
     return f"{value:.{digits}f}"
-
-
-def direction(indicator: dict) -> str:
-    return str(indicator.get("Direction", "NEUTRAL"))
 
 
 def slope(cur: float | None, prev: float | None) -> str:
@@ -54,15 +50,14 @@ def print_snapshot(symbol: str):
         candle = cur.get("candle", {})
         mrc = cur.get("mrc_200", {})
         mrc_prev = prev.get("mrc_200", {})
-        smc = cur.get("smc", {})
-        zz = cur.get("zigzagtrend", {})
+        volume = cur.get("volume_50", {})
         ts = data[0].get("time", 0)
         stamp = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%H:%M:%S") if ts else "?"
         print(
             f"{tf:>4}s  {stamp}  close={fmt(candle.get('Close'))} "
-            f"smc={direction(smc):>5} zz={direction(zz):>5} "
             f"ml={fmt(mrc.get('MeanLine'))} slope={slope(mrc.get('MeanLine'), mrc_prev.get('MeanLine'))} "
-            f"cross={mrc.get('CurrentCross', 'n/a')}"
+            f"cross={mrc.get('CurrentCross', 'n/a')} "
+            f"volume_gain={fmt(volume.get('Gain'))} buy_sell_gain={fmt(volume.get('BuySellGain'))}"
         )
     sys.stdout.flush()
 

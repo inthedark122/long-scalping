@@ -1,11 +1,8 @@
-use crate::detection::{cascade, levels};
 use crate::format::tick_size;
 use crate::guard;
-use crate::model::{
-    EntryReason, ExitMode, ExitType, IndicatorSnapshot, PositionState, SugInfoSnapshot,
-};
+use crate::model::{EntryReason, ExitMode, ExitType, IndicatorSnapshot, PositionState};
 use crate::orders::{tp_limit_order, tp_mark};
-use crate::state::{CascadeState, EngineState};
+use crate::state::EngineState;
 use crate::stop_loss;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModulePlaceOrder, ModuleUpdatePosition};
 
@@ -19,44 +16,23 @@ pub struct ExitPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitPlanContext {
     Entry,
-    Candidate,
     ActiveReprice,
-}
-
-impl ExitPlanContext {
-    fn enforces_cascade_minimum(self) -> bool {
-        matches!(self, Self::Entry)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StopLoss {
-    Structural { level: levels::LevelPoint },
-    Sideway { price: f64 },
-    SupportBreak { price: f64 },
     Fixed { price: f64 },
 }
 
 impl StopLoss {
     pub fn price(self) -> f64 {
         match self {
-            Self::Structural { level } => level.value,
-            Self::Sideway { price } | Self::SupportBreak { price } | Self::Fixed { price } => price,
-        }
-    }
-
-    pub fn structural_level(self) -> Option<levels::LevelPoint> {
-        match self {
-            Self::Structural { level } => Some(level),
-            _ => None,
+            Self::Fixed { price } => price,
         }
     }
 
     pub fn reason(self) -> String {
         match self {
-            Self::Structural { level } => format!("structural:{}", level.label()),
-            Self::Sideway { .. } => "sideway:block-edge".to_string(),
-            Self::SupportBreak { .. } => "support-break".to_string(),
             Self::Fixed { .. } => "fixed".to_string(),
         }
     }
@@ -64,411 +40,25 @@ impl StopLoss {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TakeProfit {
-    Structural { level: levels::LevelPoint },
-    Movement { price: f64 },
-    Sideway { price: f64 },
     Fixed { price: f64 },
 }
 
 impl TakeProfit {
     pub fn price(self) -> f64 {
         match self {
-            Self::Structural { level } => level.value,
-            Self::Movement { price } | Self::Sideway { price } | Self::Fixed { price } => price,
+            Self::Fixed { price } => price,
         }
     }
 
     pub fn source_label(self) -> &'static str {
         match self {
-            Self::Structural { .. } => "structural",
-            Self::Movement { .. } => "movement",
-            Self::Sideway { .. } => "sideway",
             Self::Fixed { .. } => "fixed",
         }
     }
 
     pub fn order_note(self) -> String {
-        match self {
-            Self::Structural { level } => format!("tp:structural|level={}", level.label()),
-            take_profit => format!("tp:{}", take_profit.source_label()),
-        }
+        format!("tp:{}", self.source_label())
     }
-}
-
-fn structural_plan(
-    levels: &crate::detection::levels::LevelBook,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    context: ExitPlanContext,
-    required_samples: u32,
-    excluded_stop_losses: &[levels::LevelPoint],
-    minimum_take_profit_percent: f64,
-) -> Option<(levels::LevelPoint, levels::LevelPoint)> {
-    let take_profit = structural_take_profit_level(
-        levels,
-        cascade,
-        price,
-        side,
-        context,
-        required_samples,
-        minimum_take_profit_percent,
-    )?;
-    match side {
-        PositionState::Long => {
-            let sl = structural_stop_loss_level(levels, price, side, excluded_stop_losses)?;
-            Some((take_profit, sl))
-        }
-        PositionState::Short => {
-            let sl = structural_stop_loss_level(levels, price, side, excluded_stop_losses)?;
-            Some((take_profit, sl))
-        }
-        PositionState::Flat => None,
-    }
-}
-
-fn structural_stop_loss_level(
-    levels: &levels::LevelBook,
-    price: f64,
-    side: PositionState,
-    excluded: &[levels::LevelPoint],
-) -> Option<levels::LevelPoint> {
-    let excluded_mrc_kind = |kind| match side {
-        PositionState::Long => matches!(
-            kind,
-            levels::LevelKind::MrcMean
-                | levels::LevelKind::MrcDownSmall
-                | levels::LevelKind::MrcDownInner
-                | levels::LevelKind::MrcDownOuter
-        ),
-        PositionState::Short => matches!(
-            kind,
-            levels::LevelKind::MrcMean
-                | levels::LevelKind::MrcUpSmall
-                | levels::LevelKind::MrcUpInner
-                | levels::LevelKind::MrcUpOuter
-        ),
-        PositionState::Flat => true,
-    };
-
-    match side {
-        PositionState::Long => levels
-            .below
-            .iter()
-            .copied()
-            .filter(|level| {
-                level.value < price && !excluded.contains(level) && !excluded_mrc_kind(level.kind)
-            })
-            .max_by(levels::LevelBook::compare_points),
-        PositionState::Short => levels
-            .above
-            .iter()
-            .copied()
-            .filter(|level| {
-                level.value > price && !excluded.contains(level) && !excluded_mrc_kind(level.kind)
-            })
-            .min_by(levels::LevelBook::compare_points),
-        PositionState::Flat => None,
-    }
-}
-
-fn cascade_average_percent(
-    cascade: &CascadeState,
-    price: f64,
-    required_samples: u32,
-) -> Option<f64> {
-    if cascade.samples < required_samples {
-        return None;
-    }
-    cascade::average_size_percent(cascade.avg_size, price)
-}
-
-fn effective_minimum_percent(
-    cascade: &CascadeState,
-    price: f64,
-    required_samples: u32,
-    minimum_take_profit_percent: f64,
-) -> Option<f64> {
-    let minimum_take_profit_percent = minimum_take_profit_percent.max(0.0);
-    match cascade_average_percent(cascade, price, required_samples) {
-        Some(cascade_minimum) => Some(cascade_minimum.max(minimum_take_profit_percent)),
-        None if minimum_take_profit_percent > 0.0 => Some(minimum_take_profit_percent),
-        None => None,
-    }
-}
-
-fn structural_take_profit_level(
-    levels: &crate::detection::levels::LevelBook,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    context: ExitPlanContext,
-    required_samples: u32,
-    minimum_take_profit_percent: f64,
-) -> Option<levels::LevelPoint> {
-    let minimum_percent = if context.enforces_cascade_minimum() {
-        effective_minimum_percent(
-            cascade,
-            price,
-            required_samples,
-            minimum_take_profit_percent,
-        )
-    } else {
-        None
-    };
-    let qualifies = |level: &levels::LevelPoint| {
-        if matches!(level.kind, levels::LevelKind::MrcMean) {
-            return false;
-        }
-        let distance_percent = match side {
-            PositionState::Long => (level.value - price) / price * 100.0,
-            PositionState::Short => (price - level.value) / price * 100.0,
-            PositionState::Flat => return false,
-        };
-        distance_percent.is_finite()
-            && distance_percent > 0.0
-            && minimum_percent.is_none_or(|minimum| distance_percent >= minimum)
-    };
-
-    match side {
-        PositionState::Long => levels
-            .above
-            .iter()
-            .copied()
-            .filter(|level| level.value > price)
-            .find(qualifies),
-        PositionState::Short => levels
-            .below
-            .iter()
-            .copied()
-            .filter(|level| level.value < price)
-            .rev()
-            .find(qualifies),
-        PositionState::Flat => None,
-    }
-}
-
-fn take_profit_meets_cascade_minimum(
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    take_profit: f64,
-    context: ExitPlanContext,
-    required_samples: u32,
-    minimum_take_profit_percent: f64,
-) -> bool {
-    if !context.enforces_cascade_minimum() {
-        return true;
-    }
-    let Some(minimum_percent) = effective_minimum_percent(
-        cascade,
-        price,
-        required_samples,
-        minimum_take_profit_percent,
-    ) else {
-        return true;
-    };
-    let distance_percent = match side {
-        PositionState::Long => (take_profit - price) / price * 100.0,
-        PositionState::Short => (price - take_profit) / price * 100.0,
-        PositionState::Flat => return false,
-    };
-    distance_percent.is_finite() && distance_percent >= minimum_percent
-}
-
-fn clamp_take_profit(
-    price: f64,
-    side: PositionState,
-    raw_tp: f64,
-    structural_take_profit: f64,
-) -> f64 {
-    if !raw_tp.is_finite() || raw_tp <= 0.0 {
-        return 0.0;
-    }
-
-    let structural_valid = structural_take_profit.is_finite() && structural_take_profit > 0.0;
-    match side {
-        PositionState::Long => {
-            if structural_valid && structural_take_profit > price {
-                raw_tp.min(structural_take_profit)
-            } else {
-                raw_tp
-            }
-        }
-        PositionState::Short => {
-            if structural_valid && structural_take_profit < price {
-                raw_tp.max(structural_take_profit)
-            } else {
-                raw_tp
-            }
-        }
-        PositionState::Flat => raw_tp,
-    }
-}
-
-fn movement_plan(
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    structural: Option<(levels::LevelPoint, levels::LevelPoint)>,
-    required_samples: u32,
-) -> Option<ExitPlan> {
-    let tp_distance =
-        stop_loss::projected_move_distance(snapshot, sug_snapshot, cascade, required_samples)?;
-    if !price.is_finite() || price <= 0.0 {
-        return None;
-    }
-
-    let (structural_take_profit_level, structural_stop_loss_level) = structural?;
-    let structural_take_profit = structural_take_profit_level.value;
-    let stop_loss = stop_loss::support_break_level(snapshot, side, None, price)
-        .map(|price| StopLoss::SupportBreak {
-            price: price.max(f64::EPSILON),
-        })
-        .unwrap_or(StopLoss::Structural {
-            level: structural_stop_loss_level,
-        });
-
-    let plan = match side {
-        PositionState::Long => ExitPlan {
-            take_profit: TakeProfit::Movement {
-                price: clamp_take_profit(price, side, price + tp_distance, structural_take_profit),
-            },
-            stop_loss,
-            tp_reliable: true,
-        },
-        PositionState::Short => ExitPlan {
-            take_profit: TakeProfit::Movement {
-                price: clamp_take_profit(
-                    price,
-                    side,
-                    (price - tp_distance).max(f64::EPSILON),
-                    structural_take_profit,
-                ),
-            },
-            stop_loss,
-            tp_reliable: true,
-        },
-        PositionState::Flat => return None,
-    };
-
-    if plan.take_profit.price().is_finite()
-        && plan.stop_loss.price().is_finite()
-        && plan.take_profit.price() > 0.0
-        && plan.stop_loss.price() > 0.0
-    {
-        Some(plan)
-    } else {
-        None
-    }
-}
-
-pub fn build_exit_plan(
-    snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
-    cascade: &CascadeState,
-    price: f64,
-    side: PositionState,
-    context: ExitPlanContext,
-    required_samples: u32,
-    excluded_stop_losses: &[levels::LevelPoint],
-    minimum_take_profit_percent: f64,
-) -> Option<ExitPlan> {
-    if !price.is_finite() || price <= 0.0 {
-        return None;
-    }
-
-    let levels = levels::structural_levels(snapshot);
-    let structural = structural_plan(
-        &levels,
-        cascade,
-        price,
-        side,
-        context,
-        required_samples,
-        excluded_stop_losses,
-        minimum_take_profit_percent,
-    );
-
-    let candidate = if let Some(plan) = movement_plan(
-        snapshot,
-        sug_snapshot,
-        cascade,
-        price,
-        side,
-        structural,
-        required_samples,
-    ) {
-        if take_profit_meets_cascade_minimum(
-            cascade,
-            price,
-            side,
-            plan.take_profit.price(),
-            context,
-            required_samples,
-            minimum_take_profit_percent,
-        ) {
-            Some(plan)
-        } else {
-            None
-        }
-    } else {
-        match side {
-            PositionState::Long => {
-                let Some(raw_tp) = structural_take_profit_level(
-                    &levels,
-                    cascade,
-                    price,
-                    side,
-                    context,
-                    required_samples,
-                    minimum_take_profit_percent,
-                ) else {
-                    return None;
-                };
-                let Some(raw_sl) =
-                    structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
-                else {
-                    return None;
-                };
-
-                Some(ExitPlan {
-                    take_profit: TakeProfit::Structural { level: raw_tp },
-                    stop_loss: StopLoss::Structural { level: raw_sl },
-                    tp_reliable: true,
-                })
-            }
-            PositionState::Short => {
-                let Some(raw_tp) = structural_take_profit_level(
-                    &levels,
-                    cascade,
-                    price,
-                    side,
-                    context,
-                    required_samples,
-                    minimum_take_profit_percent,
-                ) else {
-                    return None;
-                };
-                let Some(raw_sl) =
-                    structural_stop_loss_level(&levels, price, side, excluded_stop_losses)
-                else {
-                    return None;
-                };
-
-                Some(ExitPlan {
-                    take_profit: TakeProfit::Structural { level: raw_tp },
-                    stop_loss: StopLoss::Structural { level: raw_sl },
-                    tp_reliable: true,
-                })
-            }
-            PositionState::Flat => None,
-        }
-    };
-
-    candidate
 }
 
 fn position_qty(input: &ModuleInput, side: PositionState) -> f64 {
@@ -536,73 +126,51 @@ fn tp_reprice_order_note(state: &EngineState, tick_size: f64, prefix: &str) -> S
     )
 }
 
-fn structural_stop_loss_note(state: &EngineState) -> String {
-    let active = state
-        .structural_stop_loss
-        .map(|level| format!("{}@{:.4}", level.label(), level.value))
-        .unwrap_or_else(|| "na".to_string());
-    let processed = if state.processed_structural_stop_losses.is_empty() {
-        "na".to_string()
-    } else {
-        state
-            .processed_structural_stop_losses
-            .iter()
-            .map(|level| format!("{}@{:.4}", level.label(), level.value))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    format!("active={active}|processed={processed}")
-}
-
 pub(crate) fn set_stop_loss(state: &mut EngineState, stop_loss: StopLoss) {
     state.position.stop_loss = stop_loss.price();
     state.position.stop_loss_reason = stop_loss.reason();
-    state.structural_stop_loss = stop_loss.structural_level();
-    if let Some(level) = state.structural_stop_loss {
-        if !state.processed_structural_stop_losses.contains(&level) {
-            state.processed_structural_stop_losses.push(level);
-        }
-    }
 }
 
 fn position_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
     reference_price: f64,
     side: PositionState,
-    context: ExitPlanContext,
+    _context: ExitPlanContext,
 ) -> Option<ExitPlan> {
     let plan = match state.position.entry_reason.as_ref() {
-        Some(EntryReason::MrcCrossing {
-            target_price,
-            stop_price,
-            ..
-        }) if target_price.is_finite()
-            && stop_price.is_finite()
-            && *target_price > 0.0
-            && *stop_price > 0.0 =>
-        {
-            Some(ExitPlan {
+        Some(reason @ EntryReason::MrcCrossing { .. }) => {
+            let levels = if snapshot.tf1m.mrc.ordered() {
+                crate::detection::mrc_crossing::exit_levels(
+                    reason,
+                    snapshot.tf1m.mrc.lines(),
+                    reference_price,
+                )
+            } else {
+                match reason {
+                    EntryReason::MrcCrossing {
+                        target_price,
+                        stop_price,
+                        ..
+                    } if target_price.is_finite()
+                        && stop_price.is_finite()
+                        && *target_price > 0.0
+                        && *stop_price > 0.0 =>
+                    {
+                        Some((*target_price, *stop_price))
+                    }
+                    _ => None,
+                }
+            };
+            levels.map(|(target_price, stop_price)| ExitPlan {
                 take_profit: TakeProfit::Fixed {
-                    price: *target_price,
+                    price: target_price,
                 },
-                stop_loss: StopLoss::Fixed { price: *stop_price },
+                stop_loss: StopLoss::Fixed { price: stop_price },
                 tp_reliable: true,
             })
         }
-        Some(EntryReason::MrcCrossing { .. }) => None,
-        _ => build_exit_plan(
-            snapshot,
-            sug_snapshot,
-            &state.cascade_tf,
-            reference_price,
-            side,
-            context,
-            state.cfg.required_samples(),
-            &state.processed_structural_stop_losses,
-            state.cfg.min_tp_percent(),
-        ),
+        None => None,
     };
     plan.and_then(|plan| {
         guard::minimum_exit_distances::enforce_minimum_exit_distances(
@@ -624,14 +192,12 @@ type ActiveExitResult = (
 pub(crate) fn entry_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
     reference_price: f64,
     side: PositionState,
 ) -> Option<ExitPlan> {
     position_exit_plan(
         state,
         snapshot,
-        sug_snapshot,
         reference_price,
         side,
         ExitPlanContext::Entry,
@@ -649,7 +215,6 @@ fn ensure_trailing_exit_order(
     input: &ModuleInput,
     state: &mut EngineState,
     snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
 ) -> ActiveExitResult {
     let direction = match side {
@@ -668,17 +233,10 @@ fn ensure_trailing_exit_order(
         } else {
             input.price
         };
-        let Some(plan) = entry_exit_plan(state, snapshot, sug_snapshot, reference_price, side)
-        else {
+        let Some(plan) = entry_exit_plan(state, snapshot, reference_price, side) else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
-        state.position.exit_mode = if matches!(plan.take_profit, TakeProfit::Fixed { .. })
-            && matches!(plan.stop_loss, StopLoss::Fixed { .. })
-        {
-            ExitMode::Fixed
-        } else {
-            ExitMode::Structural
-        };
+        state.position.exit_mode = ExitMode::Fixed;
         state.position.take_profit = plan.take_profit.price();
         set_stop_loss(state, plan.stop_loss);
         state.position.exit_tp_reliable = plan.tp_reliable;
@@ -799,7 +357,7 @@ fn ensure_trailing_exit_order(
         return (Vec::new(), Vec::new(), Vec::new());
     }
 
-    // Recalculate structural and movement plans on their normal cadence.
+    // Recalculate the MRC plan on its normal cadence.
     let recalculate_virtual_sl = matches!(
         state.position.exit_type,
         ExitType::VirtualTrailingExit { .. }
@@ -812,7 +370,6 @@ fn ensure_trailing_exit_order(
         position_exit_plan(
             state,
             snapshot,
-            sug_snapshot,
             input.price,
             side,
             ExitPlanContext::ActiveReprice,
@@ -855,12 +412,11 @@ fn ensure_trailing_exit_order(
                 plan.take_profit.source_label(),
                 false,
                 format!(
-                    "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|sl_levels={}|mark={}|tick={:.4}",
+                    "tp_reliable={}|mode={}|price={:.4}|sl={:.4}|mark={}|tick={:.4}",
                     plan.tp_reliable,
                     state.position.exit_mode.as_str(),
                     input.price,
                     state.position.stop_loss,
-                    structural_stop_loss_note(state),
                     mark,
                     tick
                 ),
@@ -890,10 +446,9 @@ pub(crate) fn ensure_active_exit_order(
     input: &ModuleInput,
     state: &mut EngineState,
     snapshot: &IndicatorSnapshot,
-    sug_snapshot: &SugInfoSnapshot,
     side: PositionState,
 ) -> ActiveExitResult {
-    ensure_trailing_exit_order(input, state, snapshot, sug_snapshot, side)
+    ensure_trailing_exit_order(input, state, snapshot, side)
 }
 
 pub fn describe(plan: Option<ExitPlan>) -> String {
@@ -910,242 +465,5 @@ pub fn describe(plan: Option<ExitPlan>) -> String {
             }
         ),
         None => "tp=n/a sl=n/a".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{Candle, MrcBands, SugInfoSnapshot, TimeframeSnapshot};
-
-    fn tf(close: f64) -> TimeframeSnapshot {
-        TimeframeSnapshot {
-            candle: Candle {
-                open: close,
-                high: close + 1.0,
-                low: close - 1.0,
-                close,
-            },
-            mrc: MrcBands {
-                down_big: 80.0,
-                down_outer: 85.0,
-                down_small: 90.0,
-                down_inner: 95.0,
-                mean_line: 100.0,
-                up_inner: 105.0,
-                up_small: 110.0,
-                up_outer: 115.0,
-                up_big: 120.0,
-                current_cross: 0.0,
-                mean_line_slope: 0.0,
-            },
-            zz_dir: 0,
-            zz_buy_price: Some(close - 5.0),
-            zz_sell_price: Some(close + 5.0),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn long_plan_prefers_structural_levels() {
-        let snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        let sug = SugInfoSnapshot::default();
-        let cascade = CascadeState {
-            avg_size: 5.0,
-            samples: 3,
-            ..Default::default()
-        };
-        let plan = build_exit_plan(
-            &snapshot,
-            &sug,
-            &cascade,
-            100.0,
-            PositionState::Long,
-            ExitPlanContext::Candidate,
-            3,
-            &[],
-            0.0,
-        )
-        .unwrap();
-        assert!(plan.take_profit.price() > 100.0);
-        assert!(plan.stop_loss.price() < 100.0);
-    }
-
-    #[test]
-    fn short_plan_prefers_structural_levels() {
-        let snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        let sug = SugInfoSnapshot::default();
-        let cascade = CascadeState {
-            avg_size: 5.0,
-            samples: 3,
-            ..Default::default()
-        };
-        let plan = build_exit_plan(
-            &snapshot,
-            &sug,
-            &cascade,
-            100.0,
-            PositionState::Short,
-            ExitPlanContext::Candidate,
-            3,
-            &[],
-            0.0,
-        )
-        .unwrap();
-        assert!(plan.take_profit.price() < 100.0);
-        assert!(plan.stop_loss.price() > 100.0);
-    }
-
-    #[test]
-    fn structural_stop_skips_mrc_side_and_mean_line() {
-        let mut long_snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        long_snapshot.tf1m.zz_buy_price = None;
-        long_snapshot.tf1m.zz_sell_price = None;
-        long_snapshot.tf5m.zz_buy_price = None;
-        long_snapshot.tf5m.zz_sell_price = None;
-        long_snapshot.tf15m.zz_buy_price = None;
-        long_snapshot.tf15m.zz_sell_price = None;
-        long_snapshot.tf1m.zz_buy_price = Some(94.0);
-        let long_plan = build_exit_plan(
-            &long_snapshot,
-            &SugInfoSnapshot::default(),
-            &CascadeState::default(),
-            100.0,
-            PositionState::Long,
-            ExitPlanContext::Candidate,
-            3,
-            &[],
-            0.0,
-        )
-        .unwrap();
-        assert!(long_plan.stop_loss.price() < 100.0);
-
-        let short_snapshot = long_snapshot;
-        let mut short_snapshot = short_snapshot;
-        short_snapshot.tf1m.zz_sell_price = Some(106.0);
-        let short_plan = build_exit_plan(
-            &short_snapshot,
-            &SugInfoSnapshot::default(),
-            &CascadeState::default(),
-            100.0,
-            PositionState::Short,
-            ExitPlanContext::Candidate,
-            3,
-            &[],
-            0.0,
-        )
-        .unwrap();
-        assert!(short_plan.stop_loss.price() > 100.0);
-    }
-
-    #[test]
-    fn no_structural_tp_meets_cascade_minimum() {
-        let snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        let sug = SugInfoSnapshot {
-            fast_candle: Some(crate::model::FastCandleSnapshot {
-                candle: Candle {
-                    open: 100.0,
-                    high: 120.0,
-                    low: 80.0,
-                    close: 110.0,
-                },
-                active: true,
-            }),
-            ..Default::default()
-        };
-        let cascade = CascadeState {
-            avg_size: 50.0,
-            samples: 5,
-            ..Default::default()
-        };
-
-        assert!(build_exit_plan(
-            &snapshot,
-            &sug,
-            &cascade,
-            100.0,
-            PositionState::Long,
-            ExitPlanContext::Entry,
-            3,
-            &[],
-            0.0,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn cascade_minimum_selects_next_structural_level() {
-        let mut snapshot = IndicatorSnapshot {
-            tf1m: tf(100.0),
-            tf5m: tf(100.0),
-            tf15m: tf(100.0),
-            tf1h: tf(100.0),
-            ..Default::default()
-        };
-        snapshot.tf1m.mrc.up_inner = 101.0;
-        snapshot.tf1m.mrc.up_small = 105.0;
-        snapshot.tf1m.mrc.up_outer = 110.0;
-        let cascade = CascadeState {
-            avg_size: 5.0,
-            samples: 3,
-            ..Default::default()
-        };
-
-        let plan = build_exit_plan(
-            &snapshot,
-            &SugInfoSnapshot::default(),
-            &cascade,
-            100.0,
-            PositionState::Long,
-            ExitPlanContext::Entry,
-            3,
-            &[],
-            0.0,
-        )
-        .unwrap();
-
-        assert_eq!(plan.take_profit.price(), 105.0);
-        assert!(plan
-            .take_profit
-            .order_note()
-            .contains("tp:structural|level="));
-
-        let configured_minimum_plan = build_exit_plan(
-            &snapshot,
-            &SugInfoSnapshot::default(),
-            &cascade,
-            100.0,
-            PositionState::Long,
-            ExitPlanContext::Entry,
-            3,
-            &[],
-            6.0,
-        )
-        .unwrap();
-        assert_eq!(configured_minimum_plan.take_profit.price(), 110.0);
     }
 }

@@ -53,30 +53,10 @@ pub fn enforce_minimum_exit_distances(
         return None;
     }
 
-    let take_profit = match plan.take_profit {
-        TakeProfit::Structural { mut level } => {
-            level.value = target_price;
-            TakeProfit::Structural { level }
-        }
-        TakeProfit::Movement { .. } => TakeProfit::Movement {
-            price: target_price,
-        },
-        TakeProfit::Sideway { .. } => TakeProfit::Sideway {
-            price: target_price,
-        },
-        TakeProfit::Fixed { .. } => TakeProfit::Fixed {
-            price: target_price,
-        },
+    let take_profit = TakeProfit::Fixed {
+        price: target_price,
     };
-    let stop_loss = match plan.stop_loss {
-        StopLoss::Structural { mut level } => {
-            level.value = stop_price;
-            StopLoss::Structural { level }
-        }
-        StopLoss::Sideway { .. } => StopLoss::Sideway { price: stop_price },
-        StopLoss::SupportBreak { .. } => StopLoss::SupportBreak { price: stop_price },
-        StopLoss::Fixed { .. } => StopLoss::Fixed { price: stop_price },
-    };
+    let stop_loss = StopLoss::Fixed { price: stop_price };
 
     match side {
         PositionState::Long if target_price > entry_price && stop_price < entry_price => {}

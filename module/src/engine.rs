@@ -1,13 +1,11 @@
-use crate::builder;
 use crate::debug;
-use crate::detection::{cascade, mrc_crossing, regime, sideways, vlines};
+use crate::detection::{mrc_crossing, mrc_pattern_classification, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
-use crate::model::{exit_type_for_strategy, EntryType, ExitMode, StrategyMode};
+use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
-use crate::prediction;
 use crate::risk;
 use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
 use lte_strategy_bridge::abi::{
@@ -18,8 +16,6 @@ use lte_strategy_bridge::sug_info::SuggestionInfo;
 
 const TF_1M: i64 = TimeframeSec::Tf1m.as_i64();
 const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
-const TF_15M: i64 = TimeframeSec::Tf15m.as_i64();
-const TF_1H: i64 = TimeframeSec::Tf1h.as_i64();
 
 fn snapshot_error(
     event: &str,
@@ -68,7 +64,7 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
     match &input.event {
         ModuleEvent::Init => {
             state.history.init(&input.indicators);
-            refresh_indicators(input, state, &[TF_1M, TF_5M, TF_15M, TF_1H], true)
+            refresh_indicators(input, state, &[TF_1M, TF_5M], true)
         }
         ModuleEvent::Indicators { timeframes } => {
             state.history.update(&input.indicators, timeframes);
@@ -126,7 +122,6 @@ fn handle_signal(
     if code == "start" {
         state.allowed_direction = *direction;
         state.trade_budget = 0.0;
-        state.movement_entry_pending = None;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
@@ -145,13 +140,6 @@ fn handle_signal(
             values.get("risk_target_percent").and_then(|v| v.as_f64())
         {
             state.cfg.risk_target_percent = risk_target_percent.max(0.0);
-        }
-        if let Some(strategy_mode) = values.get("strategy_mode").and_then(|v| v.as_f64()) {
-            state.cfg.strategy_mode = if strategy_mode >= 1.0 {
-                StrategyMode::MrcCrossing
-            } else {
-                StrategyMode::Stairs
-            };
         }
         if let Some(entry_type) = values
             .get("entry_type")
@@ -172,33 +160,42 @@ fn handle_signal(
             state.cfg.required_samples =
                 required_samples.round().clamp(0.0, u32::MAX as f64) as u32;
         }
-        if state.cfg.strategy_mode == StrategyMode::MrcCrossing {
-            state.mrc_crossing_model = crate::state::MrcCrossingModel::default();
-            state.vlines = [crate::state::VLineState::default(); 9];
-            state.mrc_crossing = crate::state::MrcCrossingState::default();
-            if let Some(now_ms) = input
-                .sug_info
-                .as_ref()
-                .map(|sug_info| sug_info.time)
-                .filter(|time| *time > 0)
-                .map(|time| time as u64)
-            {
-                mrc_crossing::seed_from_history(
-                    &mut state.mrc_crossing_model,
-                    &mut state.vlines,
-                    &mut state.mrc_crossing,
-                    &state.history,
-                    now_ms,
-                );
-            }
+        // Restart the market sequence, not the learned ledger. Pattern
+        // performance must survive a fresh start signal so the selector can
+        // keep improving instead of relearning from zero every session.
+        state.mrc_crossing_model.history.clear();
+        state.mrc_crossing_model.seeded_from_history = false;
+        state.mrc_crossing_model.last_line = None;
+        state.mrc_crossing_model.last_direction = 0;
+        state.mrc_crossing_model.last_event_ms = 0;
+        state.mrc_crossing_model.current_entry = None;
+        state.mrc_crossing_model.active_pattern = None;
+        state.mrc_crossing_model.active_pattern_score = 0.0;
+        state.mrc_crossing_model.active_pattern_since_ms = 0;
+        state.mrc_crossing_model.last_plan_key = None;
+        state.vlines = [crate::state::VLineState::default(); 9];
+        state.mrc_crossing = crate::state::MrcCrossingState::default();
+        if let Some(now_ms) = input
+            .sug_info
+            .as_ref()
+            .map(|sug_info| sug_info.time)
+            .filter(|time| *time > 0)
+            .map(|time| time as u64)
+        {
+            mrc_crossing::seed_from_history(
+                &mut state.mrc_crossing_model,
+                &mut state.vlines,
+                &mut state.mrc_crossing,
+                &state.history,
+                now_ms,
+            );
         }
-        state.strategy_builder = Some(builder::InitialBuilder::new().build());
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
                 "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} exit={:?}",
                 state.allowed_direction,
-                state.cfg.strategy_mode.as_str(),
+                "pattern-engine",
                 state.cfg.entry_type.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
@@ -206,7 +203,7 @@ fn handle_signal(
                 state.cfg.min_sl_percent(),
                 state.cfg.risk_target_percent(),
                 state.cfg.required_samples(),
-                exit_type_for_strategy(state.cfg.strategy_mode)
+                MRC_CROSSING_EXIT_TYPE
             ),
             ..Default::default()
         }
@@ -235,8 +232,6 @@ fn handle_new_position(
     direction: Direction,
     entry_price: f64,
 ) -> ModuleOutput {
-    state.structural_stop_loss = None;
-    state.processed_structural_stop_losses.clear();
     state.position = PositionRuntime {
         side: dir_to_position(direction),
         entry_price,
@@ -246,29 +241,24 @@ fn handle_new_position(
         stop_loss: 0.0,
         stop_loss_reason: String::new(),
         exit_tp_reliable: false,
-        exit_mode: ExitMode::Structural,
-        exit_type: exit_type_for_strategy(state.cfg.strategy_mode),
+        exit_mode: ExitMode::Fixed,
+        exit_type: MRC_CROSSING_EXIT_TYPE,
         entry_reason: state.position.entry_reason.clone(),
     };
     state.mrc_crossing_model.current_entry = None;
     state.pending_entry_bar = None;
 
     let side = dir_to_position(direction);
-    state.strategy_builder = Some(builder::InitialBuilder::new().build());
-    builder::ensure_runtime_builder(state);
-    let snapshot = if state
-        .position
-        .entry_reason
-        .as_ref()
-        .is_some_and(|reason| matches!(reason, crate::model::EntryReason::MrcCrossing { .. }))
-    {
-        state.last_snapshot.unwrap_or_default()
-    } else {
-        match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let error =
-                    snapshot_error("Init", "tfs=[60,300,900,3600]", &input.indicators, error);
+    let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let is_mrc = state.position.entry_reason.as_ref().is_some_and(|reason| {
+                matches!(reason, crate::model::EntryReason::MrcCrossing { .. })
+            });
+            if is_mrc {
+                state.last_snapshot.unwrap_or_default()
+            } else {
+                let error = snapshot_error("Init", "tfs=[60,300]", &input.indicators, error);
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
                     debug: error,
@@ -277,20 +267,11 @@ fn handle_new_position(
             }
         }
     };
-    let plan = input.sug_info.as_ref().and_then(|sug_info| {
-        let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-        exit::entry_exit_plan(state, &snapshot, &sug_snapshot, entry_price, side)
-    });
+    let plan = exit::entry_exit_plan(state, &snapshot, entry_price, side);
     let mut tp_orders = Vec::new();
     let order_mark = tp_mark(direction);
     if let Some(plan) = plan {
-        state.position.exit_mode = if matches!(plan.take_profit, exit::TakeProfit::Fixed { .. })
-            && matches!(plan.stop_loss, exit::StopLoss::Fixed { .. })
-        {
-            ExitMode::Fixed
-        } else {
-            ExitMode::Structural
-        };
+        state.position.exit_mode = ExitMode::Fixed;
         state.position.take_profit = plan.take_profit.price();
         exit::set_stop_loss(state, plan.stop_loss);
         let qty = input
@@ -330,10 +311,13 @@ fn handle_finish_position(
     direction: Direction,
     pnl: f64,
 ) -> ModuleOutput {
+    mrc_crossing::record_trade_result(
+        &mut state.mrc_crossing_model,
+        state.position.entry_reason.as_ref(),
+        pnl,
+    );
     risk::apply_close_pnl(input, state, pnl);
     if state.position.side == dir_to_position(direction) {
-        state.structural_stop_loss = None;
-        state.processed_structural_stop_losses.clear();
         state.position = PositionRuntime::default();
         state.pending_entry_bar = None;
     }
@@ -384,10 +368,9 @@ mod tests {
     }
 
     #[test]
-    fn start_selects_mrc_crossing_without_changing_stairs_default() {
+    fn start_initializes_the_pattern_engine() {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
-        values.insert("strategy_mode".to_string(), serde_json::json!(1.0));
         values.insert("entry_type".to_string(), serde_json::json!(0.0));
         values.insert("required_samples".to_string(), serde_json::json!(5.0));
         values.insert("min_sl_percent".to_string(), serde_json::json!(0.75));
@@ -400,8 +383,7 @@ mod tests {
             }),
             &mut state,
         );
-        assert!(output.debug.contains("strategy=mrc-crossing"));
-        assert_eq!(state.cfg.strategy_mode, StrategyMode::MrcCrossing);
+        assert!(output.debug.contains("strategy=pattern-engine"));
         assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
         assert_eq!(state.cfg.min_sl_percent(), 0.75);
@@ -410,10 +392,6 @@ mod tests {
         assert!(output.debug.contains("min_sl_percent=0.75%"));
         assert!(output.debug.contains("risk_target_percent=1.25%"));
         assert!(output.debug.contains("entry=market"));
-        assert_eq!(
-            EngineState::default().cfg.strategy_mode,
-            StrategyMode::Stairs
-        );
     }
 }
 
@@ -474,7 +452,6 @@ fn refresh_indicators(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     if is_init || timeframes.contains(&TF_1M) {
-        cascade::update(&mut state.cascade_tf, &snapshot.tf1m);
         state.volume_gain.observe(
             state.bar_1m,
             snapshot.tf1m.volume_gain,
@@ -528,9 +505,7 @@ fn process_realtime(
     };
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
-    let strategy = builder::ensure_runtime_builder(state);
-    let is_mrc_crossing = state.cfg.strategy_mode == StrategyMode::MrcCrossing;
-    if is_mrc_crossing && !state.mrc_crossing_model.seeded_from_history {
+    if !state.mrc_crossing_model.seeded_from_history {
         mrc_crossing::seed_from_history(
             &mut state.mrc_crossing_model,
             &mut state.vlines,
@@ -547,43 +522,38 @@ fn process_realtime(
         state.ticks,
         sug_info.time as u64,
     );
-    let sug_snapshot = market_data::build_sug_info_snapshot(sug_info);
-    let candle = crate::model::Candle {
-        open: sug_info.candle.enter,
-        high: sug_info.candle.max,
-        low: sug_info.candle.min,
-        close: sug_info.candle.exit,
-    };
-    let cas_tf = cascade::preview_from_candle(&state.cascade_tf, &candle);
-    let sideway = sideways::analyze(state, &snapshot.tf1m);
     state
         .mrc_risk
-        .observe(&snapshot, &sug_snapshot, input.price, sug_info.time as u64);
+        .observe(&snapshot, input.price, sug_info.time as u64);
 
-    let mrc_observation = if is_mrc_crossing {
-        Some(mrc_crossing::observe_with_context(
-            &mut state.mrc_crossing_model,
-            &mrc_events,
-            snapshot.tf1m.mrc.lines(),
-            &state.mrc_crossing,
-            cas_tf,
-            (
-                snapshot.tf1m.volume_gain,
-                snapshot.tf1m.volume_gain_min,
-                snapshot.tf1m.volume_gain_max,
-                snapshot.tf1m.buy_sell_gain,
-            ),
-        ))
-    } else {
-        None
-    };
+    let mrc_observation = mrc_crossing::observe_with_forecast(
+        &mut state.mrc_crossing_model,
+        &mrc_events,
+        snapshot.tf1m.mrc.lines(),
+        &state.mrc_crossing,
+        (
+            snapshot.tf1m.volume_gain,
+            snapshot.tf1m.volume_gain_min,
+            snapshot.tf1m.volume_gain_max,
+            snapshot.tf1m.buy_sell_gain,
+        ),
+        input.price,
+        sug_info.time as u64,
+    );
 
-    let regime = regime::classify_regime(&snapshot.tf5m, &snapshot.tf15m, &snapshot.tf1h);
-    state.direction_source = "regime".to_string();
-    state.direction_reason = regime::direction_reason(&snapshot.tf5m, &snapshot.tf15m);
+    state.direction_source = "pattern-selector".to_string();
+    state.direction_reason = mrc_observation
+        .selected_pattern
+        .map(|pattern| pattern.as_str().to_string())
+        .unwrap_or_else(|| {
+            mrc_observation
+                .wait_reason
+                .map(|reason| format!("wait:{reason:?}"))
+                .unwrap_or_else(|| "no-candidate".to_string())
+        });
     let mrc_reason_direction = mrc_observation
+        .entry
         .as_ref()
-        .and_then(|observation| observation.entry.as_ref())
         .map(mrc_crossing::reason_direction)
         .or_else(|| {
             state
@@ -592,50 +562,42 @@ fn process_realtime(
                 .as_ref()
                 .map(mrc_crossing::reason_direction)
         });
-    let entry_direction = if is_mrc_crossing {
-        mrc_reason_direction
-            .filter(|direction| *direction != 0)
-            .map(mrc_crossing::market_state)
-            .unwrap_or_else(|| mrc_crossing::market_state(state.mrc_crossing_model.last_direction))
-    } else {
-        regime.confirmed
-    };
-    let entry_side = match entry_direction {
-        crate::model::MarketState::Long => crate::model::PositionState::Long,
-        crate::model::MarketState::Short => crate::model::PositionState::Short,
-        crate::model::MarketState::Sideways => crate::model::PositionState::Flat,
-    };
-    let entry_gate = if is_mrc_crossing {
-        let mut gate = prediction::mrc_crossing_entry_gate(state);
-        if let Some(observation) = mrc_observation {
-            if let Some(reason) = observation.entry {
-                let direction = match entry_direction {
-                    crate::model::MarketState::Long => 1,
-                    crate::model::MarketState::Short => -1,
-                    crate::model::MarketState::Sideways => 0,
-                };
-                let valid = match &reason {
-                    crate::model::EntryReason::MrcCrossing {
-                        price,
-                        target_price,
-                        stop_price,
-                        ..
-                    } => mrc_crossing::valid_price_levels(
-                        direction,
-                        *price,
-                        *target_price,
-                        *stop_price,
-                        Some(input.symbol_info.price_tick_size),
-                    ),
-                    _ => false,
-                };
-                if valid {
-                    let analysis_note = observation
-                        .events
-                        .last()
+    let entry_direction = mrc_reason_direction
+        .filter(|direction| *direction != 0)
+        .map(mrc_crossing::market_state)
+        .unwrap_or_else(|| mrc_crossing::market_state(state.mrc_crossing_model.last_direction));
+    let entry_gate = {
+        let mut gate = mrc_crossing::entry_gate(&state.mrc_crossing_model);
+        if let Some(reason) = mrc_observation.entry {
+            let direction = match entry_direction {
+                crate::model::MarketState::Long => 1,
+                crate::model::MarketState::Short => -1,
+                crate::model::MarketState::Sideways => 0,
+            };
+            let crate::model::EntryReason::MrcCrossing {
+                price,
+                target_price,
+                stop_price,
+                pattern_kind,
+                ..
+            } = &reason;
+            let valid = mrc_crossing::valid_price_levels_for_pattern(
+                direction,
+                *price,
+                *target_price,
+                *stop_price,
+                Some(input.symbol_info.price_tick_size),
+                mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
+            );
+            if valid {
+                let analysis_note = mrc_observation
+                        .forecast
+                        .as_ref()
+                        .or_else(|| mrc_observation.events.last())
                         .map(|event| {
                             format!(
-                                "pattern={} steps={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} probability={}/{}={:.4} history_scope={} trigger_move_pct={} cascade_dir={} cascade_strength={:.3} volume_gain={:.3}",
+                                "forecast={} pattern={} steps={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} buy_sell_gain={:.3}",
+                                mrc_observation.forecast.is_some(),
                                 event
                                     .pattern_kind
                                     .map(|kind| kind.as_str())
@@ -669,9 +631,6 @@ fn process_realtime(
                                     .map(|line| mrc_crossing::LINE_LABELS[line as usize])
                                     .unwrap_or("na"),
                                 event.stop_price.unwrap_or(0.0),
-                                event.target_samples,
-                                event.pattern_samples,
-                                event.probability.unwrap_or(0.0),
                                 if event.context_samples > 0 {
                                     "contextual"
                                 } else {
@@ -681,70 +640,54 @@ fn process_realtime(
                                     .effective_move_pct
                                     .map(|value| format!("{value:.4}%"))
                                     .unwrap_or_else(|| "na".to_string()),
-                                event.cascade_dir,
-                                event.cascade_strength,
                                 event.volume_gain,
+                                event.buy_sell_gain,
                             )
                         });
-                    let mut notes = vec![
-                        "strategy=mrc-crossing".to_string(),
-                        format!("samples={}", observation.samples),
-                    ];
-                    if let Some(analysis_note) = analysis_note {
-                        notes.push(analysis_note);
-                    }
-                    gate = crate::model::EntryGate::Open {
-                        notes,
-                        reason: crate::model::EntryOpenReason::Entry(reason),
-                    };
-                } else {
-                    state.mrc_crossing_model.current_entry = None;
-                    gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
-                        reason: "mrc-invalid-exit-levels".to_string(),
-                        solutions: Vec::new(),
-                        notes: vec!["MRC target/stop collapse to the entry tick".to_string()],
-                    });
+                let mut notes = vec![
+                    "strategy=pattern-engine".to_string(),
+                    format!("samples={}", mrc_observation.samples),
+                    format!(
+                        "selected_pattern={}",
+                        mrc_observation
+                            .selected_pattern
+                            .map(|p| p.as_str())
+                            .unwrap_or("none")
+                    ),
+                    format!(
+                        "selected_score={:.4}",
+                        mrc_observation.selected_score.unwrap_or(0.0)
+                    ),
+                ];
+                if let Some(analysis_note) = analysis_note {
+                    notes.push(analysis_note);
                 }
-            } else if let Some(wait_reason) = observation.wait_reason {
-                gate = prediction::mrc_wait_entry_gate(state, wait_reason);
+                gate = crate::model::EntryGate::Open {
+                    notes,
+                    reason: crate::model::EntryOpenReason::Entry(reason),
+                };
+            } else {
+                state.mrc_crossing_model.current_entry = None;
+                gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
+                    reason: "mrc-invalid-exit-levels".to_string(),
+                    solutions: Vec::new(),
+                    notes: vec!["MRC target/stop collapse to the entry tick".to_string()],
+                });
             }
+        } else if let Some(wait_reason) = mrc_observation.wait_reason {
+            gate = mrc_crossing::wait_entry_gate(wait_reason);
         }
         gate
-    } else {
-        prediction::entry_gate(&snapshot, &sug_snapshot, &cas_tf, state, entry_side)
     };
     let base_decision = crate::model::TradeDecision {
         market_state: entry_direction,
         entry: entry_gate,
     };
-    let decision = if is_mrc_crossing {
-        // MRC crossing is a self-contained signal path. The generic builder
-        // may rewrite structural entries from sideways/cascade inputs, which
-        // are unrelated to the MRC crossing model.
-        base_decision
-    } else {
-        strategy.refine_realtime_decision(
-            state,
-            &snapshot,
-            &sug_snapshot,
-            &sideway,
-            regime,
-            &cas_tf,
-            sug_info,
-            base_decision,
-        )
-    };
-    state
-        .direction_history
-        .observe(decision.market_state, input.price, sug_info.time as u64);
-
-    let execution =
-        execution::evaluate_with_cascade(input, state, &snapshot, &sug_snapshot, &decision);
+    let decision = base_decision;
+    let execution = execution::evaluate_with_mrc(input, state, &snapshot, &decision);
     let debug = debug::render(
         state,
         &snapshot,
-        &regime,
-        &cas_tf,
         &decision,
         execution
             .as_ref()

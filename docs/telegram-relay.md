@@ -6,7 +6,7 @@ This repo includes a small local relay that can forward LAB signal messages into
 
 - receives a local `POST /send` request
 - forwards the text to Telegram using your bot token
-- lets the LAB fast-candle watcher send signal-only messages without clutter
+- lets the LAB MRC/volume watcher send signal-only messages without clutter
 - when a message is sent as a reply, the relay routes it into the channel's linked discussion chat so TP/SL/refresh messages become comments under the root post
 
 ## Files
@@ -64,9 +64,7 @@ The LAB watcher sends:
 - signal kind
 - current price
 - candle movement %
-- fast-candle movement %
-- NTPS
-- 1m / 5m / 30m / 1h MRC and DP context
+- 1m / 5m MRC and volume context
 - root signals are posted to the channel
 - refresh, TP, SL, replacement, and flip messages are sent as replies under the mirrored discussion anchor, so they appear as comments in the linked discussion chat
 

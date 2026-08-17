@@ -2,9 +2,23 @@
 
 This document defines the seven MRC movement classifications used by research.
 They describe local, reusable behavior around MRC lines. They are not a
-complete historical crossing path. The active MRC crossing strategy uses the
-matched classification as its direction prediction and opens a trade only when
-the pattern has supporting movement evidence and valid MRC target/stop levels.
+complete historical crossing path. The pattern engine runs every matcher on
+each observation, keeps overlapping matches, and evaluates each match as an
+independent candidate.
+
+The live and research architecture has three separate stages:
+
+1. `classify_all` detects every currently matching pattern;
+2. the predictor builds one candidate and score per matched pattern;
+3. the selector keeps the best pattern active until a challenger beats it by
+   the switch margin.
+
+Each pattern has its own performance ledger. A ledger starts with movement
+evidence, then learns from net realized trade PnL using an EMA. Research runs
+one virtual account per pattern in parallel, while live execution trades only
+the currently selected candidate. This prevents a profitable staircase from
+being diluted by results from a different pattern and makes pattern selection
+adaptive over time.
 
 The line order is fixed:
 
@@ -20,6 +34,12 @@ The line order is fixed:
 8 up_big
 ```
 
+Every plan still requires a directionally valid target and stop. The general
+reward-versus-risk floor is retained for reversal and barrier-driven patterns,
+but adjacent `STAIRS_UP`, `STAIRS_DOWN`, and `OUTWARD_CONTINUATION` legs may
+continue when their next MRC target is valid. This keeps an MRC stop
+from suppressing the stair sequence itself.
+
 An observation records the local movement that just finished:
 
 - source and destination MRC line;
@@ -33,20 +53,13 @@ An observation records the local movement that just finished:
 
 The same movement can develop through several classifications. For example,
 an `OUTWARD_CONTINUATION` can be followed by `STAIRS_UP`, while a rejected
-next line can instead produce `FAST_BREAK_RETURN`. The live decision uses the
-most specific currently recognized classification, with this precedence:
+next line can instead produce `FAST_BREAK_RETURN`. These are parallel
+candidates, not a hard-coded precedence chain. The score combines the
+pattern's learned route value with realized net PnL; a small switch margin
+prevents noisy one-tick oscillation between patterns.
 
-```text
-FAST_BREAK_RETURN
-PULLBACK_TO_INNER
-STAIRS_UP / STAIRS_DOWN
-RANGE_CYCLE_SIDEWAY / TRENDING_CYCLE
-OUTWARD_CONTINUATION
-```
-
-The direction is taken from that classification. A route probability is only
-supporting evidence for the selected MRC destination; it is not used to flip
-the direction or to trade an unclassified event.
+The direction is taken from that classification. The exact outcome counts are
+supporting evidence; they are not a percentage or the trade win rate.
 
 ## 1. `STAIRS_UP`
 
@@ -110,8 +123,9 @@ Price crosses one adjacent line and quickly returns to the exact source line:
 A -> adjacent B -> A
 ```
 
-This means that `B` may be acting as resistance or support rather than as a
-continuation level.
+This makes `B` a candidate resistance/support line, but it does not decide the
+trade direction by itself. A return to `A` can still be followed by a reclaim
+of `B`.
 
 ### Detection
 
@@ -129,8 +143,19 @@ constant.
 
 ### Prediction
 
-After the return, treat `B` as a possible barrier. A failed upward break is
-evidence for resistance; a failed downward break is evidence for support.
+The predictor searches historical instances with the exact same source line
+`A`, crossed line `B`, and original break direction. It then labels the next
+movement as one of:
+
+- `rejection`: movement away from `B`;
+- `continuation`: reclaim toward and through `B`;
+- `neutral`: no directional movement.
+
+The crossed line `B` is the actual support/resistance barrier in the analysis.
+The strategy follows only a strict count majority of the exact outcomes. A
+tie, neutral majority, or absence of an exact historical outcome produces no
+directional prediction. Therefore `A -> B -> A` is not an automatic
+counter-trend entry.
 
 ## 4. `RANGE_CYCLE_SIDEWAY`
 
@@ -238,7 +263,10 @@ The classifier and the outcome ledger are separate:
 - the classifier describes what happened;
 - the daily history stores how often it happened and what followed;
 - the virtual/live trade result later labels whether a trade based on that
-  observation won or lost.
+  observation won or lost;
+- a target hit advances the continuation leg to the next unbroken MRC line,
+  allowing the selected staircase/outward pattern to keep trading the trend;
+- a different pattern takes control only when its score is materially better.
 
 Movement success is not trade win rate. A movement can reach a favorable price
 but still produce a losing trade because of entry fill, stop placement, fees,

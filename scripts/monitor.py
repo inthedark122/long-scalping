@@ -37,14 +37,13 @@ def tf_line(tf: int) -> str:
     ind = snap.get("indicators", {})
     candle = ind.get("candle", {})
     mrc = ind.get("mrc_200", {})
-    smc = ind.get("smc", {})
-    zz = ind.get("zigzagtrend", {})
+    volume = ind.get("volume_50", {})
     return (
         f"{tf:>4}s close={fmt(candle.get('Close'))} "
-        f"smc={smc.get('Direction', 'NEUTRAL'):>5} "
-        f"zz={zz.get('Direction', 'NEUTRAL'):>5} "
         f"ml={fmt(mrc.get('MeanLine'))} "
-        f"cross={mrc.get('CurrentCross', 'n/a')}"
+        f"cross={mrc.get('CurrentCross', 'n/a')} "
+        f"volume_gain={fmt(volume.get('Gain'))} "
+        f"buy_sell_gain={fmt(volume.get('BuySellGain'))}"
     )
 
 
@@ -52,7 +51,7 @@ def print_monitor(debug_line: str):
     os.system("clear")
     print("Structural scalping")
     print("====================")
-    for tf in [60, 300, 900, 3600]:
+    for tf in [60, 300]:
         print(tf_line(tf))
     print()
     print("Bot debug")

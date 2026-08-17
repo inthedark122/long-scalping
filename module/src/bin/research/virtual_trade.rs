@@ -32,7 +32,6 @@ pub(crate) struct VirtualPosition {
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
-    pub(crate) prediction_probability: Option<f64>,
     #[serde(skip_serializing)]
     pub(crate) max_favorable_price: f64,
     #[serde(skip_serializing)]
@@ -64,7 +63,6 @@ pub(crate) struct VirtualTradeResult {
     pub(crate) exit_reason: String,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
-    pub(crate) prediction_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -169,7 +167,6 @@ pub(crate) struct TradeSetup {
     pub(crate) opened_at: i64,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
-    pub(crate) prediction_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -188,7 +185,6 @@ pub(crate) struct VirtualPredictionResult {
     pub(crate) resolved_at: i64,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
-    pub(crate) prediction_probability: Option<f64>,
     pub(crate) furthest_line_before_return: Option<usize>,
     pub(crate) furthest_line_before_return_name: Option<&'static str>,
     pub(crate) returned_to_source_line: bool,
@@ -454,7 +450,6 @@ impl VirtualPredictionSimulator {
             resolved_at,
             reason: setup.reason,
             pattern_key: setup.pattern_key,
-            prediction_probability: setup.prediction_probability,
             furthest_line_before_return: prediction.furthest_line_before_return,
             furthest_line_before_return_name: line_name(prediction.furthest_line_before_return),
             returned_to_source_line: prediction.returned_to_source_line,
@@ -523,7 +518,6 @@ impl TradeSetup {
             opened_at,
             reason: reason.into(),
             pattern_key: "generic".to_string(),
-            prediction_probability: None,
         }
     }
 
@@ -554,7 +548,6 @@ impl TradeSetup {
             opened_at,
             reason: reason.into(),
             pattern_key: format!("{source_name}->{target_name}"),
-            prediction_probability: None,
         }
     }
 
@@ -570,13 +563,8 @@ impl TradeSetup {
         self
     }
 
-    pub(crate) fn with_pattern_evidence(
-        mut self,
-        pattern_key: impl Into<String>,
-        prediction_probability: Option<f64>,
-    ) -> Self {
+    pub(crate) fn with_pattern_key(mut self, pattern_key: impl Into<String>) -> Self {
         self.pattern_key = pattern_key.into();
-        self.prediction_probability = prediction_probability;
         self
     }
 }
@@ -639,7 +627,6 @@ impl VirtualTradeSimulator {
             opened_at,
             reason: setup.reason,
             pattern_key: setup.pattern_key,
-            prediction_probability: setup.prediction_probability,
             max_favorable_price: setup.entry_price,
             max_adverse_price: setup.entry_price,
         });
@@ -763,7 +750,6 @@ impl VirtualTradeSimulator {
             exit_reason: exit_reason.to_string(),
             reason: trade.reason,
             pattern_key: trade.pattern_key,
-            prediction_probability: trade.prediction_probability,
         });
     }
 
@@ -853,11 +839,8 @@ mod tests {
             high,
             low,
             close,
-            zz_dir: 0,
-            zz_break_price: 0.0,
             gain: 0.0,
             buy_sell_gain: 0.0,
-            ntps: 0,
             mrc: Default::default(),
         }
     }

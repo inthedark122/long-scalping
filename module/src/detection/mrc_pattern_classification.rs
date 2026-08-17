@@ -1,4 +1,4 @@
-//! Stable classification vocabulary for MRC movement research.
+//! Stable classification vocabulary for MRC pattern research.
 //!
 //! These classifications describe local movement behavior. They are not
 //! trading decisions by themselves and deliberately do not encode a fixed
@@ -37,6 +37,28 @@ pub enum MrcPatternKind {
 }
 
 impl MrcPatternKind {
+    pub const ALL: [Self; 7] = [
+        Self::StairsUp,
+        Self::StairsDown,
+        Self::FastBreakReturn,
+        Self::RangeCycleSideway,
+        Self::TrendingCycle,
+        Self::PullbackToInner,
+        Self::OutwardContinuation,
+    ];
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::StairsUp => 0,
+            Self::StairsDown => 1,
+            Self::FastBreakReturn => 2,
+            Self::RangeCycleSideway => 3,
+            Self::TrendingCycle => 4,
+            Self::PullbackToInner => 5,
+            Self::OutwardContinuation => 6,
+        }
+    }
+
     /// Stable identifier used in research reports and Git-tracked history.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -80,6 +102,10 @@ pub struct MrcPatternSignal {
     pub source_line: u8,
     pub target_line: u8,
     pub direction: i8,
+    /// The line that was crossed before returning to `source_line`.
+    pub failed_break_line: Option<u8>,
+    /// Direction of the original break, before the return.
+    pub failed_break_direction: i8,
     pub steps: u32,
     pub elapsed_ms: u64,
 }
@@ -161,6 +187,8 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         source_line: returned.line,
         target_line: adjacent_line(returned.line, direction)?,
         direction,
+        failed_break_line: Some(crossed.line),
+        failed_break_direction: line_direction(source.line, crossed.line),
         steps: 1,
         elapsed_ms: returned.now_ms.saturating_sub(source.now_ms),
     })
@@ -186,6 +214,8 @@ fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         source_line: returned.line,
         target_line: adjacent_line(returned.line, return_direction)?,
         direction: return_direction,
+        failed_break_line: None,
+        failed_break_direction: 0,
         steps: 1,
         elapsed_ms: returned.now_ms.saturating_sub(outward.now_ms),
     })
@@ -224,6 +254,8 @@ fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         source_line: current.line,
         target_line: adjacent_line(current.line, direction)?,
         direction,
+        failed_break_line: None,
+        failed_break_direction: 0,
         steps,
         elapsed_ms: current.now_ms.saturating_sub(start.now_ms),
     })
@@ -292,6 +324,8 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
             adjacent_line(current.line, direction)?
         },
         direction,
+        failed_break_line: None,
+        failed_break_direction: 0,
         steps: (visits.len() - 1) as u32,
         elapsed_ms: last.now_ms.saturating_sub(first.now_ms),
     })
@@ -301,33 +335,49 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
 /// the trading layer should follow. The precedence is intentional: a direct
 /// return or pullback is more specific than a staircase or a broad cycle.
 pub fn classify(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
+    classify_all(history).into_iter().next()
+}
+
+fn outward_continuation(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     if history.len() < 2 {
         return None;
     }
-    fast_break_return(history)
-        .or_else(|| pullback_to_inner(history))
-        .or_else(|| staircase(history))
-        .or_else(|| cycle(history))
-        .or_else(|| {
-            let [source, current] = history.get(history.len() - 2..)? else {
-                return None;
-            };
-            let direction = line_direction(source.line, current.line);
-            if source.line.abs_diff(current.line) != 1
-                || direction == 0
-                || !movement_success(current)
-            {
-                return None;
-            }
-            Some(MrcPatternSignal {
-                kind: MrcPatternKind::OutwardContinuation,
-                source_line: current.line,
-                target_line: adjacent_line(current.line, direction)?,
-                direction,
-                steps: 1,
-                elapsed_ms: current.now_ms.saturating_sub(source.now_ms),
-            })
-        })
+    let [source, current] = history.get(history.len() - 2..)? else {
+        return None;
+    };
+    let direction = line_direction(source.line, current.line);
+    if source.line.abs_diff(current.line) != 1 || direction == 0 || !movement_success(current) {
+        return None;
+    }
+    Some(MrcPatternSignal {
+        kind: MrcPatternKind::OutwardContinuation,
+        source_line: current.line,
+        target_line: adjacent_line(current.line, direction)?,
+        direction,
+        failed_break_line: None,
+        failed_break_direction: 0,
+        steps: 1,
+        elapsed_ms: current.now_ms.saturating_sub(source.now_ms),
+    })
+}
+
+/// Evaluate every independent matcher. The result deliberately keeps
+/// overlapping matches: a staircase can also be an outward continuation and
+/// a trending cycle can coexist with a local pullback.
+pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
+    if history.len() < 2 {
+        return Vec::new();
+    }
+    [
+        fast_break_return(history),
+        pullback_to_inner(history),
+        staircase(history),
+        cycle(history),
+        outward_continuation(history),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// The complete, stable catalogue. Keep this list small and behavior based;
@@ -353,7 +403,7 @@ pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 7] = [
         title: "Fast break and return",
         summary: "Price crosses one adjacent line and quickly returns to the source line.",
         detection: "A -> adjacent B -> A, measured by elapsed time, excursion outside A, and the exact returned line.",
-        prediction: "Treat B as a possible resistance or support barrier and project movement away from the failed break.",
+        prediction: "Use the exact A -> B -> A history to compare rejection away from B with reclaim through B; B is the learned support/resistance barrier.",
     },
     MrcPatternDefinition {
         kind: MrcPatternKind::RangeCycleSideway,

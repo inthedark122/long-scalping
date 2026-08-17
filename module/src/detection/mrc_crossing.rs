@@ -1,10 +1,12 @@
-use crate::detection::cascade::CascadeSignal;
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
 use crate::detection::mrc_pattern_classification::{self, MrcPatternKind};
 use crate::detection::vlines::MrcCrossEvent;
-use crate::model::{EntryReason, MarketState};
+use crate::model::{
+    EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
+};
 use crate::state::{
     MrcCrossingModel, MrcCrossingState, MrcForecastStats, MrcHistoryEvent, MrcMovementSnapshot,
+    PatternPerformance,
 };
 use lte_strategy_bridge::abi::ModuleIndicatorValue;
 use lte_strategy_bridge::indicator_access::{
@@ -23,6 +25,106 @@ pub const LINE_LABELS: [&str; 9] = [
     "up_big",
 ];
 
+pub fn entry_gate(state: &MrcCrossingModel) -> EntryGate {
+    if let Some(reason) = current_entry(state) {
+        return EntryGate::Open {
+            notes: vec![
+                "strategy=pattern-engine".to_string(),
+                pattern_entry_note(&reason),
+            ],
+            reason: EntryOpenReason::Entry(reason),
+        };
+    }
+    wait_entry_gate(MrcWaitReason::Crossing)
+}
+
+pub fn wait_entry_gate(wait_reason: MrcWaitReason) -> EntryGate {
+    let (reason, solutions, notes) = match wait_reason {
+        MrcWaitReason::Crossing => (
+            "pattern-wait-crossing".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec!["waiting for a pattern candidate with a directional target".to_string()],
+        ),
+        MrcWaitReason::NoDirectionalTarget => (
+            "pattern-no-directional-target".to_string(),
+            vec![EntryWaitSolution::MrcDirectionalTarget],
+            vec!["classified patterns have no valid directional target".to_string()],
+        ),
+        MrcWaitReason::NoReliablePrediction => (
+            "pattern-no-reliable-prediction".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec!["pattern history has no reliable directional prediction".to_string()],
+        ),
+    };
+    EntryGate::Wait(EntryWait {
+        reason,
+        solutions,
+        notes,
+    })
+}
+
+fn pattern_entry_note(reason: &EntryReason) -> String {
+    let EntryReason::MrcCrossing {
+        pattern_kind,
+        pattern,
+        market_price,
+        mrc_min,
+        mrc_max,
+        pattern_samples,
+        context_samples,
+        no_pullback_count,
+        reverted_line,
+        target_samples,
+        movement_samples,
+        next_line_crosses,
+        support_resistance_moves,
+        price_only_moves,
+        successful_moves,
+        failed_moves,
+        movement_success_rate,
+        expected_value_pct,
+        expected_price_low,
+        expected_price_high,
+        ..
+    } = reason;
+    format!(
+        "pattern={} cycle={} context_samples={} no_pullback={} reverted_line={} market_price={:.4} mrc_range={:.4}..{:.4} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={}",
+        pattern_kind,
+        pattern
+            .iter()
+            .map(|line| LINE_LABELS[*line as usize])
+            .collect::<Vec<_>>()
+            .join(">"),
+        context_samples,
+        no_pullback_count,
+        reverted_line
+            .map(|line| LINE_LABELS[line as usize])
+            .unwrap_or("na"),
+        market_price,
+        mrc_min,
+        mrc_max,
+        pattern_samples,
+        target_samples,
+        movement_samples,
+        next_line_crosses,
+        support_resistance_moves,
+        price_only_moves,
+        successful_moves,
+        failed_moves,
+        movement_success_rate,
+        expected_value_pct,
+        expected_price_low,
+        expected_price_high,
+        price_projection(
+            reason_direction(reason),
+            *mrc_min,
+            *mrc_max,
+            *expected_price_low,
+            *expected_price_high,
+        )
+    )
+}
+
 const MAX_LEARNED_CYCLES: usize = 5;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,12 +137,16 @@ pub struct MrcPrediction {
     pub elapsed_ms: Vec<u64>,
     pub target_line: u8,
     pub samples: u32,
-    pub probability: f64,
     pub stats: MrcForecastStats,
     pub next_line_crosses: u32,
     pub support_resistance_moves: u32,
     pub price_only_moves: u32,
     pub context_samples: u32,
+    /// For FAST_BREAK_RETURN, the exact line that was crossed and then
+    /// returned from. This is the support/resistance barrier being learned.
+    pub failed_break_line: Option<u8>,
+    /// Direction of the original break, before the return to the source line.
+    pub failed_break_direction: i8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +156,37 @@ pub enum MrcWaitReason {
     NoReliablePrediction,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternCandidate {
+    pub pattern_kind: MrcPatternKind,
+    pub score: f64,
+    pub analysis: MrcCrossAnalysis,
+    pub entry: Option<EntryReason>,
+    pub forecast: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Observation {
     pub entry: Option<EntryReason>,
     pub wait_reason: Option<MrcWaitReason>,
     pub samples: u32,
     pub events: Vec<MrcCrossAnalysis>,
+    /// The latest learned route evaluated against the current candle. This is
+    /// intentionally separate from `events`: it is a forecast, not a new
+    /// crossing event.
+    pub forecast: Option<MrcCrossAnalysis>,
+    pub candidates: Vec<PatternCandidate>,
+    pub selected_pattern: Option<MrcPatternKind>,
+    pub selected_score: Option<f64>,
+}
+
+impl Observation {
+    pub fn selected_candidate(&self) -> Option<&PatternCandidate> {
+        let selected_pattern = self.selected_pattern?;
+        self.candidates.iter().rev().find(|candidate| {
+            candidate.pattern_kind == selected_pattern && candidate.entry.is_some()
+        })
+    }
 }
 
 pub fn valid_price_levels(
@@ -64,6 +195,24 @@ pub fn valid_price_levels(
     target_price: f64,
     stop_price: f64,
     tick_size: Option<f64>,
+) -> bool {
+    valid_price_levels_for_pattern(
+        direction,
+        entry_price,
+        target_price,
+        stop_price,
+        tick_size,
+        None,
+    )
+}
+
+pub fn valid_price_levels_for_pattern(
+    direction: i8,
+    entry_price: f64,
+    target_price: f64,
+    stop_price: f64,
+    tick_size: Option<f64>,
+    pattern_kind: Option<MrcPatternKind>,
 ) -> bool {
     if !matches!(direction, 1 | -1)
         || !entry_price.is_finite()
@@ -76,20 +225,43 @@ pub fn valid_price_levels(
         return false;
     }
 
-    if let Some(tick_size) = tick_size.filter(|tick| tick.is_finite() && *tick > 0.0) {
-        let entry_ticks = (entry_price / tick_size).round();
-        let target_ticks = (target_price / tick_size).round();
-        let stop_ticks = (stop_price / tick_size).round();
-        if direction > 0 {
-            target_ticks > entry_ticks && stop_ticks < entry_ticks
+    let directionally_valid =
+        if let Some(tick_size) = tick_size.filter(|tick| tick.is_finite() && *tick > 0.0) {
+            let entry_ticks = (entry_price / tick_size).round();
+            let target_ticks = (target_price / tick_size).round();
+            let stop_ticks = (stop_price / tick_size).round();
+            if direction > 0 {
+                target_ticks > entry_ticks && stop_ticks < entry_ticks
+            } else {
+                target_ticks < entry_ticks && stop_ticks > entry_ticks
+            }
+        } else if direction > 0 {
+            target_price > entry_price && stop_price < entry_price
         } else {
-            target_ticks < entry_ticks && stop_ticks > entry_ticks
-        }
-    } else if direction > 0 {
-        target_price > entry_price && stop_price < entry_price
-    } else {
-        target_price < entry_price && stop_price > entry_price
+            target_price < entry_price && stop_price > entry_price
+        };
+
+    if !directionally_valid {
+        return false;
     }
+
+    // A staircase is a sequence of adjacent continuation legs. Its
+    // MRC stop can span more than the next line, so a strict
+    // reward/risk check would suppress the very continuation being learned.
+    if matches!(
+        pattern_kind,
+        Some(
+            MrcPatternKind::StairsUp
+                | MrcPatternKind::StairsDown
+                | MrcPatternKind::OutwardContinuation
+        )
+    ) {
+        return true;
+    }
+
+    // An MRC plan is not tradable when its predicted reward is smaller than
+    // the MRC risk required to invalidate the setup.
+    (target_price - entry_price).abs() >= (stop_price - entry_price).abs()
 }
 
 pub fn warmup_samples(state: &MrcCrossingModel) -> u32 {
@@ -187,6 +359,75 @@ fn route_counts(routes: &[MrcForecastStats; 9]) -> (u32, u32, u32) {
         })
 }
 
+fn line_direction(from: u8, to: u8) -> i8 {
+    match to.cmp(&from) {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FastBreakEvidence {
+    rejection: MrcForecastStats,
+    continuation: MrcForecastStats,
+    neutral: MrcForecastStats,
+}
+
+impl FastBreakEvidence {
+    fn total(self) -> u32 {
+        self.rejection
+            .count
+            .saturating_add(self.continuation.count)
+            .saturating_add(self.neutral.count)
+    }
+}
+
+/// Learn what happened after the exact failed break, rather than learning
+/// generic transitions from the returned line.
+///
+/// For `A -> B -> A`, the next observed line is classified as:
+///
+/// - rejection: movement away from B;
+/// - continuation: movement back toward and through B;
+/// - neutral: no directional decision.
+fn fast_break_evidence(
+    state: &MrcCrossingModel,
+    source_line: u8,
+    failed_break_line: u8,
+) -> FastBreakEvidence {
+    let break_direction = line_direction(source_line, failed_break_line);
+    if break_direction == 0 || source_line.abs_diff(failed_break_line) != 1 {
+        return FastBreakEvidence::default();
+    }
+
+    let mut evidence = FastBreakEvidence::default();
+    for window in state.history.windows(4) {
+        let [source, crossed, returned, next] = window else {
+            continue;
+        };
+        if source.line != source_line
+            || crossed.line != failed_break_line
+            || returned.line != source_line
+            || line_direction(source.line, crossed.line) != break_direction
+        {
+            continue;
+        }
+
+        let next_direction = line_direction(returned.line, next.line);
+        let duration_ms = next.now_ms.saturating_sub(returned.now_ms);
+        let stats = if next_direction == -break_direction {
+            &mut evidence.rejection
+        } else if next_direction == break_direction {
+            &mut evidence.continuation
+        } else {
+            &mut evidence.neutral
+        };
+        record_movement(stats, next.line, next.completed_movement, duration_ms);
+    }
+    evidence
+}
+
 fn available_samples(state: &MrcCrossingModel, direction: i8) -> u32 {
     let Some(current) = state.history.last() else {
         return 0;
@@ -218,50 +459,228 @@ fn current_cycle_elapsed_ms(state: &MrcCrossingModel) -> Vec<u64> {
     elapsed
 }
 
-pub fn predict(state: &MrcCrossingModel, _observed_direction: i8) -> Option<MrcPrediction> {
-    if state.history.len() < 2 {
-        return None;
+const PATTERN_SWITCH_MARGIN_PCT: f64 = 0.05;
+
+fn pattern_prior(prediction: &MrcPrediction) -> f64 {
+    prediction
+        .stats
+        .expected_value_pct()
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0)
+}
+
+fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) -> f64 {
+    let prior = pattern_prior(prediction);
+    if performance.trades == 0 {
+        return prior;
     }
+    let confidence = performance.trades as f64 / (performance.trades as f64 + 4.0);
+    performance.ema_pnl_pct * confidence + prior * (1.0 - confidence)
+}
+
+fn candidate_key(candidate: &PatternCandidate) -> Option<(u8, u8, u8)> {
+    Some((
+        candidate.pattern_kind.index() as u8,
+        candidate.analysis.line_idx,
+        candidate.analysis.trade_target_line?,
+    ))
+}
+
+fn select_candidate(
+    state: &mut MrcCrossingModel,
+    candidates: &[PatternCandidate],
+    now_ms: u64,
+) -> Option<usize> {
+    let tradable = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.entry.is_some());
+    let best = tradable.max_by(|(left_index, left), (right_index, right)| {
+        left.score
+            .partial_cmp(&right.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    let Some((best_index, best_candidate)) = best else {
+        return None;
+    };
+
+    let active_index = state
+        .active_pattern
+        .map(|pattern| pattern as usize)
+        .and_then(|pattern| {
+            candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    candidate.entry.is_some() && candidate.pattern_kind.index() == pattern
+                })
+                .max_by(|(left_index, left), (right_index, right)| {
+                    left.score
+                        .partial_cmp(&right.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| left_index.cmp(right_index))
+                })
+                .map(|(index, _)| index)
+        });
+
+    let selected_index = match active_index {
+        None if state.active_pattern.is_none() => best_index,
+        None if best_candidate.score > state.active_pattern_score + PATTERN_SWITCH_MARGIN_PCT => {
+            best_index
+        }
+        None => return None,
+        Some(active_index) => {
+            let active = &candidates[active_index];
+            if best_candidate.pattern_kind != active.pattern_kind
+                && best_candidate.score > active.score + PATTERN_SWITCH_MARGIN_PCT
+            {
+                best_index
+            } else {
+                active_index
+            }
+        }
+    };
+    let selected = &candidates[selected_index];
+    let pattern_index = selected.pattern_kind.index() as u8;
+    if state.active_pattern != Some(pattern_index) {
+        state.active_pattern_since_ms = now_ms;
+    }
+    state.active_pattern = Some(pattern_index);
+    state.active_pattern_score = selected.score;
+    Some(selected_index)
+}
+
+pub fn predict_all(state: &MrcCrossingModel) -> Vec<MrcPrediction> {
+    if state.history.len() < 2 {
+        return Vec::new();
+    }
+    mrc_pattern_classification::classify_all(&state.history)
+        .into_iter()
+        .filter_map(|pattern| predict_for_pattern(state, &pattern))
+        .collect()
+}
+
+fn predict_for_pattern(
+    state: &MrcCrossingModel,
+    pattern: &mrc_pattern_classification::MrcPatternSignal,
+) -> Option<MrcPrediction> {
     let current = state.history.last()?;
     let source = current.line;
-    let pattern = mrc_pattern_classification::classify(&state.history)?;
-    if !matches!(pattern.direction, 1 | -1) {
-        return None;
-    }
-    let context = Some((current.no_pullback_count == 0, current.reverted_line));
-    let contextual = transition_stats(state, source, pattern.direction, context);
-    let (routes, total, context_samples) = if contextual.1 > 0 {
-        (contextual.0, contextual.1, contextual.1)
+    let (
+        pattern_direction,
+        target,
+        total,
+        stats,
+        next_line_crosses,
+        support_resistance_moves,
+        price_only_moves,
+        context_samples,
+        failed_break_line,
+        failed_break_direction,
+    ) = if pattern.kind == MrcPatternKind::FastBreakReturn {
+        let failed_break_line = pattern.failed_break_line?;
+        let failed_break_direction = pattern.failed_break_direction;
+        if !matches!(failed_break_direction, 1 | -1) {
+            return None;
+        }
+        let evidence = fast_break_evidence(state, source, failed_break_line);
+        let total = evidence.total();
+        if total == 0 {
+            return None;
+        }
+
+        // Use only the exact outcome counts. A tie or a mostly-neutral result
+        // is not a directional support/resistance prediction.
+        let (pattern_direction, target, stats) = if evidence.rejection.count
+            > evidence
+                .continuation
+                .count
+                .saturating_add(evidence.neutral.count)
+        {
+            (
+                -failed_break_direction,
+                mrc_cross_analysis::adjacent_line(source, -failed_break_direction)?,
+                evidence.rejection,
+            )
+        } else if evidence.continuation.count
+            > evidence
+                .rejection
+                .count
+                .saturating_add(evidence.neutral.count)
+        {
+            (
+                failed_break_direction,
+                failed_break_line,
+                evidence.continuation,
+            )
+        } else {
+            return None;
+        };
+        (
+            pattern_direction,
+            target,
+            total,
+            stats,
+            evidence.continuation.count,
+            evidence.rejection.count,
+            evidence.neutral.count,
+            0,
+            Some(failed_break_line),
+            failed_break_direction,
+        )
     } else {
-        let broad = transition_stats(state, source, pattern.direction, None);
-        (broad.0, broad.1, 0)
+        if !matches!(pattern.direction, 1 | -1) {
+            return None;
+        }
+        let context = Some((current.no_pullback_count == 0, current.reverted_line));
+        let contextual = transition_stats(state, source, pattern.direction, context);
+        let (routes, total, context_samples) = if contextual.1 > 0 {
+            (contextual.0, contextual.1, contextual.1)
+        } else {
+            let broad = transition_stats(state, source, pattern.direction, None);
+            (broad.0, broad.1, 0)
+        };
+        let (next_line_crosses, support_resistance_moves, price_only_moves) = route_counts(&routes);
+        let target = pattern.target_line;
+        if target == source || target as usize >= routes.len() {
+            return None;
+        }
+        let stats = routes[target as usize];
+        (
+            pattern.direction,
+            target,
+            total,
+            stats,
+            next_line_crosses,
+            support_resistance_moves,
+            price_only_moves,
+            context_samples,
+            None,
+            0,
+        )
     };
-    let (next_line_crosses, support_resistance_moves, price_only_moves) = route_counts(&routes);
     let cycle = current_cycle_pattern(state);
     let cycle_elapsed_ms = current_cycle_elapsed_ms(state);
-    let target = pattern.target_line;
-    if target == source || target as usize >= routes.len() {
-        return None;
-    }
-    let stats = routes[target as usize];
-    if stats.count == 0 {
+    if target == source || target as usize >= LINE_LABELS.len() {
         return None;
     }
     Some(MrcPrediction {
         pattern_kind: pattern.kind,
-        pattern_direction: pattern.direction,
+        pattern_direction,
         pattern_steps: pattern.steps,
         pattern_elapsed_ms: pattern.elapsed_ms,
         pattern: cycle,
         elapsed_ms: cycle_elapsed_ms,
         target_line: target,
         samples: total,
-        probability: stats.count as f64 / total.max(1) as f64,
         stats,
         next_line_crosses,
         support_resistance_moves,
         price_only_moves,
         context_samples,
+        failed_break_line,
+        failed_break_direction,
     })
 }
 
@@ -336,7 +755,6 @@ pub fn observe(
         events,
         lines,
         &MrcCrossingState::default(),
-        CascadeSignal::default(),
         (0.0, 0.0, 0.0, 0.0),
     )
 }
@@ -346,11 +764,48 @@ pub fn observe_with_context(
     events: &[MrcCrossEvent],
     lines: [f64; 9],
     crossing: &MrcCrossingState,
-    cascade: CascadeSignal,
     volume: (f64, f64, f64, f64),
+) -> Observation {
+    observe_events(state, events, lines, crossing, volume, None)
+}
+
+/// Observe new crossings and, when there is no fresh crossing, evaluate the
+/// learned route against the current candle. The forecast lets the strategy
+/// enter while the next line is still ahead instead of waiting for a fill at
+/// an already stale crossing price.
+pub fn observe_with_forecast(
+    state: &mut MrcCrossingModel,
+    events: &[MrcCrossEvent],
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    current_price: f64,
+    now_ms: u64,
+) -> Observation {
+    observe_events(
+        state,
+        events,
+        lines,
+        crossing,
+        volume,
+        Some((current_price, now_ms)),
+    )
+}
+
+fn observe_events(
+    state: &mut MrcCrossingModel,
+    events: &[MrcCrossEvent],
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    forecast: Option<(f64, u64)>,
 ) -> Observation {
     state.current_entry = None;
     let mut observation = Observation::default();
+    let mut saw_prediction = false;
+    let mut saw_crossing_barrier = false;
+    let mut saw_untradeable_prediction = false;
+    let mut saw_unreliable_prediction = false;
 
     for event in events {
         let source = event.line_idx as usize;
@@ -359,97 +814,310 @@ pub fn observe_with_context(
         }
         append_history_event(state, event);
 
-        let prediction = predict(state, event.direction);
-        let analysis =
-            mrc_cross_analysis::build(event, prediction.as_ref(), lines, crossing, cascade, volume);
-        observation.samples = prediction
-            .as_ref()
-            .map(|prediction| prediction.samples)
-            .unwrap_or_else(|| warmup_samples(state));
-        observation.events.push(analysis.clone());
-
-        let Some(prediction) = prediction else {
-            observation.wait_reason = Some(MrcWaitReason::NoReliablePrediction);
-            continue;
-        };
-        let can_trade = match analysis.barrier_state {
-            mrc_cross_analysis::BarrierState::Approaching => false,
-            mrc_cross_analysis::BarrierState::Rejected => true,
-            mrc_cross_analysis::BarrierState::None
-            | mrc_cross_analysis::BarrierState::ConfirmedBreak => true,
-        };
-        let Some(entry_price) = analysis.effective_entry_price else {
-            observation.wait_reason = Some(MrcWaitReason::NoReliablePrediction);
-            continue;
-        };
-        let Some(target_price) = analysis.target_price else {
-            observation.wait_reason = Some(MrcWaitReason::NoDirectionalTarget);
-            continue;
-        };
-        let Some(stop_price) = analysis.stop_price else {
-            observation.wait_reason = Some(MrcWaitReason::NoDirectionalTarget);
-            continue;
-        };
-        if !can_trade
-            || !valid_price_levels(
-                analysis.trade_direction,
-                entry_price,
-                target_price,
-                stop_price,
-                None,
-            )
-        {
-            observation.wait_reason = Some(if can_trade {
-                MrcWaitReason::NoDirectionalTarget
-            } else {
-                MrcWaitReason::Crossing
-            });
+        let predictions = predict_all(state);
+        if predictions.is_empty() {
+            saw_unreliable_prediction = true;
             continue;
         }
-        let Some(_target_line) = analysis.trade_target_line else {
-            observation.wait_reason = Some(MrcWaitReason::NoDirectionalTarget);
-            continue;
+        for prediction in predictions {
+            saw_prediction = true;
+            let performance = &mut state.pattern_performance[prediction.pattern_kind.index()];
+            performance.observe();
+            observation.samples = observation.samples.max(prediction.samples);
+            let analysis =
+                mrc_cross_analysis::build(event, Some(&prediction), lines, crossing, volume);
+            let entry = analysis
+                .tradeable()
+                .then(|| {
+                    analysis
+                        .effective_entry_price
+                        .zip(analysis.target_price)
+                        .zip(analysis.stop_price)
+                        .map(|((entry_price, target_price), stop_price)| {
+                            entry_reason(
+                                event,
+                                &prediction,
+                                &analysis,
+                                entry_price,
+                                target_price,
+                                stop_price,
+                            )
+                        })
+                })
+                .flatten();
+            if entry.is_none() {
+                saw_untradeable_prediction = true;
+                if analysis.barrier_state == mrc_cross_analysis::BarrierState::Approaching {
+                    saw_crossing_barrier = true;
+                }
+            }
+            observation.events.push(analysis.clone());
+            observation.candidates.push(PatternCandidate {
+                pattern_kind: prediction.pattern_kind,
+                score: pattern_score(*performance, &prediction),
+                analysis,
+                entry,
+                forecast: false,
+            });
+        }
+    }
+
+    if events.is_empty() {
+        if let Some((current_price, now_ms)) = forecast {
+            if let Some(event) = forecast_event(state, lines, current_price, now_ms) {
+                for prediction in predict_all(state) {
+                    let performance =
+                        &mut state.pattern_performance[prediction.pattern_kind.index()];
+                    performance.observe();
+                    observation.samples = observation.samples.max(prediction.samples);
+                    let analysis = mrc_cross_analysis::build(
+                        &event,
+                        Some(&prediction),
+                        lines,
+                        crossing,
+                        volume,
+                    );
+                    let forecast_allowed = (forecast_can_reach(&analysis)
+                        || matches!(
+                            prediction.pattern_kind,
+                            MrcPatternKind::StairsUp
+                                | MrcPatternKind::StairsDown
+                                | MrcPatternKind::OutwardContinuation
+                        ))
+                        && analysis.forecast_tradeable();
+                    let entry = if forecast_allowed {
+                        analysis
+                            .effective_entry_price
+                            .zip(analysis.target_price)
+                            .zip(analysis.stop_price)
+                            .map(|((entry_price, target_price), stop_price)| {
+                                entry_reason(
+                                    &event,
+                                    &prediction,
+                                    &analysis,
+                                    entry_price,
+                                    target_price,
+                                    stop_price,
+                                )
+                            })
+                    } else {
+                        None
+                    };
+                    observation.candidates.push(PatternCandidate {
+                        pattern_kind: prediction.pattern_kind,
+                        score: pattern_score(*performance, &prediction),
+                        analysis,
+                        entry,
+                        forecast: true,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(selected_index) = select_candidate(
+        state,
+        &observation.candidates,
+        forecast.map(|(_, now_ms)| now_ms).unwrap_or_else(|| {
+            observation
+                .events
+                .last()
+                .map(|event| event.now_ms)
+                .unwrap_or_default()
+        }),
+    ) {
+        let selected = &observation.candidates[selected_index];
+        observation.selected_pattern = Some(selected.pattern_kind);
+        observation.selected_score = Some(selected.score);
+        if selected.forecast {
+            observation.forecast = Some(selected.analysis.clone());
+        }
+        if let Some(entry) = selected.entry.clone() {
+            if let Some(key) = candidate_key(selected) {
+                if state.last_plan_key != Some(key) {
+                    state.last_plan_key = Some(key);
+                    state.current_entry = Some(entry.clone());
+                    observation.entry = Some(entry);
+                }
+            }
+        }
+    }
+    if observation.entry.is_none() {
+        observation.wait_reason = if saw_crossing_barrier {
+            Some(MrcWaitReason::Crossing)
+        } else if saw_prediction || saw_untradeable_prediction {
+            Some(MrcWaitReason::NoDirectionalTarget)
+        } else if saw_unreliable_prediction {
+            Some(MrcWaitReason::NoReliablePrediction)
+        } else {
+            Some(MrcWaitReason::NoReliablePrediction)
         };
-        let reason = EntryReason::MrcCrossing {
-            price: entry_price,
-            market_price: event.price,
-            mrc_min: event.mrc_low,
-            mrc_max: event.mrc_high,
-            target_price,
-            stop_price,
-            source_line: event.line_idx,
-            target_line: prediction.target_line,
-            pattern_kind: prediction.pattern_kind.as_str().to_string(),
-            pattern: prediction.pattern.clone(),
-            pattern_elapsed_ms: prediction.elapsed_ms.clone(),
-            pattern_samples: prediction.samples,
-            context_samples: prediction.context_samples,
-            no_pullback_count: event.no_pullback_count,
-            reverted_line: event.reverted_line,
-            probability: prediction.probability,
-            target_samples: prediction.stats.count,
-            movement_samples: prediction.stats.movement_samples,
-            next_line_crosses: prediction.next_line_crosses,
-            support_resistance_moves: prediction.support_resistance_moves,
-            price_only_moves: prediction.price_only_moves,
-            successful_moves: prediction.stats.success_count,
-            failed_moves: prediction.stats.failure_count,
-            movement_success_rate: prediction.stats.movement_success_rate().unwrap_or(0.0),
-            expected_value_pct: prediction.stats.expected_value_pct().unwrap_or(0.0),
-            expected_price_low: analysis.expected_price_low.unwrap_or(event.price),
-            expected_price_high: analysis.expected_price_high.unwrap_or(event.price),
-            estimated_time_ms: prediction.stats.average_duration_ms().unwrap_or(0.0),
-            favorable_move_pct: prediction.stats.average_favorable_pct().unwrap_or(0.0),
-            adverse_move_pct: prediction.stats.average_adverse_pct().unwrap_or(0.0),
-        };
-        state.current_entry = Some(reason.clone());
-        observation.entry = Some(reason);
     }
     observation
 }
 
+fn entry_reason(
+    event: &MrcCrossEvent,
+    prediction: &MrcPrediction,
+    analysis: &MrcCrossAnalysis,
+    entry_price: f64,
+    target_price: f64,
+    stop_price: f64,
+) -> EntryReason {
+    EntryReason::MrcCrossing {
+        price: entry_price,
+        market_price: event.price,
+        mrc_min: event.mrc_low,
+        mrc_max: event.mrc_high,
+        target_price,
+        stop_price,
+        source_line: event.line_idx,
+        target_line: prediction.target_line,
+        pattern_kind: prediction.pattern_kind.as_str().to_string(),
+        pattern: prediction.pattern.clone(),
+        pattern_elapsed_ms: prediction.elapsed_ms.clone(),
+        pattern_samples: prediction.samples,
+        context_samples: prediction.context_samples,
+        no_pullback_count: event.no_pullback_count,
+        reverted_line: event.reverted_line,
+        target_samples: prediction.stats.count,
+        movement_samples: prediction.stats.movement_samples,
+        next_line_crosses: prediction.next_line_crosses,
+        support_resistance_moves: prediction.support_resistance_moves,
+        price_only_moves: prediction.price_only_moves,
+        successful_moves: prediction.stats.success_count,
+        failed_moves: prediction.stats.failure_count,
+        movement_success_rate: prediction.stats.movement_success_rate().unwrap_or(0.0),
+        expected_value_pct: prediction.stats.expected_value_pct().unwrap_or(0.0),
+        expected_price_low: analysis.expected_price_low.unwrap_or(event.price),
+        expected_price_high: analysis.expected_price_high.unwrap_or(event.price),
+        estimated_time_ms: prediction.stats.average_duration_ms().unwrap_or(0.0),
+        favorable_move_pct: prediction.stats.average_favorable_pct().unwrap_or(0.0),
+        adverse_move_pct: prediction.stats.average_adverse_pct().unwrap_or(0.0),
+    }
+}
+
+fn forecast_event(
+    state: &MrcCrossingModel,
+    lines: [f64; 9],
+    current_price: f64,
+    now_ms: u64,
+) -> Option<MrcCrossEvent> {
+    if !current_price.is_finite() || current_price <= 0.0 {
+        return None;
+    }
+    let last = state.history.last()?;
+    let source = last.line as usize;
+    let line = lines.get(source).copied()?;
+    if !line.is_finite() || line <= 0.0 || !matches!(last.direction, 1 | -1) {
+        return None;
+    }
+    let event = MrcCrossEvent {
+        line_idx: last.line,
+        line,
+        price: current_price,
+        mrc_low: lines[0],
+        mrc_high: lines[8],
+        direction: last.direction,
+        tick: now_ms,
+        now_ms,
+        no_pullback_count: last.no_pullback_count,
+        reverted_line: last.reverted_line,
+        completed_movement: None,
+    };
+    Some(event)
+}
+
+fn forecast_can_reach(analysis: &MrcCrossAnalysis) -> bool {
+    let Some(move_pct) = analysis
+        .effective_move_pct
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return false;
+    };
+    let Some(entry_price) = analysis
+        .effective_entry_price
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return false;
+    };
+    let reaches = |price: Option<f64>| {
+        let Some(price) = price.filter(|value| value.is_finite() && *value > 0.0) else {
+            return false;
+        };
+        let distance_pct = (price - entry_price).abs() / entry_price * 100.0;
+        distance_pct <= move_pct + f64::EPSILON
+    };
+    if !reaches(analysis.predicted_line_price) {
+        return false;
+    }
+    match analysis.barrier_state {
+        mrc_cross_analysis::BarrierState::Approaching => reaches(analysis.barrier_price),
+        mrc_cross_analysis::BarrierState::None
+        | mrc_cross_analysis::BarrierState::ConfirmedBreak
+        | mrc_cross_analysis::BarrierState::Rejected => true,
+    }
+}
+
+/// Recalculate MRC exits from the current levels and actual fill/reference
+/// price. The line identities in the reason remain the learned plan, while
+/// the prices follow moving MRC bands.
+pub fn exit_levels(reason: &EntryReason, lines: [f64; 9], entry_price: f64) -> Option<(f64, f64)> {
+    let EntryReason::MrcCrossing {
+        source_line,
+        target_line,
+        pattern_kind,
+        ..
+    } = reason;
+    let direction = reason_direction(reason);
+    let mut target_line = *target_line;
+    let target_price = loop {
+        let price = lines.get(target_line as usize).copied()?;
+        if price.is_finite()
+            && price > 0.0
+            && ((direction > 0 && price > entry_price) || (direction < 0 && price < entry_price))
+        {
+            break price;
+        }
+        target_line = mrc_cross_analysis::adjacent_line(target_line, direction)?;
+    };
+    let stop_line = mrc_cross_analysis::mrc_stop_line(lines, *source_line, entry_price, direction)?;
+    let stop_price = lines.get(stop_line as usize).copied()?;
+    valid_price_levels_for_pattern(
+        direction,
+        entry_price,
+        target_price,
+        stop_price,
+        None,
+        MrcPatternKind::from_str(pattern_kind),
+    )
+    .then_some((target_price, stop_price))
+}
+
 pub fn current_entry(state: &MrcCrossingModel) -> Option<EntryReason> {
     state.current_entry.clone()
+}
+
+pub fn record_trade_result(
+    state: &mut MrcCrossingModel,
+    reason: Option<&EntryReason>,
+    pnl_pct: f64,
+) {
+    let Some(EntryReason::MrcCrossing { pattern_kind, .. }) = reason else {
+        return;
+    };
+    let Some(pattern_kind) = MrcPatternKind::from_str(pattern_kind) else {
+        return;
+    };
+    record_pattern_result(state, pattern_kind, pnl_pct);
+}
+
+pub fn record_pattern_result(
+    state: &mut MrcCrossingModel,
+    pattern_kind: MrcPatternKind,
+    pnl_pct: f64,
+) {
+    state.pattern_performance[pattern_kind.index()].record_trade(pnl_pct);
 }
 
 pub fn market_state(direction: i8) -> MarketState {
@@ -468,10 +1136,7 @@ pub fn reason_direction(reason: &EntryReason) -> i8 {
         target_price,
         source_line,
         ..
-    } = reason
-    else {
-        return 0;
-    };
+    } = reason;
     match target_price.partial_cmp(price) {
         Some(std::cmp::Ordering::Greater) => 1,
         Some(std::cmp::Ordering::Less) => -1,

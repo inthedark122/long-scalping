@@ -1,78 +1,38 @@
-# Indicator Instructions
+# MRC and volume inputs
 
-This folder holds practical notes for reading live LTE indicators in the strategy.
+The strategy input surface is intentionally small: MRC bands and volume on the
+1m and 5m timeframes. Candle OHLC and live price are market data used to detect
+crossings and execute orders; no directional indicator is consulted.
 
-## How to fetch indicator data
+## Fetching research data
 
-Always use the full `symbol_key` in the URL:
-
-```text
-EXCHANGE#SYMBOL#INST_TYPE
-```
-
-Example:
+Use the full `symbol_key` and URL-encode `#` as `%23`:
 
 ```bash
-curl -s 'https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=1800&indicator_name=smc&limit=1'
+curl -s 'https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=60&indicator_name=mrc_200&limit=1'
+curl -s 'https://okx.tg.trading.sinvoid.me/api/indicators?symbol_key=OKX%23ETH-USDT-SWAP%23SWAP&timeframe=60&indicator_name=volume_50&limit=1'
 ```
 
-Rules:
+The live module reads `mrc_200` and `volume_50` for 1m and 5m. The historical
+research loader uses the same two indicator families for each 1m candle.
 
-- URL-encode `#` as `%23`
-- use `indicator_name=smc`
-- use `timeframe=60` for 1m
-- use `timeframe=300` for 5m
-- use `timeframe=1800` for 30m
-- use `timeframe=3600` for 1h
+## MRC fields
 
-## How to read `SMC`
+MRC provides the ordered nine-line channel:
 
-Use the SMC fields for directional structure and local price levels.
+`DownBig`, `DownOuter`, `DownSmall`, `DownInner`, `MeanLine`, `UpInner`,
+`UpSmall`, `UpOuter`, and `UpBig`.
 
-Short version:
+The detector records line crossings, classifies every matching local pattern,
+and chooses the most profitable candidate. The target and stop are always MRC
+lines calculated from the actual entry price.
 
-- `Direction` confirms directional bias
-- `DirectionSwing` shows the broader swing direction
-- `LowPrice` / `HighPrice` provide local structural bounds
-- `BreakPrice` and `SBP` identify structural break levels
-- `OBLow` / `OBHigh` provide the active order-block range
-- 1m + 5m agreement is cleaner for timing
-- 30m + 1h is better for direction context and exit management
+## Volume fields
 
-## Current usage rule
+Volume is supporting evidence and a continuation/exhaustion signal. The module
+accepts `Gain`, `GainMin`, `GainMax`, and `BuySellGain` from `volume_50`. Missing
+volume fields are neutral zeroes; missing MRC fields invalidate the snapshot.
 
-- use lower TF for entry timing
-- use higher TF for directional bias
-- if higher TF is stretched, ignore small fixed TP
-- prefer trailing stop or exit on lower-TF flip to `LONG` / mixed
-
-## Output format for marketing-style asks
-
-When the request is for a marketing summary, include trade-facing fields in the response:
-
-- direction
-- entry
-- TP
-- prediction
-- price prediction
-- how to trade
-
-Use this rule:
-
-- `entry` should reflect the actionable area, not just the current price
-- `TP` should be explicit when it makes sense, but omit or de-emphasize it if the higher TF is stretched
-- `prediction` should explain the most likely next move in plain language
-- `price prediction` should give a concrete expected area or range when possible, even if approximate
-- `how to trade` should say whether to enter now, wait, trail, or exit on lower-TF confirmation
-
-If the setup is stretched or mixed:
-
-- say that fixed TP is weak or should be ignored
-- prefer trailing stop
-- prefer exit on lower-TF flip to `LONG` or sideways/mixed
-- still include a directional price expectation, such as likely retest, continuation, bounce, or range between nearby levels
-
-## Related notes
-
-- [ZigZagTrend notes](./zigzag.md)
-- [MRC prediction read](./mrc-prediction.md)
+Volume does not replace pattern classification or create a second strategy. It
+helps the MRC selector and risk gate decide whether the current MRC movement is
+strong enough to keep trading.

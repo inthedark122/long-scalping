@@ -10,14 +10,12 @@ pub(crate) fn write_report(
     symbol_key: &str,
     history_requested: usize,
     minute_count: usize,
-    hourly_count: usize,
     report: &AnalysisReport,
 ) -> Result<(), Box<dyn Error>> {
     let data = json!({
         "symbol_key": symbol_key,
         "history_requested_1m": history_requested,
         "history_loaded_1m": minute_count,
-        "history_loaded_1h": hourly_count,
         "latest_event_time_ms": report.latest_event.as_ref().map(|event| event.time_ms),
         "trade_summary": report.trade_summary,
         "trades": report.trades,
@@ -27,10 +25,14 @@ pub(crate) fn write_report(
         "pending_predictions": report.pending_predictions,
         "active_predictions": report.active_predictions,
         "pattern_win_rates": report.pattern_win_rates,
+        "pattern_performance": report.pattern_performance,
+        "parallel_pattern_trades": report.parallel_pattern_trades,
+        "active_pattern": report.active_pattern,
+        "active_pattern_score": report.active_pattern_score,
         "pattern_definitions": {
             "pattern": "A stable local movement classification: staircase, break-return, range/trend cycle, pullback, or outward continuation.",
             "pattern_steps": "The number of local line steps supporting the classified pattern.",
-            "probability": "Supporting route observations for the selected pattern target. It is evidence, not the direction decision and not trade win rate.",
+            "outcome_counts": "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
             "resistance": "The opposite reverted MRC line and its barrier state at the signal.",
             "tp_sl": "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
             "win_rate": "Wins divided by closed virtual positions for the exact displayed pattern; the position count must be read with the percentage."
@@ -190,7 +192,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       <h2>Pattern definitions</h2>
       <div class="subtle">
         <p><b>Pattern</b> is a stable local movement classification such as <code>STAIRS_UP</code> or <code>FAST_BREAK_RETURN</code>. The long crossing sequence remains diagnostic only.</p>
-        <p><b>Pattern steps</b> and elapsed time describe how much local evidence is currently visible. <b>Probability</b> is supporting route evidence; the pattern itself selects the direction.</p>
+        <p><b>Pattern steps</b> and elapsed time describe how much local evidence is currently visible. Outcome counts are supporting evidence; the pattern itself selects the direction.</p>
         <p><b>Resistance</b> is the opposite reverted MRC line and its current barrier state. <b>TP / SL</b> are the actual MRC lines used by the executed side.</p>
         <p><b>Max/furthest line before return</b> is the exact MRC line index/name farthest from the source line before the first return; it does not use the changing line price.</p>
         <p><b>Win rate</b> is wins divided by closed virtual positions for the exact displayed pattern. Always read it together with the position count.</p>
@@ -200,6 +202,12 @@ const TEMPLATE: &str = r###"<!doctype html>
     <section class="panel">
       <h2>Win rate by pattern</h2>
       <div id="patterns" class="table-wrap"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Adaptive pattern selector</h2>
+      <p class="subtle">All recognized patterns are evaluated independently. The active pattern remains selected until a challenger exceeds it by the switch margin.</p>
+      <div id="pattern-performance" class="table-wrap"></div>
     </section>
 
     <section class="panel">
@@ -215,6 +223,8 @@ const TEMPLATE: &str = r###"<!doctype html>
     const predictions = DATA.predictions || [];
     const summary = DATA.prediction_summary || {};
     const patternWinRates = DATA.pattern_win_rates || [];
+    const patternPerformance = DATA.pattern_performance || [];
+    const activePattern = DATA.active_pattern || null;
     const esc = (value) => String(value ?? "")
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -289,7 +299,6 @@ const TEMPLATE: &str = r###"<!doctype html>
         ]],
         ["Historical evidence", [
           ["History scope", "history_scope"],
-          ["Probability (selected / observations)", "probability"],
           ["Transition observations", "transition_samples"],
           ["Movement observations", "movement_samples"],
           ["Next-line cases", "next_line_crosses"],
@@ -329,7 +338,6 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     document.getElementById("context").textContent =
       DATA.symbol_key + " · 1m history " + DATA.history_loaded_1m +
-      " · generated from " + DATA.history_loaded_1h + " hourly candles" +
       (DATA.latest_event_time_ms ? " · as of " + date(DATA.latest_event_time_ms) : "");
 
     const cardData = [
@@ -364,8 +372,6 @@ const TEMPLATE: &str = r###"<!doctype html>
       const resistance = event.barrier_state + ":" + (event.barrier_line != null
         ? (event.barrier_line_name || event.barrier_line) + " @ " + price(event.barrier_price)
         : "na");
-      const probability = event.target_samples + "/" + event.pattern_samples +
-        " = " + (Number(event.probability || 0) * 100).toFixed(1) + "%";
       const expected = event.expected_price_low != null
         ? price(event.expected_price_low) + ".." + price(event.expected_price_high) +
           " (" + esc(event.direction > 0
@@ -393,7 +399,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         ' ' + esc(event.line_name) + '</td><td>' + price(event.market_price) +
         '</td><td>' + price(event.mrc_min) + '..' + price(event.mrc_max) +
         '</td><td>' + esc(learned) + '</td><td>' + esc(event.trade_direction > 0 ? "LONG" : "SHORT") +
-        '</td><td>' + esc(exits) + '</td><td>' + esc(resistance) + '</td><td>' + probability +
+        '</td><td>' + esc(exits) + '</td><td>' + esc(resistance) +
         '</td><td>' + expected + '</td><td>' + realizedPrice + '</td><td>' + targetRange +
         '</td><td><code>' + esc(event.mrc_trace || "—") + '</code></td><td>' +
         esc(evidence) + '</td></tr>';
@@ -401,7 +407,7 @@ const TEMPLATE: &str = r###"<!doctype html>
     document.getElementById("crossings").innerHTML = crossings.length
       ? '<table><thead><tr><th>Time</th><th>Cross</th><th>Market price</th>' +
         '<th>MRC min..max</th><th>Prediction</th>' +
-        '<th>Trade side</th><th>TP / SL lines</th><th>Resistance</th><th>Probability</th>' +
+        '<th>Trade side</th><th>TP / SL lines</th><th>Resistance</th>' +
         '<th>Expected price</th><th>Observed price low..high</th><th>Target MRC low..high</th>' +
         '<th>MRC movement</th><th>Evidence</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
       : '<div class="subtle">No crossing observations</div>';
@@ -410,9 +416,6 @@ const TEMPLATE: &str = r###"<!doctype html>
       '<tr><td><code>' + esc(pattern.pattern) + '</code></td><td>' + pattern.matches + '</td><td>' +
       pattern.filled_predictions + '</td><td>' + pattern.closed_positions + '</td><td>' +
       pattern.wins + ' / ' + pattern.losses + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
-      Number(pattern.average_probability_pct || 0).toFixed(1) + '% (' +
-      Number(pattern.minimum_probability_pct || 0).toFixed(1) + '..' +
-      Number(pattern.maximum_probability_pct || 0).toFixed(1) + '%)</td><td>' +
       pattern.followed_predictions + ' / ' + pattern.broken_predictions + '</td><td>' +
       money(pattern.total_gross_pnl_pct) + '</td><td>' + money(pattern.total_fees_pct) +
       '</td><td class="' + signedClass(pattern.total_pnl_pct) + '">' + money(pattern.total_pnl_pct) +
@@ -421,10 +424,19 @@ const TEMPLATE: &str = r###"<!doctype html>
     ).join("");
     document.getElementById("patterns").innerHTML = patternWinRates.length
       ? '<table><thead><tr><th>Pattern</th><th>Matches</th><th>Filled</th><th>Closed</th>' +
-        '<th>Wins / losses</th><th>Win rate</th><th>Prediction probability avg (range)</th>' +
-        '<th>Followed / broken</th><th>Gross</th><th>Fees</th><th>Net</th>' +
+        '<th>Wins / losses</th><th>Win rate</th><th>Followed / broken</th><th>Gross</th><th>Fees</th><th>Net</th>' +
         '<th>Average win</th><th>Average loss</th></tr></thead><tbody>' + patternRows + '</tbody></table>'
       : '<div class="subtle">No matched patterns with completed positions</div>';
+
+    const performanceRows = patternPerformance.map((pattern) =>
+      '<tr class="' + (pattern.pattern === activePattern ? 'active-row' : '') + '"><td><code>' + esc(pattern.pattern) + '</code></td><td>' +
+      pattern.observations + '</td><td>' + pattern.trades + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
+      money(pattern.total_pnl_pct) + '</td><td>' + money(pattern.average_pnl_pct) + '</td><td>' + money(pattern.ema_pnl_pct) +
+      '</td><td>' + money(pattern.last_pnl_pct) + '</td><td>' + (pattern.pattern === activePattern ? 'ACTIVE' : '') + '</td></tr>'
+    ).join('');
+    document.getElementById("pattern-performance").innerHTML = performanceRows
+      ? '<table><thead><tr><th>Pattern</th><th>Observations</th><th>Trades</th><th>Win rate</th><th>Total net</th><th>Average net</th><th>EMA net</th><th>Last net</th><th>State</th></tr></thead><tbody>' + performanceRows + '</tbody></table>'
+      : '<div class="subtle">No pattern performance yet</div>';
 
     const positionRows = trades.map((trade, index) => {
       const side = trade.side > 0 ? "LONG" : "SHORT";
@@ -572,7 +584,6 @@ mod tests {
                 source_name: None,
                 condition: "no-crossing-history",
                 sample_count: 0,
-                probability_next_crossing: None,
                 estimated_time_ms: None,
                 likely_destinations: Vec::new(),
             },
@@ -585,12 +596,15 @@ mod tests {
             pending_predictions: 0,
             active_predictions: 0,
             pattern_win_rates: Vec::new(),
+            pattern_performance: Vec::new(),
+            parallel_pattern_trades: Vec::new(),
+            active_pattern: None,
+            active_pattern_score: 0.0,
         };
         let data = json!({
             "symbol_key": "TEST",
             "history_requested_1m": 10,
             "history_loaded_1m": 10,
-            "history_loaded_1h": 10,
             "trade_summary": report.trade_summary,
             "trades": report.trades,
             "open_trade": report.open_trade,

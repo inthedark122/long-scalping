@@ -12,7 +12,7 @@ The repeatable standard for taking an idea to a validated module version. Defaul
 1. **RECOMMEND / validate only — never deploy live without an explicit user keyword.** Build + backtest freely; flipping the live bot needs the user's word.
 2. **Never expose the live bot to an untested version.** To backtest a non-live version you patch the group's `module_version`, run, then **REVERT**. The live in-memory bot keeps running the old version until an explicit restart — a config change alone does not touch it. Always revert.
 3. **Self-calc the net from positions.** Headline `profit`/`fee`/`volume` and the hourly `pnl_chart` are **UNRELIABLE** (can be byte-identical across genuinely different runs). NET = `Σ total_profit − Σ fee`.
-4. **Only use backtestable signals.** Replayed in backtest: `NTPS`, fast-candle, MRC, regime, cascade, V-tracker. **NOT replayed: `OI`, `order_book`.** An improvement that depends on OI/order_book cannot be validated — don't build it.
+4. **Only use supported signals.** The strategy replays MRC crossings, MRC pattern classifications, and volume fields. Do not add NTPS, fast-candle, regime, cascade, V-tracker, OI, or order-book dependencies to the strategy.
 5. **One branch -> one backtest name -> one version tag**, all the same slug, so git history and LTE backtest history read as one timeline.
 
 ## 0. Baseline (the number to beat)
@@ -66,10 +66,9 @@ run_bot_group_backtest(29,
   action_config={
     signal_action_code:"start", margin:10, leverage:100,
     trigger:{type:"Infinity"},
-    action_params:{breakout_guard:0, imbalance_guard:0, margin_sl:1,
-      imbalance_ratio:3, breakout_ntps:300, sl_margin_pct:0.7, seed:0.05,
-      cap:0.9, cooldown_ticks:5, nearest:2, enable_grid:0, enable_stairs:1,
-      enable_trend:1}
+    action_params:{cap_init:2, trading_amount:50, min_tp_percent:0,
+      min_sl_percent:0, risk_target_percent:0, required_samples:3,
+      entry_type:1}
   })
 ```
 ⚠️ **Without the trigger Infinity (action_config) the start signal never fires -> 0 trades / 0 volume / ~50s finish.** Looks like a broken module but isn't — suspect a missing trigger first. Margin 0.5 vs 10 does NOT change behavior (sizing is `max_amount`-driven) — use **m10** for readable $ and to match the baseline.
@@ -110,6 +109,6 @@ Patch both `module_version` fields + rename the group -> `run_bot_action(694, lt
 | group / bot | 29 / 694, `OKX#ETH-USDT-SWAP#SWAP`, lev 100 |
 | backtest window | `1777507200000` -> `1779926400000` (Apr30->May28 2026) |
 | baseline | v0.61 Run 22 NET **+$1.60** (m10) |
-| backtestable | NTPS, fast-candle, MRC, regime, cascade, V-tracker |
+| supported | MRC crossings, MRC patterns, volume |
 | NOT backtestable | OI, order_book |
 | target | `wasm32-wasip1` |

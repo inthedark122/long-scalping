@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use long_scalping::{
     engine::run,
-    model::{
-        EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState, StrategyMode,
-    },
+    model::{EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState},
     state::{EngineState, PositionRuntime},
 };
 use lte_strategy_bridge::abi::ModuleSymbolInfo;
@@ -59,9 +57,9 @@ fn position(side: PositionState, stop_loss: f64) -> PositionRuntime {
         trough_price: 100.0,
         take_profit: 100.2,
         stop_loss,
-        stop_loss_reason: "structural:1m:below:mean".to_string(),
+        stop_loss_reason: "fixed".to_string(),
         exit_tp_reliable: true,
-        exit_mode: ExitMode::Structural,
+        exit_mode: ExitMode::Fixed,
         exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
         entry_reason: None,
     }
@@ -91,7 +89,6 @@ fn mrc_reason(target_price: f64, stop_price: f64) -> EntryReason {
         price_only_moves: 0,
         successful_moves: 1,
         failed_moves: 0,
-        probability: 0.75,
         movement_success_rate: 1.0,
         expected_value_pct: 3.0,
         expected_price_low: 100.0,
@@ -319,12 +316,8 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
         current_cross: 0.0,
         mean_line_slope: 1.0,
     };
-    snapshot.tf1m.zz_buy_price = Some(95.0);
-    snapshot.tf1m.zz_sell_price = Some(110.0);
     snapshot.tf1m.candle.close = 102.0;
     snapshot.tf5m = snapshot.tf1m;
-    snapshot.tf15m = snapshot.tf1m;
-    snapshot.tf1h = snapshot.tf1m;
     state.last_snapshot = Some(snapshot);
     state.last_active_tp_recalc_bar = Some(state.bar_1m);
     state.position = PositionRuntime {
@@ -336,7 +329,7 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
         stop_loss: 90.0,
         stop_loss_reason: "mrc-crossing:adjacent-line".to_string(),
         exit_tp_reliable: true,
-        exit_mode: ExitMode::Structural,
+        exit_mode: ExitMode::Fixed,
         exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
         entry_reason: Some(long_scalping::model::EntryReason::MrcCrossing {
             price: 100.0,
@@ -345,7 +338,6 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
             mrc_max: 110.0,
             target_price: 100.2,
             stop_price: 90.0,
-            probability: 0.8,
             estimated_time_ms: 1_000.0,
             source_line: 1,
             target_line: 2,
@@ -397,7 +389,6 @@ fn mrc_crossing_uses_the_shared_exit_plan_on_realtime_updates() {
 #[test]
 fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
     let mut state = EngineState::default();
-    state.cfg.strategy_mode = StrategyMode::MrcCrossing;
     state.cfg.min_tp_percent = 1.0;
     state.cfg.min_sl_percent = 0.5;
     let mut snapshot = IndicatorSnapshot::default();
@@ -414,8 +405,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
         current_cross: 0.0,
         mean_line_slope: 0.0,
     };
-    snapshot.tf1m.zz_buy_price = Some(99.5);
-    snapshot.tf1m.zz_sell_price = Some(100.5);
     state.last_snapshot = Some(snapshot);
     state.position = position(PositionState::Long, 0.0);
     state.position.take_profit = 0.0;
@@ -426,7 +415,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
         mrc_max: 110.0,
         target_price: 100.2,
         stop_price: 99.8,
-        probability: 0.8,
         estimated_time_ms: 1_000.0,
         source_line: 4,
         target_line: 5,
@@ -478,7 +466,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_long_exit() {
 #[test]
 fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
     let mut state = EngineState::default();
-    state.cfg.strategy_mode = StrategyMode::MrcCrossing;
     state.cfg.min_tp_percent = 1.0;
     state.cfg.min_sl_percent = 0.5;
     let mut snapshot = IndicatorSnapshot::default();
@@ -495,8 +482,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
         current_cross: 0.0,
         mean_line_slope: 0.0,
     };
-    snapshot.tf1m.zz_buy_price = Some(99.5);
-    snapshot.tf1m.zz_sell_price = Some(100.5);
     state.last_snapshot = Some(snapshot);
     state.position = position(PositionState::Short, 0.0);
     state.position.take_profit = 0.0;
@@ -507,7 +492,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
         mrc_max: 110.0,
         target_price: 99.8,
         stop_price: 100.2,
-        probability: 0.8,
         estimated_time_ms: 1_000.0,
         source_line: 4,
         target_line: 3,
@@ -559,7 +543,6 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
 #[test]
 fn expired_mrc_limit_is_cancelled_without_replacement() {
     let mut state = EngineState::default();
-    state.cfg.strategy_mode = StrategyMode::MrcCrossing;
     state.cfg.entry_type = EntryType::Limit;
     state.cfg.required_samples = 1;
     state.bar_1m = 2;
@@ -571,7 +554,6 @@ fn expired_mrc_limit_is_cancelled_without_replacement() {
         mrc_max: 110.0,
         target_price: 104.0,
         stop_price: 96.0,
-        probability: 0.8,
         estimated_time_ms: 1_000.0,
         source_line: 4,
         target_line: 5,
@@ -688,8 +670,6 @@ fn expired_mrc_limit_is_cancelled_without_replacement() {
     };
     snapshot.tf1m.candle.close = 99.0;
     snapshot.tf5m = snapshot.tf1m;
-    snapshot.tf15m = snapshot.tf1m;
-    snapshot.tf1h = snapshot.tf1m;
     state.last_snapshot = Some(snapshot);
     state.mrc_crossing.last_price = Some(105.0);
     for (index, line) in state.vlines.iter_mut().enumerate() {

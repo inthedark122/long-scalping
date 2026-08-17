@@ -20,12 +20,6 @@ pub enum PositionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StrategyMode {
-    Stairs,
-    MrcCrossing,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryType {
     Market,
     Limit,
@@ -46,40 +40,17 @@ impl Default for EntryType {
     }
 }
 
-impl StrategyMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Stairs => "stairs",
-            Self::MrcCrossing => "mrc-crossing",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExitType {
     LevelExit,
     VirtualTrailingExit { ticks: u32 },
 }
 
-pub const STAIRS_EXIT_TYPE: ExitType = ExitType::LevelExit;
 pub const MRC_CROSSING_EXIT_TYPE: ExitType = ExitType::VirtualTrailingExit { ticks: 2 };
-
-pub fn exit_type_for_strategy(strategy_mode: StrategyMode) -> ExitType {
-    match strategy_mode {
-        StrategyMode::Stairs => STAIRS_EXIT_TYPE,
-        StrategyMode::MrcCrossing => MRC_CROSSING_EXIT_TYPE,
-    }
-}
-
-impl Default for StrategyMode {
-    fn default() -> Self {
-        Self::Stairs
-    }
-}
 
 impl Default for ExitType {
     fn default() -> Self {
-        STAIRS_EXIT_TYPE
+        MRC_CROSSING_EXIT_TYPE
     }
 }
 
@@ -112,8 +83,6 @@ pub struct Config {
     #[serde(default)]
     pub risk_target_percent: f64,
     #[serde(default)]
-    pub strategy_mode: StrategyMode,
-    #[serde(default)]
     pub entry_type: EntryType,
     #[serde(default = "default_required_samples")]
     pub required_samples: u32,
@@ -139,7 +108,6 @@ impl Default for Config {
             min_tp_percent: 0.0,
             min_sl_percent: 0.0,
             risk_target_percent: 0.0,
-            strategy_mode: StrategyMode::default(),
             entry_type: EntryType::default(),
             required_samples: default_required_samples(),
         }
@@ -243,41 +211,11 @@ impl MrcBands {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct SmcSnapshot {
-    pub direction: i8,
-    pub direction_swing: i8,
-    pub fp: Option<f64>,
-    pub high_price: Option<f64>,
-    pub low_price: Option<f64>,
-    pub break_price: Option<f64>,
-    pub ob_direction: Option<i8>,
-    pub ob_high: Option<f64>,
-    pub ob_low: Option<f64>,
-    pub sbp: Option<f64>,
-}
-
-impl SmcSnapshot {
-    pub fn allows_long(&self) -> bool {
-        self.direction >= 0
-    }
-
-    pub fn allows_short(&self) -> bool {
-        self.direction <= 0
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct TimeframeSnapshot {
     pub candle: Candle,
     pub mrc: MrcBands,
     #[serde(default)]
     pub mrc_signal: MrcSignal,
-    pub zz_dir: i8,
-    pub zz_buy_price: Option<f64>,
-    pub zz_sell_price: Option<f64>,
-    pub zz_break_price: f64,
-    #[serde(default)]
-    pub smc: SmcSnapshot,
     pub volume_gain: f64,
     pub volume_gain_min: f64,
     pub volume_gain_max: f64,
@@ -297,55 +235,8 @@ impl Default for GainZone {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct FastCandleSnapshot {
-    pub candle: Candle,
-    pub active: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FastCandlePhase {
-    Absent,
-    Cooling,
-    Building,
-    Tiring,
-}
-
-impl Default for FastCandlePhase {
-    fn default() -> Self {
-        Self::Absent
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct SignalIndicatorSnapshot {
-    pub ntps: i64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct SugInfoSnapshot {
-    pub fast_candle: Option<FastCandleSnapshot>,
-    pub sug_candle: Option<Candle>,
-    pub signal: SignalIndicatorSnapshot,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryReason {
-    SugInfoScalp {
-        price: f64,
-    },
-    SugInfoMovement {
-        price: f64,
-    },
-    SidewayScalp {
-        price: f64,
-        block_low: f64,
-        block_high: f64,
-        source: String,
-    },
-    Structural {
-        price: f64,
-    },
     MrcCrossing {
         price: f64,
         market_price: f64,
@@ -369,7 +260,6 @@ pub enum EntryReason {
         price_only_moves: u32,
         successful_moves: u32,
         failed_moves: u32,
-        probability: f64,
         movement_success_rate: f64,
         expected_value_pct: f64,
         expected_price_low: f64,
@@ -383,20 +273,12 @@ pub enum EntryReason {
 impl EntryReason {
     pub fn price(&self) -> f64 {
         match self {
-            Self::SugInfoScalp { price, .. } => *price,
-            Self::SugInfoMovement { price, .. } => *price,
-            Self::SidewayScalp { price, .. } => *price,
-            Self::Structural { price } => *price,
             Self::MrcCrossing { price, .. } => *price,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::SugInfoScalp { .. } => "sug-info-scalp",
-            Self::SugInfoMovement { .. } => "sug-info-movement",
-            Self::SidewayScalp { .. } => "sideway-scalp",
-            Self::Structural { .. } => "structural",
             Self::MrcCrossing { .. } => "mrc-crossing",
         }
     }
@@ -404,21 +286,19 @@ impl EntryReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExitMode {
-    Structural,
     Fixed,
     TrailAfterVirtualSl,
 }
 
 impl Default for ExitMode {
     fn default() -> Self {
-        Self::Structural
+        Self::Fixed
     }
 }
 
 impl ExitMode {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Structural => "structural",
             Self::Fixed => "fixed",
             Self::TrailAfterVirtualSl => "trail-after-virtual-sl",
         }
@@ -499,49 +379,10 @@ impl TimeframeSnapshot {
     }
 }
 
-impl FastCandleSnapshot {
-    pub fn range_pct(&self) -> f64 {
-        let price = self.candle.close.max(0.0);
-        if price <= 0.0 {
-            return 0.0;
-        }
-        ((self.candle.high - self.candle.low).abs() / price) * 100.0
-    }
-
-    pub fn phase(&self, current_candle: &Candle) -> FastCandlePhase {
-        if !self.active {
-            return if self.range_pct() > 0.0 {
-                FastCandlePhase::Cooling
-            } else {
-                FastCandlePhase::Absent
-            };
-        }
-
-        let fc_pct = self.range_pct();
-        let candle_pct = if current_candle.close > 0.0 {
-            ((current_candle.high - current_candle.low).abs() / current_candle.close) * 100.0
-        } else {
-            0.0
-        };
-
-        if fc_pct <= 0.0 {
-            FastCandlePhase::Absent
-        } else if candle_pct <= 0.40 && fc_pct >= candle_pct * 1.5 {
-            FastCandlePhase::Tiring
-        } else if fc_pct >= candle_pct {
-            FastCandlePhase::Building
-        } else {
-            FastCandlePhase::Cooling
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct IndicatorSnapshot {
     pub tf1m: TimeframeSnapshot,
     pub tf5m: TimeframeSnapshot,
-    pub tf15m: TimeframeSnapshot,
-    pub tf1h: TimeframeSnapshot,
 }
 
 #[cfg(test)]
@@ -549,69 +390,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fast_candle_phase_follows_doc_semantics() {
-        let active = FastCandleSnapshot {
-            candle: Candle {
-                open: 100.0,
-                high: 106.0,
-                low: 100.0,
-                close: 105.0,
-            },
-            active: true,
-        };
-        let growing = active.phase(&Candle {
-            open: 100.0,
-            high: 105.5,
-            low: 99.5,
-            close: 105.0,
-        });
-        assert_eq!(growing, FastCandlePhase::Building);
-
-        let tiring = active.phase(&Candle {
-            open: 105.0,
-            high: 105.3,
-            low: 104.9,
-            close: 105.05,
-        });
-        assert_eq!(tiring, FastCandlePhase::Tiring);
-
-        let cooling = FastCandleSnapshot {
-            active: false,
-            ..active
-        }
-        .phase(&Candle {
-            open: 105.0,
-            high: 105.3,
-            low: 104.9,
-            close: 105.05,
-        });
-        assert_eq!(cooling, FastCandlePhase::Cooling);
-    }
-
-    #[test]
-    fn strategy_mode_defaults_to_stairs_and_round_trips() {
-        assert_eq!(Config::default().strategy_mode, StrategyMode::Stairs);
+    fn config_uses_pattern_engine_defaults() {
         assert_eq!(Config::default().entry_type(), EntryType::Limit);
         let config: Config = serde_json::from_value(serde_json::json!({
-            "strategy_mode": "MrcCrossing",
             "entry_type": "Market"
         }))
-        .expect("strategy mode should deserialize from Start state");
-        assert_eq!(config.strategy_mode, StrategyMode::MrcCrossing);
-        assert_eq!(config.strategy_mode.as_str(), "mrc-crossing");
+        .expect("entry setting should deserialize");
         assert_eq!(config.entry_type(), EntryType::Market);
-    }
-
-    #[test]
-    fn strategy_exit_type_is_hardcoded_per_strategy() {
-        assert_eq!(
-            exit_type_for_strategy(StrategyMode::Stairs),
-            ExitType::LevelExit
-        );
-        assert_eq!(
-            exit_type_for_strategy(StrategyMode::MrcCrossing),
-            ExitType::VirtualTrailingExit { ticks: 2 }
-        );
     }
 
     #[test]
@@ -625,46 +410,11 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct RegimeSnapshot {
-    pub primary: MarketState,
-    pub fallback: MarketState,
-    pub confirmed: MarketState,
-    pub fallback_used: bool,
-    pub context_1h: MarketState,
-    pub blocked_by_context: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntryWaitSolution {
     MrcCrossing,
     MrcDirectionalTarget,
-    WaitForSamples {
-        required: u32,
-        current: u32,
-    },
-    WaitForDirectionBreak {
-        source: String,
-        direction: MarketState,
-        break_price: f64,
-    },
-    WaitForConfirmation {
-        source: String,
-        direction: MarketState,
-        armed_tick: u64,
-        price: f64,
-    },
-    ReclaimLevel {
-        source: String,
-        level: f64,
-        band_low: f64,
-        band_high: f64,
-    },
-    FastCandle {
-        phase: FastCandlePhase,
-        fast_candle_pct: f64,
-        candle_pct: f64,
-    },
+    WaitForSamples { required: u32, current: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

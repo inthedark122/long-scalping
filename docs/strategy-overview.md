@@ -1,30 +1,33 @@
-# Strategy Overview
+# Adaptive pattern-engine overview
 
-This is the limit-entry release for the structural scalping module.
+The module is a limit-entry MRC pattern trader. It does not choose between
+separate strategy modes. Every supported pattern is evaluated on every new MRC
+movement, and one selector chooses the best currently tradable candidate.
 
 ## Trading model
-- Detection regime: `5m`
-- Execution timeframe: `1m`
-- Confirmation fallback: `15m`
-- Long context only: `1h`
-- Allowed states: `Long`, `Short`, `Sideways`
+
+- Input timeframes: `1m` and `5m` MRC lines plus volume; candle OHLC and live price provide market context
 - Position policy: one open position at a time
+- Pattern policy: classify all matches, preserve overlaps, and score them independently
+- Selection policy: stay with the active pattern until a challenger beats it by the configured switch margin
+- Continuation policy: advance through successive MRC lines while a staircase or outward continuation remains valid
 
-## Inputs
-- `MRC`
-- `SMC`
-- `ZigZagTrend`
-- Candle OHLC
-- Live price
+## Pattern pipeline
 
-## Pipeline
-1. `market_data.rs` reads candles, MRC bands, DP direction, and ZigZag direction for `1m`, `5m`, `15m`, and `1h`.
-2. `detection/mrc.rs` computes zone, window position, and mean-line slope.
-3. `detection/cascade.rs` tracks directional movement using candle path plus DP/ZZ agreement.
-4. `detection/vlines.rs` tracks MRC crossing memory.
-6. `detection/regime.rs` classifies `5m`, falls back to `15m`, and lets `1h` only block overconfident entries.
-7. `decision.rs` outputs one state and an entry allowance.
-8. `execution.rs` enforces one-position trading and a limit-only entry with the internal `cap_init` bankroll model plus `trading_amount` and optional volatility-adjusted risk sizing.
+1. `detection/mrc_cross_analysis.rs` converts MRC transitions into normalized movement events.
+2. `detection/mrc_pattern_classification.rs::classify_all` runs every matcher and keeps overlapping results.
+3. `detection/mrc_crossing.rs` builds a candidate for each match with a directional target, stop, and score.
+4. `state.rs` updates the observation ledger and the realized net-PnL ledger for each pattern.
+5. The selector picks the best candidate, with hysteresis to avoid noisy pattern flapping.
+6. `engine.rs` executes only the selected candidate and attributes the completed trade to its opening pattern.
+
+## Pattern learning
+
+Each pattern tracks observations, trades, wins, total net PnL, average net PnL,
+and an exponential moving average of net PnL. New patterns use movement evidence
+as a prior; realized trades progressively dominate that prior. Research mirrors
+this process with seven virtual accounts so pattern quality can be compared
+without mixing outcomes between patterns.
 
 ## Risk model
 - The public risk knobs are `cap_init`, `trading_amount`, and optional `risk_target_percent`

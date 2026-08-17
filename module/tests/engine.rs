@@ -60,9 +60,9 @@ fn next_sug_info_reprices_trailing_tp_from_current_price() {
         trough_price: 100.0,
         take_profit: 100.2,
         stop_loss: 99.5,
-        stop_loss_reason: "structural:1m:below:mean".to_string(),
+        stop_loss_reason: "fixed".to_string(),
         exit_tp_reliable: true,
-        exit_mode: ExitMode::Structural,
+        exit_mode: ExitMode::Fixed,
         exit_type: ExitType::VirtualTrailingExit { ticks: 2 },
         entry_reason: None,
     };

@@ -119,7 +119,7 @@ mod tests {
             100.5,
             "tp-reprice",
             "structural",
-            ExitMode::Structural,
+            ExitMode::Fixed,
             false,
             "source=mean".to_string(),
         );
@@ -165,7 +165,7 @@ mod tests {
             100.5,
             "tp-reprice",
             "structural",
-            ExitMode::Structural,
+            ExitMode::Fixed,
             false,
             "source=mean",
         );

@@ -25,11 +25,8 @@ pub(crate) struct CandleRow {
     pub(crate) high: f64,
     pub(crate) low: f64,
     pub(crate) close: f64,
-    pub(crate) zz_dir: i8,
-    pub(crate) zz_break_price: f64,
     pub(crate) gain: f64,
     pub(crate) buy_sell_gain: f64,
-    pub(crate) ntps: i64,
     pub(crate) mrc: MrcBands,
 }
 
@@ -76,17 +73,6 @@ struct CacheDocument {
     timeframe: u64,
     indicator_name: Option<String>,
     rows: Vec<CandleRow>,
-}
-
-fn dir_to_int(value: Option<&Value>) -> i8 {
-    match value
-        .and_then(Value::as_str)
-        .map(|s| s.to_ascii_uppercase())
-    {
-        Some(s) if s == "LONG" => 1,
-        Some(s) if s == "SHORT" => -1,
-        _ => 0,
-    }
 }
 
 pub(crate) fn f64_or(obj: &Value, primary: &str, fallback: &str) -> f64 {
@@ -401,8 +387,6 @@ fn parse_candle(item: &Value) -> CandleRow {
     let ind = item.get("indicators").unwrap_or(&Value::Null);
     let candle = ind.get("candle").unwrap_or(ind);
     let mrc = ind.get("mrc_200").unwrap_or(&Value::Null);
-    let zz = ind.get("zigzagtrend").unwrap_or(&Value::Null);
-    let signal = ind.get("signal").unwrap_or(&Value::Null);
     let volume = ind.get("volume_50").unwrap_or(&Value::Null);
 
     CandleRow {
@@ -411,11 +395,8 @@ fn parse_candle(item: &Value) -> CandleRow {
         high: f64_or(candle, "High", "high"),
         low: f64_or(candle, "Low", "low"),
         close: f64_or(candle, "Close", "close"),
-        zz_dir: dir_to_int(zz.get("Direction")),
-        zz_break_price: f64_or(zz, "BreakPrice", "break_price"),
         gain: f64_or(volume, "Gain", "gain"),
         buy_sell_gain: f64_or(volume, "BuySellGain", "buy_sell_gain"),
-        ntps: get_i64(signal, "ntps"),
         mrc: parse_mrc(mrc),
     }
 }

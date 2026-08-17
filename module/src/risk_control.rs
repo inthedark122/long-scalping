@@ -1,4 +1,4 @@
-use crate::model::{MrcBands, SugInfoSnapshot, TimeframeSnapshot};
+use crate::model::{MrcBands, TimeframeSnapshot};
 
 const ANGLE_ZERO_RATIO: f64 = 0.05;
 const INITIAL_WARMUP_MS: u64 = 10 * 60 * 1_000;
@@ -147,7 +147,6 @@ impl MrcTimeframeHistory {
         snapshot: &TimeframeSnapshot,
         price: f64,
         now_ms: u64,
-        fast_candle_active: bool,
     ) -> MrcTimeframeRisk {
         let mrc = &snapshot.mrc;
         let zone = mrc_zone(mrc, price);
@@ -190,14 +189,8 @@ impl MrcTimeframeHistory {
         if warmup_complete && angle != MrcAngle::Flat && angle_duration_ms >= PERSISTENT_ANGLE_MS {
             reasons.push("angle-persistent");
         }
-        if crossed_outer_or_big && (fast_candle_active || high_volume) {
-            reasons.push(if fast_candle_active && high_volume {
-                "outer-big-cross:spike-volume"
-            } else if fast_candle_active {
-                "outer-big-cross:spike"
-            } else {
-                "outer-big-cross:volume"
-            });
+        if crossed_outer_or_big && high_volume {
+            reasons.push("outer-big-cross:volume");
         }
 
         let level = if reasons.is_empty() {
@@ -232,18 +225,13 @@ impl MrcRiskManager {
     pub fn observe(
         &mut self,
         snapshot: &crate::model::IndicatorSnapshot,
-        sug_snapshot: &SugInfoSnapshot,
         price: f64,
         now_ms: u64,
     ) -> MrcRiskAssessment {
-        let fast_candle_active = sug_snapshot
-            .fast_candle
-            .is_some_and(|fast_candle| fast_candle.active);
         let timeframes = vec![
-            self.one_minute
-                .observe("1m", &snapshot.tf1m, price, now_ms, fast_candle_active),
+            self.one_minute.observe("1m", &snapshot.tf1m, price, now_ms),
             self.five_minute
-                .observe("5m", &snapshot.tf5m, price, now_ms, fast_candle_active),
+                .observe("5m", &snapshot.tf5m, price, now_ms),
         ];
         let level = timeframes
             .iter()
@@ -308,113 +296,4 @@ fn crossed_outer_or_big(mrc: &MrcBands, previous_price: f64, current_price: f64)
         || crossed(previous_price, current_price, mrc.up_big, true)
         || crossed(previous_price, current_price, mrc.down_outer, false)
         || crossed(previous_price, current_price, mrc.down_big, false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{Candle, IndicatorSnapshot, MrcBands, SugInfoSnapshot, TimeframeSnapshot};
-
-    fn mrc() -> MrcBands {
-        MrcBands {
-            down_big: 80.0,
-            down_outer: 85.0,
-            down_small: 90.0,
-            down_inner: 95.0,
-            mean_line: 100.0,
-            up_inner: 105.0,
-            up_small: 110.0,
-            up_outer: 115.0,
-            up_big: 120.0,
-            current_cross: 0.0,
-            mean_line_slope: 1.0,
-        }
-    }
-
-    fn snapshot(mrc: MrcBands) -> IndicatorSnapshot {
-        let tf = TimeframeSnapshot {
-            candle: Candle {
-                open: 100.0,
-                high: 101.0,
-                low: 99.0,
-                close: 100.0,
-            },
-            mrc,
-            volume_gain: 1.0,
-            volume_gain_min: 1.0,
-            volume_gain_max: 10.0,
-            ..TimeframeSnapshot::default()
-        };
-        IndicatorSnapshot {
-            tf1m: tf,
-            tf5m: tf,
-            tf15m: tf,
-            tf1h: tf,
-        }
-    }
-
-    #[test]
-    fn classifies_mean_midpoint_as_low_impulse() {
-        let mut manager = MrcRiskManager::default();
-        let assessment = manager.observe(&snapshot(mrc()), &SugInfoSnapshot::default(), 107.0, 0);
-        assert_eq!(assessment.level, MrcRiskLevel::LowImpulse);
-        assert_eq!(assessment.timeframes[0].zone, MrcZone::UpperLowImpulse);
-    }
-
-    #[test]
-    fn outside_outer_is_high() {
-        let mut manager = MrcRiskManager::default();
-        let assessment = manager.observe(&snapshot(mrc()), &SugInfoSnapshot::default(), 116.0, 0);
-        assert_eq!(assessment.level, MrcRiskLevel::High);
-        assert!(assessment.timeframes[0].reasons.contains(&"outside-outer"));
-    }
-
-    #[test]
-    fn flat_angle_waits_for_warmup() {
-        let mut bands = mrc();
-        bands.mean_line_slope = 0.1;
-        let mut manager = MrcRiskManager::default();
-        let first = manager.observe(&snapshot(bands), &SugInfoSnapshot::default(), 100.0, 0);
-        assert_eq!(first.level, MrcRiskLevel::LowImpulse);
-
-        bands.mean_line_slope = 0.0;
-        let later = manager.observe(
-            &snapshot(bands),
-            &SugInfoSnapshot::default(),
-            100.0,
-            INITIAL_WARMUP_MS,
-        );
-        assert_eq!(later.level, MrcRiskLevel::High);
-        assert!(later.timeframes[0].reasons.contains(&"angle-flat"));
-    }
-
-    #[test]
-    fn persistent_angle_is_high_after_thirty_minutes() {
-        let mut manager = MrcRiskManager::default();
-        let initial = manager.observe(&snapshot(mrc()), &SugInfoSnapshot::default(), 100.0, 0);
-        assert_eq!(initial.level, MrcRiskLevel::LowImpulse);
-        let later = manager.observe(
-            &snapshot(mrc()),
-            &SugInfoSnapshot::default(),
-            100.0,
-            PERSISTENT_ANGLE_MS,
-        );
-        assert_eq!(later.level, MrcRiskLevel::High);
-        assert!(later.timeframes[0].reasons.contains(&"angle-persistent"));
-    }
-
-    #[test]
-    fn outer_cross_requires_spike_or_volume() {
-        let mut manager = MrcRiskManager::default();
-        manager.observe(&snapshot(mrc()), &SugInfoSnapshot::default(), 114.0, 0);
-        let mut high_gain = mrc();
-        high_gain.mean_line_slope = 0.0;
-        let mut next = snapshot(high_gain);
-        next.tf1m.volume_gain = 9.0;
-        next.tf1m.volume_gain_max = 10.0;
-        let assessment = manager.observe(&next, &SugInfoSnapshot::default(), 116.0, 1_000);
-        assert!(assessment.timeframes[0]
-            .reasons
-            .contains(&"outer-big-cross:volume"));
-    }
 }

@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.94 release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/strategy/entry_type/required_samples overrides. Market entries open immediately. Limit entries use the strategy price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed. MRC Crossing follows adjacent MRC line transitions inside a recent local cycle window, records market-price and MRC-range movement, and predicts the next line with timing and adaptive exits; configured minimum TP and SL distances apply globally to strategy exits; cascade movement remains separate. Stairs uses LevelExit.",
+      "description": "Start the 1.0.94 adaptive pattern-engine release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples overrides. All MRC patterns are classified independently; the selector trades the best learned candidate and continues line-to-line while it remains best. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
       "params": [
         {
           "code": "cap_init",
@@ -51,7 +51,7 @@
         {
           "code": "min_tp_percent",
           "name": "Minimum TP %",
-          "description": "Minimum TP distance for every strategy exit. The larger of this value and the cascade average is used when selecting structural targets.",
+          "description": "Minimum TP distance for every MRC pattern exit. 0 disables this floor.",
           "default": 0.0,
           "variant": "Number"
         },
@@ -70,26 +70,9 @@
           "variant": "Number"
         },
         {
-          "code": "strategy_mode",
-          "name": "Strategy",
-          "description": "Choose the existing Stairs strategy or MRC Crossing. The selection takes effect on Start.",
-          "default": 0,
-          "variant": "Select",
-          "options": [
-            {
-              "label": "Stairs",
-              "value": 0.0
-            },
-            {
-              "label": "MRC Crossing",
-              "value": 1.0
-            }
-          ]
-        },
-        {
           "code": "required_samples",
           "name": "Required samples",
-          "description": "Sample requirement for movement and SUG entry logic. MRC Crossing entry prediction uses its recent local cycle observations and does not gate on this value; default 3.",
+          "description": "Minimum number of observations used by the adaptive pattern engine before normal learned statistics are considered; continuation patterns can still trade when a stair is detected.",
           "default": 3,
           "variant": "Number"
         },

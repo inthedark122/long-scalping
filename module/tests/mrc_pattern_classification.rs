@@ -1,5 +1,5 @@
 use long_scalping::detection::mrc_pattern_classification::{
-    classify, definition, MrcPatternKind, MRC_PATTERN_DEFINITIONS,
+    classify, classify_all, definition, MrcPatternKind, MRC_PATTERN_DEFINITIONS,
 };
 use long_scalping::state::{MrcHistoryEvent, MrcMovementSnapshot};
 
@@ -124,4 +124,21 @@ fn classification_records_outward_continuation_from_movement_result() {
     assert_eq!(signal.kind, MrcPatternKind::OutwardContinuation);
     assert_eq!(signal.direction, 1);
     assert_eq!(signal.target_line, 7);
+}
+
+#[test]
+fn classification_keeps_overlapping_pattern_matches_for_parallel_learning() {
+    let mut events = history(&[(3, 100.0), (4, 101.0), (5, 102.0)]);
+    events[2].completed_movement = Some(successful_movement());
+
+    let kinds = classify_all(&events)
+        .into_iter()
+        .map(|signal| signal.kind)
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&MrcPatternKind::StairsUp));
+    assert!(kinds.contains(&MrcPatternKind::OutwardContinuation));
+    assert_eq!(
+        classify(&events).map(|signal| signal.kind),
+        Some(MrcPatternKind::StairsUp)
+    );
 }

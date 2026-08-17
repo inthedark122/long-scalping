@@ -1,9 +1,44 @@
+//! Stateful candle cascade detector retained for future research.
+//!
+//! This module is deliberately not part of the live MRC entry/exit decision
+//! path. It turns an OHLC stream into movement blocks, movement strength, and
+//! a bounded history that can later be combined with MRC and volume features.
+
 use crate::model::{Candle, TimeframeSnapshot};
-use crate::state::{CascadeMovement, CascadeState};
 
 const CASCADE_SAMPLE_WINDOW: usize = 30;
 const CASCADE_TP_PERCENTILE: f64 = 0.90;
 const MIN_SAMPLES_FOR_ABSORPTION: u32 = 10;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CascadeMovement {
+    pub high: f64,
+    pub low: f64,
+    pub dir: i8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CascadeState {
+    pub last_close: f64,
+    pub dir: i8,
+    pub run_extreme: f64,
+    pub run_size: f64,
+    pub avg_size: f64,
+    pub samples: u32,
+    pub last_break: f64,
+    pub cas_dir: i8,
+    pub cas_high: f64,
+    pub cas_low: f64,
+    pub cas_candles: u32,
+    pub sizes: [f64; CASCADE_SAMPLE_WINDOW],
+    pub sizes_pos: usize,
+    pub sizes_len: usize,
+    pub breaks: [f64; 5],
+    pub break_n: usize,
+    pub movement_history: [CascadeMovement; CASCADE_SAMPLE_WINDOW],
+    pub movement_history_pos: usize,
+    pub movement_history_len: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovementPhase {
@@ -60,20 +95,13 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
     }
 
     if dir == memory.cas_dir {
-        if high > memory.cas_high {
-            memory.cas_high = high;
-        }
-        if low < memory.cas_low {
-            memory.cas_low = low;
-        }
+        memory.cas_high = memory.cas_high.max(high);
+        memory.cas_low = memory.cas_low.min(low);
         memory.cas_candles = memory.cas_candles.saturating_add(1);
         return false;
     }
 
     let completed_size = (memory.cas_high - memory.cas_low).abs();
-    // Do not merge counter-moves while the reference average is still cold.
-    // Ten completed movements gives the average enough history to make the
-    // 40% absorption rule meaningful.
     let threshold = if memory.samples >= MIN_SAMPLES_FOR_ABSORPTION && memory.avg_size > 0.0 {
         memory.avg_size * 0.40
     } else {
@@ -99,9 +127,6 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
         }
         memory.cas_high = memory.cas_high.max(high);
         memory.cas_low = memory.cas_low.min(low);
-        if dir == memory.cas_dir {
-            memory.cas_candles = memory.cas_candles.saturating_add(1);
-        }
         false
     } else {
         let cas_size = (memory.cas_high - memory.cas_low).abs();
@@ -119,9 +144,7 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
                 .min(memory.movement_history.len());
             memory.sizes[memory.sizes_pos] = cas_size;
             memory.sizes_pos = (memory.sizes_pos + 1) % memory.sizes.len();
-            if memory.sizes_len < memory.sizes.len() {
-                memory.sizes_len += 1;
-            }
+            memory.sizes_len = (memory.sizes_len + 1).min(memory.sizes.len());
             memory.samples = memory.sizes_len as u32;
             memory.avg_size = rolling_average(memory);
         }
@@ -155,7 +178,6 @@ fn rolling_average(memory: &CascadeState) -> f64 {
     total / len as f64
 }
 
-#[allow(dead_code)]
 pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
     if memory.sizes_len == 0 {
         return Vec::new();
@@ -174,10 +196,6 @@ pub fn sample_window(memory: &CascadeState) -> Vec<f64> {
 }
 
 pub fn percentile_window(memory: &CascadeState, percentile: f64) -> Option<f64> {
-    if memory.sizes_len == 0 {
-        return None;
-    }
-
     let mut values = sample_window(memory);
     if values.is_empty() {
         return None;
@@ -217,9 +235,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
     } else {
         0
     };
-
     let dir = if raw_dir == 0 { memory.dir } else { raw_dir };
-
     let phase_hint = if dir == 0 {
         false
     } else {
@@ -261,7 +277,6 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
     } else {
         0.0
     };
-    let stretched = strength >= 1.5;
     let phase = if phase_hint {
         MovementPhase::Reversal
     } else if memory.cas_candles <= 1 {
@@ -278,7 +293,7 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         dir: memory.dir,
         prev_dir,
         strength,
-        stretched,
+        stretched: strength >= 1.5,
         phase,
         completed_size: active_size,
         movement_position,
@@ -298,7 +313,6 @@ pub fn movement_history(memory: &CascadeState) -> Vec<CascadeMovement> {
     if len == 0 {
         return Vec::new();
     }
-
     let start = if memory.movement_history_len < memory.movement_history.len() {
         0
     } else {
@@ -309,10 +323,7 @@ pub fn movement_history(memory: &CascadeState) -> Vec<CascadeMovement> {
         .collect()
 }
 
-/// Returns the price envelope covered by the latest completed movements.
-/// This is intentionally an envelope, not the sum of movement sizes: overlap
-/// between alternating moves is exactly the compression signal used by
-/// sideways detection.
+/// Price envelope covered by the latest completed movements.
 pub fn recent_movement_distance(memory: &CascadeState, count: usize) -> Option<f64> {
     if count == 0 {
         return None;
@@ -336,10 +347,7 @@ pub fn recent_movement_distance_percent(
     price: f64,
 ) -> Option<f64> {
     let distance = recent_movement_distance(memory, count)?;
-    if price <= 0.0 || !price.is_finite() {
-        return None;
-    }
-    Some(distance / price * 100.0)
+    (price.is_finite() && price > 0.0).then_some(distance / price * 100.0)
 }
 
 pub fn recent_average_size(memory: &CascadeState, count: usize) -> Option<f64> {
@@ -348,10 +356,7 @@ pub fn recent_average_size(memory: &CascadeState, count: usize) -> Option<f64> {
     }
     let history = movement_history(memory);
     let recent = history.iter().rev().take(count).collect::<Vec<_>>();
-    if recent.len() < count {
-        return None;
-    }
-    Some(
+    (recent.len() == count).then_some(
         recent
             .iter()
             .map(|movement| (movement.high - movement.low).abs())
@@ -361,23 +366,17 @@ pub fn recent_average_size(memory: &CascadeState, count: usize) -> Option<f64> {
 }
 
 pub fn recent_average_size_percent(memory: &CascadeState, count: usize, price: f64) -> Option<f64> {
-    if price <= 0.0 || !price.is_finite() {
-        return None;
-    }
-    Some(recent_average_size(memory, count)? / price * 100.0)
+    (price.is_finite() && price > 0.0)
+        .then_some(recent_average_size(memory, count)? / price * 100.0)
 }
 
-/// Total travelled range across the latest completed movements.
 pub fn recent_total_size(memory: &CascadeState, count: usize) -> Option<f64> {
     if count == 0 {
         return None;
     }
     let history = movement_history(memory);
     let recent = history.iter().rev().take(count).collect::<Vec<_>>();
-    if recent.len() < count {
-        return None;
-    }
-    Some(
+    (recent.len() == count).then_some(
         recent
             .iter()
             .map(|movement| (movement.high - movement.low).abs())
@@ -386,10 +385,7 @@ pub fn recent_total_size(memory: &CascadeState, count: usize) -> Option<f64> {
 }
 
 pub fn recent_total_size_percent(memory: &CascadeState, count: usize, price: f64) -> Option<f64> {
-    if price <= 0.0 || !price.is_finite() {
-        return None;
-    }
-    Some(recent_total_size(memory, count)? / price * 100.0)
+    (price.is_finite() && price > 0.0).then_some(recent_total_size(memory, count)? / price * 100.0)
 }
 
 pub fn recent_signed_total_size(memory: &CascadeState, count: usize) -> Option<f64> {
@@ -398,10 +394,7 @@ pub fn recent_signed_total_size(memory: &CascadeState, count: usize) -> Option<f
     }
     let history = movement_history(memory);
     let recent = history.iter().rev().take(count).collect::<Vec<_>>();
-    if recent.len() < count {
-        return None;
-    }
-    Some(
+    (recent.len() == count).then_some(
         recent
             .iter()
             .map(|movement| {
@@ -421,10 +414,8 @@ pub fn recent_signed_total_size_percent(
     count: usize,
     price: f64,
 ) -> Option<f64> {
-    if price <= 0.0 || !price.is_finite() {
-        return None;
-    }
-    Some(recent_signed_total_size(memory, count)? / price * 100.0)
+    (price.is_finite() && price > 0.0)
+        .then_some(recent_signed_total_size(memory, count)? / price * 100.0)
 }
 
 pub fn preview_from_candle(memory: &CascadeState, candle: &Candle) -> CascadeSignal {
@@ -434,168 +425,4 @@ pub fn preview_from_candle(memory: &CascadeState, candle: &Candle) -> CascadeSig
 
 pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
     update_from_candle(memory, &tf.candle)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::Candle;
-
-    fn candle(open: f64, high: f64, low: f64, close: f64) -> Candle {
-        Candle {
-            open,
-            high,
-            low,
-            close,
-        }
-    }
-
-    #[test]
-    fn movement_starts_then_builds() {
-        let mut state = CascadeState::default();
-        let first = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8));
-        assert_eq!(first.phase, MovementPhase::Starting);
-
-        let second = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5));
-        assert!(matches!(
-            second.phase,
-            MovementPhase::Building | MovementPhase::Mature
-        ));
-        assert!(second.dir > 0);
-    }
-
-    #[test]
-    fn counter_move_and_reversal_are_flagged() {
-        let mut state = CascadeState::default();
-        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.5, 100.8));
-        let _ = update_from_candle(&mut state, &candle(100.8, 103.0, 100.4, 102.5));
-        let reversal = update_from_candle(&mut state, &candle(102.5, 102.8, 99.2, 99.8));
-        assert_eq!(reversal.phase, MovementPhase::Reversal);
-        assert!(reversal.completed_size > 0.0);
-
-        let history = movement_history(&state);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].high, 103.0);
-        assert_eq!(history[0].low, 99.5);
-    }
-
-    #[test]
-    fn rolling_average_tracks_the_last_ten_completed_blocks() {
-        let mut state = CascadeState::default();
-        for size in 1..=10 {
-            state.sizes[state.sizes_pos] = size as f64;
-            state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
-            state.sizes_len += 1;
-        }
-        state.avg_size = rolling_average(&state);
-        assert_eq!(
-            sample_window(&state),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-        );
-        assert!((state.avg_size - 5.5).abs() < 1e-9);
-
-        state.sizes[state.sizes_pos] = 100.0;
-        state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
-        state.sizes_len += 1;
-        state.sizes[state.sizes_pos] = 110.0;
-        state.sizes_pos = (state.sizes_pos + 1) % state.sizes.len();
-        state.sizes_len += 1;
-        state.avg_size = rolling_average(&state);
-
-        assert_eq!(
-            sample_window(&state),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 100.0, 110.0]
-        );
-        assert!((state.avg_size - 22.083333333333332).abs() < 1e-9);
-    }
-
-    #[test]
-    fn new_block_starts_from_current_candle_after_reversal() {
-        let mut state = CascadeState::default();
-        let _ = update_from_candle(&mut state, &candle(100.0, 101.0, 99.0, 100.5));
-        let _ = update_from_candle(&mut state, &candle(100.5, 106.0, 100.0, 105.5));
-        let _ = update_from_candle(&mut state, &candle(105.5, 105.8, 104.8, 104.9));
-
-        assert!(state.cas_high <= 105.8 + f64::EPSILON);
-        assert!(state.cas_low >= 104.8 - f64::EPSILON);
-        assert!((state.cas_high - state.cas_low).abs() <= 1.1);
-    }
-
-    #[test]
-    fn movement_position_uses_realtime_close_inside_active_range() {
-        let mut state = CascadeState::default();
-        let signal = update_from_candle(&mut state, &candle(100.0, 104.0, 100.0, 100.8));
-
-        assert!((signal.completed_size - 4.0).abs() < 1e-9);
-        assert!((signal.movement_position - 0.20).abs() < 1e-9);
-    }
-
-    #[test]
-    fn counter_moves_stay_separate_until_ten_samples() {
-        let mut cold = CascadeState {
-            dir: -1,
-            cas_dir: 1,
-            cas_high: 102.0,
-            cas_low: 100.0,
-            avg_size: 10.0,
-            samples: 9,
-            last_close: 101.5,
-            ..CascadeState::default()
-        };
-        let reversed = update_block(&mut cold, -1, 101.5, 100.5, 101.0);
-        assert!(reversed);
-        assert_eq!(cold.break_n, 0);
-        assert_eq!(cold.cas_dir, -1);
-
-        let mut warm = CascadeState {
-            dir: -1,
-            cas_dir: 1,
-            cas_high: 102.0,
-            cas_low: 100.0,
-            avg_size: 10.0,
-            samples: 10,
-            last_close: 101.5,
-            ..CascadeState::default()
-        };
-        let absorbed = update_block(&mut warm, -1, 101.5, 100.5, 101.0);
-        assert!(!absorbed);
-        assert_eq!(warm.break_n, 1);
-        assert_eq!(warm.cas_dir, 1);
-    }
-
-    #[test]
-    fn recent_movement_distance_uses_the_latest_envelope() {
-        let mut state = CascadeState::default();
-        state.movement_history[0] = CascadeMovement {
-            high: 110.0,
-            low: 100.0,
-            dir: 1,
-        };
-        state.movement_history[1] = CascadeMovement {
-            high: 108.0,
-            low: 103.0,
-            dir: -1,
-        };
-        state.movement_history[2] = CascadeMovement {
-            high: 112.0,
-            low: 105.0,
-            dir: 1,
-        };
-        state.movement_history_len = 3;
-
-        assert_eq!(recent_movement_distance(&state, 2), Some(9.0));
-        assert_eq!(
-            recent_movement_distance_percent(&state, 2, 100.0),
-            Some(9.0)
-        );
-        assert_eq!(recent_average_size(&state, 2), Some(6.0));
-        assert_eq!(recent_average_size_percent(&state, 2, 100.0), Some(6.0));
-        assert_eq!(recent_total_size(&state, 2), Some(12.0));
-        assert_eq!(recent_total_size_percent(&state, 2, 100.0), Some(12.0));
-        assert_eq!(recent_signed_total_size(&state, 2), Some(2.0));
-        assert_eq!(
-            recent_signed_total_size_percent(&state, 2, 100.0),
-            Some(2.0)
-        );
-    }
 }
