@@ -1,5 +1,14 @@
 # Changelog
 
+# 1.0.95
+
+Adaptive MRC prediction and pattern-selection release.
+
+- Preserve long-lived crossing evidence while keeping local pattern classification responsive.
+- Weight weak target evidence continuously so one FAST_BREAK_RETURN sample cannot dominate selection.
+- Align research pattern feedback with live behavior by learning from selected trades only.
+- Add an all-pattern PnL chart and detailed parallel-pattern trade reasons to the HTML report.
+
 # 1.0.94
 
 Pattern-driven MRC entry and exit pricing.

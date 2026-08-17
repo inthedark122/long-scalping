@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.94",
+          "module_version": "1.0.95",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.94"
+              "module_version": "1.0.95"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.94 adaptive pattern-engine release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples overrides. All MRC patterns are classified independently; the selector trades the best learned candidate and continues line-to-line while it remains best. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
+          "description": "Start the 1.0.95 adaptive pattern-engine release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples overrides. All MRC patterns are classified independently; the selector trades the best learned candidate and continues line-to-line while it remains best. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
           "name": "Start",
           "params": [
             {
@@ -115,12 +115,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.94",
+          "module_version": "1.0.95",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.94"
+              "module_version": "1.0.95"
             }
           }
         }
@@ -128,7 +128,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.94 adaptive pattern-engine release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples overrides. All MRC patterns are classified independently; the selector trades the best learned candidate and continues line-to-line while it remains best. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
+          "description": "Start the 1.0.95 adaptive pattern-engine release using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples overrides. All MRC patterns are classified independently; the selector trades the best learned candidate and continues line-to-line while it remains best. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
           "name": "Start",
           "params": [
             {
