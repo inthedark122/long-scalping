@@ -94,7 +94,20 @@ const TEMPLATE: &str = r###"<!doctype html>
     .card-value { margin-top: 4px; font-size: 21px; font-weight: 700; }
     .panel { padding: 18px; margin-top: 16px; }
     .chart-wrap { height: 340px; position: relative; }
+    .chart-wrap.tall { height: 430px; }
     canvas { width: 100%; height: 100%; display: block; }
+    .chart-tooltip {
+      position: absolute; z-index: 2; display: none; max-width: 420px;
+      padding: 10px 12px; background: #0b1020; border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+      pointer-events: none; font-size: 12px;
+    }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+    .legend-swatch { width: 12px; height: 3px; border-radius: 2px; }
+    .pattern-reason-group { margin: 10px 0; }
+    .pattern-reason-group summary { cursor: pointer; color: var(--text); font-weight: 700; }
+    .pattern-reason-group table { margin-top: 8px; }
     .empty {
       position: absolute; inset: 0; display: grid; place-items: center;
       color: var(--muted); pointer-events: none;
@@ -155,6 +168,17 @@ const TEMPLATE: &str = r###"<!doctype html>
     </section>
 
     <section class="panel">
+      <h2>All-pattern PnL comparison</h2>
+      <p class="subtle">Each line is a separate parallel diagnostic account that follows one pattern only. This is the counterfactual pattern comparison, not the single selected-position account above.</p>
+      <div class="chart-wrap tall" id="patterns-pnl-chart-wrap">
+        <canvas id="patterns-pnl-chart"></canvas>
+        <div id="patterns-pnl-chart-empty" class="empty">No completed pattern trades</div>
+        <div id="patterns-pnl-tooltip" class="chart-tooltip"></div>
+      </div>
+      <div id="patterns-pnl-legend" class="chart-legend"></div>
+    </section>
+
+    <section class="panel">
       <h2>Positions</h2>
       <div class="table-wrap">
         <table>
@@ -211,6 +235,12 @@ const TEMPLATE: &str = r###"<!doctype html>
     </section>
 
     <section class="panel">
+      <h2>Reasons for all pattern trades</h2>
+      <p class="subtle">These are the full reasons from the parallel diagnostic accounts. They explain why each pattern selected its direction, target, stop, and barrier. They are not all trades taken by the single selected account.</p>
+      <div id="pattern-reasons" class="table-wrap"></div>
+    </section>
+
+    <section class="panel">
       <h2>Crossing / price trace</h2>
       <div id="crossings" class="table-wrap"></div>
     </section>
@@ -224,6 +254,7 @@ const TEMPLATE: &str = r###"<!doctype html>
     const summary = DATA.prediction_summary || {};
     const patternWinRates = DATA.pattern_win_rates || [];
     const patternPerformance = DATA.pattern_performance || [];
+    const parallelPatternTrades = DATA.parallel_pattern_trades || [];
     const activePattern = DATA.active_pattern || null;
     const esc = (value) => String(value ?? "")
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -438,6 +469,197 @@ const TEMPLATE: &str = r###"<!doctype html>
       ? '<table><thead><tr><th>Pattern</th><th>Observations</th><th>Trades</th><th>Win rate</th><th>Total net</th><th>Average net</th><th>EMA net</th><th>Last net</th><th>State</th></tr></thead><tbody>' + performanceRows + '</tbody></table>'
       : '<div class="subtle">No pattern performance yet</div>';
 
+    const patternColors = ["#72a7ff", "#55d69b", "#ff7185", "#d7a6ff", "#ffbf69", "#6ee7e7", "#f08cae"];
+    const parallelSeries = parallelPatternTrades.map((group, groupIndex) => {
+      const completed = [...(group.trades || [])].sort((left, right) =>
+        Number(left.closed_at || left.opened_at || 0) - Number(right.closed_at || right.opened_at || 0));
+      let cumulative = 0;
+      const points = [];
+      if (completed.length) {
+        points.push({
+          time: Number(completed[0].opened_at || completed[0].closed_at || 0),
+          value: 0,
+          trade: null,
+          tradeIndex: 0,
+        });
+        completed.forEach((trade, tradeIndex) => {
+          cumulative += Number(trade.pnl_pct || 0);
+          points.push({
+            time: Number(trade.closed_at || trade.opened_at || 0),
+            value: cumulative,
+            trade,
+            tradeIndex: tradeIndex + 1,
+          });
+        });
+      }
+      return {
+        pattern: group.pattern || "UNKNOWN",
+        color: patternColors[groupIndex % patternColors.length],
+        points,
+        summary: group.summary || {},
+      };
+    }).filter((series) => series.points.length);
+
+    let allPatternChartState = null;
+    const allPatternChart = document.getElementById("patterns-pnl-chart");
+    const allPatternTooltip = document.getElementById("patterns-pnl-tooltip");
+
+    const compactReason = (reason) => {
+      const values = parseReason(reason);
+      if (!values) return esc(reason || "—");
+      const fields = [
+        ["pattern", "pattern"], ["source_line", "source"], ["learned_line", "learned"],
+        ["trade_direction", "trade"], ["barrier", "barrier"],
+        ["transition_samples", "transitions"], ["movement_samples", "movements"],
+        ["expected_move_pct", "expected move"],
+      ];
+      return fields.filter(([key]) => values[key] != null)
+        .map(([key, label]) => label + "=" + values[key]).join(" · ");
+    };
+
+    const renderPatternReasons = () => {
+      const groups = parallelPatternTrades.map((group) => {
+        const groupTrades = group.trades || [];
+        const summary = group.summary || {};
+        const rows = groupTrades.map((trade, index) => {
+          const side = Number(trade.side) > 0 ? "LONG" : "SHORT";
+          const fees = Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0);
+          const pnlClass = signedClass(trade.pnl_pct);
+          const route = side + " " + trade.source_name + " → " + trade.target_name;
+          return '<tr><td>' + (index + 1) + '</td><td>' + esc(date(trade.closed_at)) +
+            '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td><td>' +
+            price(trade.entry_price) + '</td><td>' + price(trade.target_price) + '</td><td>' +
+            price(trade.stop_price) + '</td><td>' + esc(trade.exit_reason) + '</td><td>' +
+            money(trade.gross_pnl_pct) + '</td><td class="negative">-' + money(fees) +
+            '</td><td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td></tr>' +
+            '<tr class="trade-reason"><td colspan="11"><span class="trade-reason-label">Reason:</span> ' +
+            formatReason(trade.reason) + '</td></tr>';
+        }).join("");
+        const net = money(summary.total_pnl_pct);
+        return '<details class="pattern-reason-group" open><summary><code>' +
+          esc(group.pattern) + '</code> · ' + groupTrades.length + ' closed · net ' +
+          '<span class="' + signedClass(summary.total_pnl_pct) + '">' + net +
+          '</span></summary>' + (rows
+            ? '<table><thead><tr><th>#</th><th>Closed</th><th>Side</th><th>Route</th><th>Entry</th>' +
+              '<th>Target</th><th>Stop</th><th>Exit</th><th>Gross</th><th>Fees</th><th>Net</th></tr></thead><tbody>' +
+              rows + '</tbody></table>'
+            : '<div class="subtle">No completed trades for this pattern.</div>') +
+          '</details>';
+      }).join("");
+      document.getElementById("pattern-reasons").innerHTML = groups ||
+        '<div class="subtle">No parallel pattern trades</div>';
+    };
+    renderPatternReasons();
+
+    const drawAllPatternChart = () => {
+      const empty = document.getElementById("patterns-pnl-chart-empty");
+      empty.style.display = parallelSeries.length ? "none" : "grid";
+      allPatternChartState = null;
+      if (!parallelSeries.length) return;
+      const rect = allPatternChart.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      allPatternChart.width = Math.max(1, Math.floor(rect.width * ratio));
+      allPatternChart.height = Math.max(1, Math.floor(rect.height * ratio));
+      const ctx = allPatternChart.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      const width = rect.width, height = rect.height;
+      const pad = { left: 58, right: 18, top: 22, bottom: 38 };
+      const points = parallelSeries.flatMap((series) => series.points);
+      const values = points.map((point) => point.value);
+      let min = Math.min(...values), max = Math.max(...values);
+      if (min === max) { min -= 1; max += 1; }
+      const span = max - min;
+      min -= span * 0.08; max += span * 0.08;
+      const times = points.map((point) => point.time).filter((time) => Number.isFinite(time));
+      const minTime = Math.min(...times), maxTime = Math.max(...times);
+      const useTime = Number.isFinite(minTime) && Number.isFinite(maxTime) && maxTime > minTime;
+      const maxPointCount = Math.max(...parallelSeries.map((series) => series.points.length));
+      const xFor = (point, index) => useTime
+        ? pad.left + (point.time - minTime) / (maxTime - minTime) * (width - pad.left - pad.right)
+        : pad.left + index / Math.max(1, maxPointCount - 1) * (width - pad.left - pad.right);
+      const y = (value) => pad.top + (max - value) / (max - min) * (height - pad.top - pad.bottom);
+      ctx.clearRect(0, 0, width, height);
+      ctx.font = "12px system-ui";
+      ctx.strokeStyle = "#2c3a5a";
+      ctx.fillStyle = "#91a0bd";
+      ctx.lineWidth = 1;
+      for (let index = 0; index <= 4; index++) {
+        const value = min + (max - min) * index / 4;
+        const lineY = y(value);
+        ctx.beginPath(); ctx.moveTo(pad.left, lineY); ctx.lineTo(width - pad.right, lineY); ctx.stroke();
+        ctx.fillText(value.toFixed(2) + "%", 4, lineY + 4);
+      }
+      ctx.strokeStyle = "#66789e";
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke();
+      ctx.setLineDash([]);
+      const chartPoints = [];
+      parallelSeries.forEach((series) => {
+        ctx.strokeStyle = series.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const seriesPoints = series.points.map((point, index) => {
+          const chartPoint = { series, point, x: xFor(point, index), y: y(point.value) };
+          chartPoints.push(chartPoint);
+          return chartPoint;
+        });
+        seriesPoints.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = series.color;
+        seriesPoints.slice(1).forEach((point) => {
+          ctx.beginPath(); ctx.arc(point.x, point.y, 3, 0, Math.PI * 2); ctx.fill();
+        });
+      });
+      ctx.fillStyle = "#91a0bd";
+      ctx.textAlign = "center";
+      const labelTimes = [...new Set([minTime, (minTime + maxTime) / 2, maxTime])];
+      labelTimes.forEach((time) => {
+        const point = { time };
+        const labelX = useTime ? xFor(point, 0) : pad.left;
+        ctx.fillText(shortDate(time), labelX, height - 10);
+      });
+      ctx.textAlign = "left";
+      allPatternChartState = { chartPoints, rect };
+    };
+
+    const hidePatternTooltip = () => { allPatternTooltip.style.display = "none"; };
+    allPatternChart.addEventListener("mousemove", (event) => {
+      if (!allPatternChartState) return;
+      const rect = allPatternChart.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      const candidates = allPatternChartState.chartPoints.filter((point) => point.point.trade);
+      const nearest = candidates.reduce((best, point) => {
+        const distance = Math.hypot(point.x - mouseX, point.y - mouseY);
+        return !best || distance < best.distance ? { point, distance } : best;
+      }, null);
+      if (!nearest || nearest.distance > 14) { hidePatternTooltip(); return; }
+      const point = nearest.point;
+      const trade = point.point.trade;
+      const side = Number(trade.side) > 0 ? "LONG" : "SHORT";
+      const route = side + " " + trade.source_name + " → " + trade.target_name;
+      allPatternTooltip.innerHTML = '<b>' + esc(point.series.pattern) + '</b> · trade #' +
+        point.point.tradeIndex + '<br>Closed: ' + esc(date(trade.closed_at)) +
+        '<br>Route: ' + esc(route) + '<br>Trade net: <span class="' + signedClass(trade.pnl_pct) + '">' +
+        money(trade.pnl_pct) + '</span> · cumulative: <span class="' + signedClass(point.point.value) + '">' +
+        money(point.point.value) + '</span><br>Exit: ' + esc(trade.exit_reason) +
+        '<br><span class="reason-key">' + compactReason(trade.reason) + '</span>';
+      allPatternTooltip.style.display = "block";
+      const tooltipWidth = allPatternTooltip.offsetWidth;
+      const tooltipHeight = allPatternTooltip.offsetHeight;
+      allPatternTooltip.style.left = Math.max(8, Math.min(mouseX + 14, rect.width - tooltipWidth - 8)) + "px";
+      allPatternTooltip.style.top = Math.max(8, Math.min(mouseY + 14, rect.height - tooltipHeight - 8)) + "px";
+    });
+    allPatternChart.addEventListener("mouseleave", hidePatternTooltip);
+    document.getElementById("patterns-pnl-legend").innerHTML = parallelSeries.map((series) =>
+      '<span class="legend-item"><span class="legend-swatch" style="background:' + series.color + '"></span>' +
+      '<code>' + esc(series.pattern) + '</code> ' + money(series.summary.total_pnl_pct) +
+      ' (' + (series.summary.trades || series.points.length - 1) + ' trades)</span>'
+    ).join("");
+
     const positionRows = trades.map((trade, index) => {
       const side = trade.side > 0 ? "LONG" : "SHORT";
       const route = side + " " + trade.source_name + " → " + trade.target_name;
@@ -561,7 +783,9 @@ const TEMPLATE: &str = r###"<!doctype html>
       ctx.textAlign = "left";
     }
     window.addEventListener("resize", drawChart);
+    window.addEventListener("resize", drawAllPatternChart);
     drawChart();
+    drawAllPatternChart();
   </script>
 </body>
 </html>
@@ -613,9 +837,12 @@ mod tests {
         });
         let html = TEMPLATE.replace("__DATA__", &serde_json::to_string(&data).unwrap());
         assert!(html.contains("<canvas id=\"pnl-chart\"></canvas>"));
+        assert!(html.contains("<canvas id=\"patterns-pnl-chart\"></canvas>"));
         assert!(html.contains("Positions"));
         assert!(html.contains("Entry reason:"));
         assert!(html.contains("Cumulative PnL"));
+        assert!(html.contains("All-pattern PnL comparison"));
+        assert!(html.contains("Reasons for all pattern trades"));
         assert!(html.contains("Prediction outcomes"));
         assert!(html.contains("Win rate by pattern"));
     }

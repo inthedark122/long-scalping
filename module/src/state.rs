@@ -177,6 +177,10 @@ pub struct MrcCrossingModel {
     /// Recent crossing cycles used for local transition learning. The detector
     /// keeps this bounded instead of matching against the complete history.
     pub history: Vec<MrcHistoryEvent>,
+    /// Longer-lived crossing history used to estimate exact transition and
+    /// fast-break outcomes. Pattern classification still uses `history` so a
+    /// stale market regime cannot change the local pattern shape.
+    pub prediction_history: Vec<MrcHistoryEvent>,
     pub seeded_from_history: bool,
     pub last_line: Option<u8>,
     pub last_direction: i8,
@@ -193,6 +197,7 @@ impl Default for MrcCrossingModel {
     fn default() -> Self {
         Self {
             history: Vec::new(),
+            prediction_history: Vec::new(),
             seeded_from_history: false,
             last_line: None,
             last_direction: 0,

@@ -164,6 +164,7 @@ fn handle_signal(
         // performance must survive a fresh start signal so the selector can
         // keep improving instead of relearning from zero every session.
         state.mrc_crossing_model.history.clear();
+        state.mrc_crossing_model.prediction_history.clear();
         state.mrc_crossing_model.seeded_from_history = false;
         state.mrc_crossing_model.last_line = None;
         state.mrc_crossing_model.last_direction = 0;

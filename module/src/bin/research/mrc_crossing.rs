@@ -512,7 +512,7 @@ pub(crate) struct Analyzer {
     events: Vec<CrossingEvent>,
     trades: VirtualTradeSimulator,
     pattern_trades: [VirtualTradeSimulator; LINE_COUNT - 2],
-    pattern_completed_seen: [usize; LINE_COUNT - 2],
+    selected_completed_seen: usize,
     forecast_plan_keys: [Option<(u8, u8, u8)>; LINE_COUNT - 2],
     predictions: VirtualPredictionSimulator,
     rows_seen: usize,
@@ -531,7 +531,7 @@ impl Analyzer {
             events: Vec::new(),
             trades: VirtualTradeSimulator::default(),
             pattern_trades: std::array::from_fn(|_| VirtualTradeSimulator::default()),
-            pattern_completed_seen: [0; LINE_COUNT - 2],
+            selected_completed_seen: 0,
             forecast_plan_keys: [None; LINE_COUNT - 2],
             predictions: VirtualPredictionSimulator::default(),
             rows_seen: 0,
@@ -560,7 +560,7 @@ impl Analyzer {
         for simulator in &mut self.pattern_trades {
             simulator.update(row);
         }
-        self.record_pattern_results();
+        self.record_selected_results();
         self.predictions.update(row);
         let lines = row.mrc.lines();
         let crossed = vlines::update_with_events(
@@ -694,7 +694,7 @@ impl Analyzer {
         for simulator in &mut self.pattern_trades {
             simulator.finish(row);
         }
-        self.record_pattern_results();
+        self.record_selected_results();
         self.predictions.finish(row);
         eprintln!(
                 "[mrc-research][analysis] complete rows={} crossings={} positions={} predictions={} forecasts={} entries={} blocked={} open_trade={} elapsed_ms={}",
@@ -812,18 +812,14 @@ impl Analyzer {
         )
     }
 
-    fn record_pattern_results(&mut self) {
-        for (index, simulator) in self.pattern_trades.iter().enumerate() {
-            let completed = simulator.completed();
-            for result in completed.iter().skip(self.pattern_completed_seen[index]) {
-                mrc_crossing::record_pattern_result(
-                    &mut self.model,
-                    MrcPatternKind::ALL[index],
-                    result.pnl_pct,
-                );
+    fn record_selected_results(&mut self) {
+        let completed = self.trades.completed();
+        for result in completed.iter().skip(self.selected_completed_seen) {
+            if let Some(pattern) = MrcPatternKind::from_str(&result.pattern_key) {
+                mrc_crossing::record_pattern_result(&mut self.model, pattern, result.pnl_pct);
             }
-            self.pattern_completed_seen[index] = completed.len();
         }
+        self.selected_completed_seen = completed.len();
     }
 
     pub(crate) fn report(&self) -> AnalysisReport {

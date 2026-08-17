@@ -58,6 +58,19 @@ fn pattern_performance_ledger_tracks_realized_net_results() {
     assert!(performance.ema_pnl_pct.is_finite());
 }
 
+#[test]
+fn prediction_history_survives_local_pattern_window() {
+    let mut model = MrcCrossingModel::default();
+    for index in 0..20u64 {
+        let mut crossing = event(5, (index + 1) * 10_000);
+        crossing.direction = if index % 2 == 0 { 1 } else { -1 };
+        mrc_crossing::observe(&mut model, &[crossing], lines());
+    }
+
+    assert_eq!(model.prediction_history.len(), 20);
+    assert!(model.history.len() < model.prediction_history.len());
+}
+
 fn successful_short_movement() -> MrcMovementSnapshot {
     MrcMovementSnapshot {
         start_line: 5,

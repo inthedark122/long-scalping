@@ -126,6 +126,7 @@ fn pattern_entry_note(reason: &EntryReason) -> String {
 }
 
 const MAX_LEARNED_CYCLES: usize = 5;
+const MAX_PREDICTION_HISTORY: usize = 10_080;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MrcPrediction {
@@ -320,7 +321,7 @@ fn transition_stats(
     context: Option<(bool, Option<u8>)>,
 ) -> ([MrcForecastStats; 9], u32) {
     let mut routes = [MrcForecastStats::default(); 9];
-    for pair in state.history.windows(2) {
+    for pair in prediction_history(state).windows(2) {
         let [from, next] = pair else {
             continue;
         };
@@ -402,7 +403,7 @@ fn fast_break_evidence(
     }
 
     let mut evidence = FastBreakEvidence::default();
-    for window in state.history.windows(4) {
+    for window in prediction_history(state).windows(4) {
         let [source, crossed, returned, next] = window else {
             continue;
         };
@@ -470,12 +471,29 @@ fn pattern_prior(prediction: &MrcPrediction) -> f64 {
 }
 
 fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) -> f64 {
-    let prior = pattern_prior(prediction);
+    // A pattern's global ledger is only relevant when the current target has
+    // some supporting route evidence. Keep this continuous: one observation
+    // contributes, but it cannot carry the same weight as a repeatedly
+    // observed target. This is especially important for FAST_BREAK_RETURN,
+    // where a single exact rejection used to outrank better-supported routes.
+    let target_confidence = prediction.stats.count as f64 / (prediction.stats.count as f64 + 4.0);
+    let route_share = if prediction.samples > 0 {
+        prediction.stats.count as f64 / prediction.samples as f64
+    } else {
+        0.0
+    };
+    let evidence_confidence = target_confidence * route_share;
+    let prior = pattern_prior(prediction) * evidence_confidence;
     if performance.trades == 0 {
         return prior;
     }
     let confidence = performance.trades as f64 / (performance.trades as f64 + 4.0);
-    performance.ema_pnl_pct * confidence + prior * (1.0 - confidence)
+    // The recent EMA is useful for adaptation, but using it alone lets a
+    // pattern with a losing history become the winner after a short streak.
+    // Keep the long-run realized average in the score so selection reflects
+    // both the current regime and the pattern's full observed record.
+    let realized = (performance.average_pnl_pct() + performance.ema_pnl_pct) / 2.0;
+    (realized * confidence + prior * (1.0 - confidence)) * evidence_confidence
 }
 
 fn candidate_key(candidate: &PatternCandidate) -> Option<(u8, u8, u8)> {
@@ -711,7 +729,15 @@ pub fn price_projection(
 }
 
 fn append_history_event(state: &mut MrcCrossingModel, event: &MrcCrossEvent) {
-    state.history.push(MrcHistoryEvent {
+    // Older persisted models and test fixtures only have the short local
+    // history. Promote that history before adding the first new observation
+    // so the long-lived predictor does not silently discard its evidence.
+    if state.prediction_history.is_empty() && !state.history.is_empty() {
+        state
+            .prediction_history
+            .extend(state.history.iter().copied());
+    }
+    let history_event = MrcHistoryEvent {
         line: event.line_idx,
         direction: event.direction,
         now_ms: event.now_ms,
@@ -721,11 +747,30 @@ fn append_history_event(state: &mut MrcCrossingModel, event: &MrcCrossEvent) {
         no_pullback_count: event.no_pullback_count,
         reverted_line: event.reverted_line,
         completed_movement: event.completed_movement,
-    });
+    };
+    state.prediction_history.push(history_event);
+    if state.prediction_history.len() > MAX_PREDICTION_HISTORY {
+        let trim_count = state
+            .prediction_history
+            .len()
+            .saturating_sub(MAX_PREDICTION_HISTORY);
+        state.prediction_history.drain(..trim_count);
+    }
+    state.history.push(history_event);
     trim_history_to_recent_cycles(&mut state.history);
     state.last_line = Some(event.line_idx);
     state.last_direction = event.direction;
     state.last_event_ms = event.now_ms;
+}
+
+fn prediction_history(state: &MrcCrossingModel) -> &[MrcHistoryEvent] {
+    if state.prediction_history.is_empty() {
+        // Keep hand-built model fixtures and old persisted states compatible;
+        // live observations populate the long-lived history explicitly.
+        &state.history
+    } else {
+        &state.prediction_history
+    }
 }
 
 fn trim_history_to_recent_cycles(history: &mut Vec<MrcHistoryEvent>) {
