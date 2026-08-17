@@ -3,11 +3,11 @@
   "exchange": "OKX",
   "symbols": [],
   "margin_mode": "Cross",
-  "margin_leverage": 100,
-  "margin": 5.0,
+  "margin_leverage": 5,
+  "margin": 100.0,
   "max_active_bots": 20,
   "settings": {
-    "margin_leverage": 100,
+    "margin_leverage": 5,
     "margin_mode": "Cross",
     "signal": {
       "code": "start",

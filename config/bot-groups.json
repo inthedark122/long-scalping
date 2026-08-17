@@ -6,7 +6,7 @@
       "bot_group_id": 46,
       "name": "[SIM] Structural scalping",
       "settings": {
-        "margin_leverage": 100,
+        "margin_leverage": 5,
         "margin_mode": "Cross",
         "signal": {
           "code": "start",
@@ -90,8 +90,8 @@
         }
       ],
       "symbols": [
-        { "leverage": 10, "symbol_key": "OKX#BSB-USDT-SWAP#SWAP" },
-        { "leverage": 10, "symbol_key": "OKX#BILL-USDT-SWAP#SWAP" }
+        { "leverage": 5, "symbol_key": "OKX#BSB-USDT-SWAP#SWAP" },
+        { "leverage": 5, "symbol_key": "OKX#BILL-USDT-SWAP#SWAP" }
       ],
       "release": {
         "update_module_version": true,
@@ -104,7 +104,7 @@
       "bot_group_id": 47,
       "name": "[PROD] Structural scalping",
       "settings": {
-        "margin_leverage": 100,
+        "margin_leverage": 5,
         "margin_mode": "Cross",
         "signal": {
           "code": "start",

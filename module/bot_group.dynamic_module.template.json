@@ -1,6 +1,6 @@
 {
   "margin_mode": "Cross",
-  "margin_leverage": 100,
+  "margin_leverage": 5,
   "signal": {
     "name": "Indicator",
     "min_tf": 60
