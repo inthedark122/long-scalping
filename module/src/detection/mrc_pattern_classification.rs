@@ -4,20 +4,18 @@
 //! trading decisions by themselves and deliberately do not encode a fixed
 //! history length or a rare, complete crossing path. A research observation
 //! can match more than one classification while it is developing; for
-//! example, an outward continuation can become a staircase and later become
-//! a fast break-and-return.
+//! example, an outward continuation can become a zigzag staircase and later
+//! become a fast break-and-return.
 
 use crate::state::MrcHistoryEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MrcPatternKind {
-    /// Consecutive upward MRC-line progress without a meaningful downward
-    /// interruption, normally extending from the lower band toward the upper
-    /// outer lines.
+    /// An alternating upward zigzag whose successive upward legs penetrate
+    /// farther through the MRC lines.
     StairsUp,
-    /// Consecutive downward MRC-line progress without a meaningful upward
-    /// interruption, normally extending from the upper band toward the lower
-    /// outer lines.
+    /// An alternating downward zigzag whose successive downward legs
+    /// penetrate farther through the MRC lines.
     StairsDown,
     /// Price crosses one adjacent MRC line and returns to the source line in
     /// a short interval, marking the crossed line as a possible barrier.
@@ -96,7 +94,7 @@ pub struct MrcPatternDefinition {
     pub prediction: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MrcPatternSignal {
     pub kind: MrcPatternKind,
     pub source_line: u8,
@@ -108,6 +106,17 @@ pub struct MrcPatternSignal {
     pub failed_break_direction: i8,
     pub steps: u32,
     pub elapsed_ms: u64,
+    /// The line path supporting a staircase decision. Other pattern kinds
+    /// leave this empty.
+    pub sequence: Vec<u8>,
+    /// Direction-adjusted net price movement from the beginning of the
+    /// staircase to the current event, in percent.
+    pub price_move_pct: f64,
+    /// Maximum favorable price excursion from the staircase start, in
+    /// percent.
+    pub favorable_move_pct: f64,
+    /// Maximum adverse price excursion from the staircase start, in percent.
+    pub adverse_move_pct: f64,
 }
 
 const MEAN_LINE: u8 = 4;
@@ -115,6 +124,8 @@ const LOWER_ZONE_MAX: u8 = 3;
 const UPPER_ZONE_MIN: u8 = 5;
 const MIN_CYCLE_EXTREME_VISITS: usize = 4;
 const SIDEWAY_DRIFT_RATIO: f64 = 0.25;
+const FAST_BREAK_RETURN_MIN_ELAPSED_MS: u64 = 5 * 60_000;
+const FAST_BREAK_RETURN_MAX_ELAPSED_MS: u64 = 15 * 60_000;
 
 fn adjacent_line(source: u8, direction: i8) -> Option<u8> {
     if direction > 0 {
@@ -132,6 +143,51 @@ fn line_direction(from: u8, to: u8) -> i8 {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
     }
+}
+
+fn stair_price_metrics(
+    history: &[MrcHistoryEvent],
+    start_index: usize,
+    direction: i8,
+) -> (Vec<u8>, f64, f64, f64) {
+    let sequence = history[start_index..]
+        .iter()
+        .map(|event| event.line)
+        .collect::<Vec<_>>();
+    let Some(start) = history.get(start_index) else {
+        return (sequence, 0.0, 0.0, 0.0);
+    };
+    let start_price = start.market_price;
+    let Some(current) = history.last() else {
+        return (sequence, 0.0, 0.0, 0.0);
+    };
+    if !matches!(direction, 1 | -1)
+        || !start_price.is_finite()
+        || start_price <= 0.0
+        || !current.market_price.is_finite()
+        || current.market_price <= 0.0
+    {
+        return (sequence, 0.0, 0.0, 0.0);
+    }
+    let prices = history[start_index..]
+        .iter()
+        .map(|event| event.market_price)
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .collect::<Vec<_>>();
+    let high = prices.iter().copied().fold(start_price, f64::max);
+    let low = prices.iter().copied().fold(start_price, f64::min);
+    let net = (current.market_price - start_price) / start_price * 100.0 * direction as f64;
+    let favorable = if direction > 0 {
+        (high - start_price) / start_price * 100.0
+    } else {
+        (start_price - low) / start_price * 100.0
+    };
+    let adverse = if direction > 0 {
+        (start_price - low) / start_price * 100.0
+    } else {
+        (high - start_price) / start_price * 100.0
+    };
+    (sequence, net, favorable, adverse)
 }
 
 fn zone(line: u8) -> Option<bool> {
@@ -181,6 +237,11 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     if source.line != returned.line || source.line.abs_diff(crossed.line) != 1 {
         return None;
     }
+    let elapsed_ms = returned.now_ms.saturating_sub(source.now_ms);
+    if !(FAST_BREAK_RETURN_MIN_ELAPSED_MS..=FAST_BREAK_RETURN_MAX_ELAPSED_MS).contains(&elapsed_ms)
+    {
+        return None;
+    }
     let direction = line_direction(crossed.line, returned.line);
     Some(MrcPatternSignal {
         kind: MrcPatternKind::FastBreakReturn,
@@ -190,7 +251,11 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         failed_break_line: Some(crossed.line),
         failed_break_direction: line_direction(source.line, crossed.line),
         steps: 1,
-        elapsed_ms: returned.now_ms.saturating_sub(source.now_ms),
+        elapsed_ms,
+        sequence: Vec::new(),
+        price_move_pct: 0.0,
+        favorable_move_pct: 0.0,
+        adverse_move_pct: 0.0,
     })
 }
 
@@ -218,47 +283,123 @@ fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         failed_break_direction: 0,
         steps: 1,
         elapsed_ms: returned.now_ms.saturating_sub(outward.now_ms),
+        sequence: Vec::new(),
+        price_move_pct: 0.0,
+        favorable_move_pct: 0.0,
+        adverse_move_pct: 0.0,
     })
 }
 
-fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
-    if history.len() < 3 {
-        return None;
-    }
-    let current = history.last()?;
-    let mut start_index = history.len() - 1;
-    let mut direction = 0;
-    let mut steps = 0u32;
-    while start_index > 0 {
-        let previous = &history[start_index - 1];
-        let delta = previous.line.abs_diff(history[start_index].line);
-        let step_direction = line_direction(previous.line, history[start_index].line);
-        if delta != 1 || step_direction == 0 || (direction != 0 && direction != step_direction) {
-            break;
+#[derive(Debug, Clone, Copy)]
+struct ZigzagLeg {
+    direction: i8,
+    start_index: usize,
+    end_line: u8,
+}
+
+/// Compress adjacent line crossings into directional legs.
+///
+/// A path such as `2 -> 3 -> 2 -> 3 -> 4` becomes:
+///
+/// ```text
+/// up(2 -> 3), down(3 -> 2), up(2 -> 4)
+/// ```
+///
+/// Repeated movement in the same direction belongs to one leg. A skipped or
+/// repeated line breaks the local zigzag rather than being silently bridged.
+fn zigzag_legs(history: &[MrcHistoryEvent]) -> Vec<ZigzagLeg> {
+    let mut legs: Vec<ZigzagLeg> = Vec::new();
+    for index in 1..history.len() {
+        let previous = &history[index - 1];
+        let current = &history[index];
+        let direction = line_direction(previous.line, current.line);
+        if direction == 0 || previous.line.abs_diff(current.line) != 1 {
+            legs.clear();
+            continue;
         }
-        direction = step_direction;
-        steps = steps.saturating_add(1);
-        start_index -= 1;
+
+        if let Some(last) = legs.last_mut() {
+            if last.direction == direction {
+                last.end_line = current.line;
+                continue;
+            }
+        }
+
+        legs.push(ZigzagLeg {
+            direction,
+            start_index: index - 1,
+            end_line: current.line,
+        });
     }
-    if steps < 2 {
+    legs
+}
+
+/// Detect a staircase as an alternating zigzag with progressively deeper
+/// legs in one direction.
+///
+/// For an upward staircase, the upward legs must be separated by pullbacks
+/// and the newest upward leg must reach above the previous upward leg. The
+/// detector remains active during the pullback after a successful leg, so the
+/// decision layer can use the pullback as a possible entry. If the next
+/// upward attempt fails to exceed the previous peak, no staircase is emitted;
+/// that is the exhaustion transition.
+fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
+    let legs = zigzag_legs(history);
+    if legs.len() < 3 {
         return None;
     }
-    let start = history.get(start_index)?;
-    let kind = if direction > 0 {
-        MrcPatternKind::StairsUp
-    } else {
-        MrcPatternKind::StairsDown
-    };
-    Some(MrcPatternSignal {
-        kind,
-        source_line: current.line,
-        target_line: adjacent_line(current.line, direction)?,
-        direction,
-        failed_break_line: None,
-        failed_break_direction: 0,
-        steps,
-        elapsed_ms: current.now_ms.saturating_sub(start.now_ms),
-    })
+
+    let current = history.last()?;
+    for trend_direction in [1_i8, -1_i8] {
+        let trend_indices = legs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, leg)| (leg.direction == trend_direction).then_some(index))
+            .collect::<Vec<_>>();
+        if trend_indices.len() < 2 {
+            continue;
+        }
+
+        let latest_index = *trend_indices.last()?;
+        let previous_index = trend_indices[trend_indices.len() - 2];
+        let latest = legs[latest_index];
+        let previous = legs[previous_index];
+        let penetrated_deeper = if trend_direction > 0 {
+            latest.end_line > previous.end_line
+        } else {
+            latest.end_line < previous.end_line
+        };
+        if !penetrated_deeper {
+            continue;
+        }
+
+        let first = legs[*trend_indices.first()?];
+        let (sequence, price_move_pct, favorable_move_pct, adverse_move_pct) =
+            stair_price_metrics(history, first.start_index, trend_direction);
+        let kind = if trend_direction > 0 {
+            MrcPatternKind::StairsUp
+        } else {
+            MrcPatternKind::StairsDown
+        };
+        return Some(MrcPatternSignal {
+            kind,
+            source_line: current.line,
+            target_line: adjacent_line(current.line, trend_direction)?,
+            direction: trend_direction,
+            failed_break_line: None,
+            failed_break_direction: 0,
+            steps: trend_indices.len() as u32,
+            elapsed_ms: current
+                .now_ms
+                .saturating_sub(history[first.start_index].now_ms),
+            sequence,
+            price_move_pct,
+            favorable_move_pct,
+            adverse_move_pct,
+        });
+    }
+
+    None
 }
 
 fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
@@ -328,6 +469,10 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         failed_break_direction: 0,
         steps: (visits.len() - 1) as u32,
         elapsed_ms: last.now_ms.saturating_sub(first.now_ms),
+        sequence: Vec::new(),
+        price_move_pct: 0.0,
+        favorable_move_pct: 0.0,
+        adverse_move_pct: 0.0,
     })
 }
 
@@ -358,6 +503,10 @@ fn outward_continuation(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal>
         failed_break_direction: 0,
         steps: 1,
         elapsed_ms: current.now_ms.saturating_sub(source.now_ms),
+        sequence: Vec::new(),
+        price_move_pct: 0.0,
+        favorable_move_pct: 0.0,
+        adverse_move_pct: 0.0,
     })
 }
 
@@ -387,22 +536,22 @@ pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 7] = [
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsUp,
         title: "MRC upward staircase",
-        summary: "Price advances through successive MRC lines toward the upper band.",
-        detection: "A monotonic upward run of local line transitions, usually beginning at or below DownInner and reaching UpOuter or UpBig.",
-        prediction: "Continue toward the next unbroken upper line while the favorable excursion remains stronger than the adverse excursion.",
+        summary: "Price zigzags upward while successive upward legs penetrate deeper.",
+        detection: "At least two upward line legs separated by pullbacks, with the newest upward leg reaching above the previous upward leg.",
+        prediction: "Follow the upward direction during the pullback or next upward leg until an attempted new high fails.",
     },
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsDown,
         title: "MRC downward staircase",
-        summary: "Price declines through successive MRC lines toward the lower band.",
-        detection: "A monotonic downward run of local line transitions, usually beginning at or above UpInner and reaching DownOuter or DownBig.",
-        prediction: "Continue toward the next unbroken lower line while the favorable excursion remains stronger than the adverse excursion.",
+        summary: "Price zigzags downward while successive downward legs penetrate deeper.",
+        detection: "At least two downward line legs separated by pullbacks, with the newest downward leg reaching below the previous downward leg.",
+        prediction: "Follow the downward direction during the pullback or next downward leg until an attempted new low fails.",
     },
     MrcPatternDefinition {
         kind: MrcPatternKind::FastBreakReturn,
         title: "Fast break and return",
-        summary: "Price crosses one adjacent line and quickly returns to the source line.",
-        detection: "A -> adjacent B -> A, measured by elapsed time, excursion outside A, and the exact returned line.",
+        summary: "Price crosses one adjacent line and returns to the source line within 5-15 minutes.",
+        detection: "A -> adjacent B -> A within an inclusive 5-15 minute window, with excursion outside A and the exact returned line.",
         prediction: "Use the exact A -> B -> A history to compare rejection away from B with reclaim through B; B is the learned support/resistance barrier.",
     },
     MrcPatternDefinition {

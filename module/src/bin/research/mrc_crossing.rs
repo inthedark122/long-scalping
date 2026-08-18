@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
-use long_scalping::detection::{mrc_cross_analysis, mrc_crossing, vlines};
+use long_scalping::detection::{
+    decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, vlines,
+};
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
 use serde::Serialize;
 
@@ -153,6 +155,18 @@ fn direction_name(direction: i8) -> &'static str {
     }
 }
 
+fn format_line_sequence(sequence: &[usize]) -> String {
+    if sequence.is_empty() {
+        return "na".to_string();
+    }
+    sequence
+        .iter()
+        .filter_map(|line| LABELS.get(*line).copied())
+        .collect::<Vec<_>>()
+        .join(">")
+        .to_string()
+}
+
 fn history_scope(context_samples: u32, has_prediction: bool) -> &'static str {
     if !has_prediction {
         "none"
@@ -183,6 +197,10 @@ pub(crate) struct CrossingEvent {
     pub(crate) pattern_kind: Option<&'static str>,
     pub(crate) pattern_steps: u32,
     pub(crate) pattern_elapsed_ms: u64,
+    pub(crate) stair_sequence: Vec<usize>,
+    pub(crate) stair_price_move_pct: f64,
+    pub(crate) stair_favorable_move_pct: f64,
+    pub(crate) stair_adverse_move_pct: f64,
     pub(crate) predicted_direction: i8,
     pub(crate) trade_direction: i8,
     pub(crate) predicted_line_price: Option<f64>,
@@ -263,6 +281,14 @@ fn crossing_event_from_analysis(
         pattern_kind: event.pattern_kind.map(|kind| kind.as_str()),
         pattern_steps: event.pattern_steps,
         pattern_elapsed_ms: event.pattern_elapsed_ms,
+        stair_sequence: event
+            .stair_sequence
+            .iter()
+            .map(|line| *line as usize)
+            .collect(),
+        stair_price_move_pct: event.stair_price_move_pct,
+        stair_favorable_move_pct: event.stair_favorable_move_pct,
+        stair_adverse_move_pct: event.stair_adverse_move_pct,
         predicted_direction: event.predicted_direction,
         trade_direction: event.trade_direction,
         predicted_line_price: event.predicted_line_price,
@@ -392,6 +418,7 @@ pub(crate) struct AnalysisReport {
     pub(crate) pending_predictions: usize,
     pub(crate) active_predictions: usize,
     pub(crate) pattern_win_rates: Vec<PatternWinRateReport>,
+    pub(crate) stair_statistics: StairStatistics,
     pub(crate) pattern_performance: Vec<PatternPerformanceReport>,
     pub(crate) parallel_pattern_trades: Vec<PatternTradeReport>,
     pub(crate) active_pattern: Option<&'static str>,
@@ -417,6 +444,53 @@ pub(crate) struct PatternTradeReport {
     pub(crate) summary: VirtualTradeSummary,
     pub(crate) trades: Vec<VirtualTradeResult>,
     pub(crate) open_trade: Option<VirtualPosition>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct StairStepStatistics {
+    pub(crate) pattern: &'static str,
+    pub(crate) steps: u32,
+    pub(crate) observations: usize,
+    pub(crate) average_elapsed_ms: f64,
+    pub(crate) average_volume_gain: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct StairPatternStatistics {
+    pub(crate) pattern: &'static str,
+    pub(crate) observations: usize,
+    pub(crate) average_steps: f64,
+    pub(crate) average_elapsed_ms: f64,
+    pub(crate) average_volume_gain: f64,
+    pub(crate) prediction_matches: usize,
+    pub(crate) filled_predictions: usize,
+    pub(crate) followed_predictions: usize,
+    pub(crate) broken_predictions: usize,
+    pub(crate) closed_positions: usize,
+    pub(crate) wins: usize,
+    pub(crate) losses: usize,
+    pub(crate) win_rate_pct: f64,
+    pub(crate) total_gross_pnl_pct: f64,
+    pub(crate) total_fees_pct: f64,
+    pub(crate) total_pnl_pct: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct StairStatistics {
+    pub(crate) observations: usize,
+    pub(crate) prediction_matches: usize,
+    pub(crate) filled_predictions: usize,
+    pub(crate) followed_predictions: usize,
+    pub(crate) broken_predictions: usize,
+    pub(crate) closed_positions: usize,
+    pub(crate) wins: usize,
+    pub(crate) losses: usize,
+    pub(crate) win_rate_pct: f64,
+    pub(crate) total_gross_pnl_pct: f64,
+    pub(crate) total_fees_pct: f64,
+    pub(crate) total_pnl_pct: f64,
+    pub(crate) by_pattern: Vec<StairPatternStatistics>,
+    pub(crate) by_steps: Vec<StairStepStatistics>,
 }
 
 fn pattern_win_rate_reports(
@@ -504,6 +578,155 @@ fn pattern_win_rate_reports(
     reports
 }
 
+fn average_f64(values: impl Iterator<Item = f64>) -> f64 {
+    let (sum, count) = values.fold((0.0, 0usize), |(sum, count), value| {
+        if value.is_finite() {
+            (sum + value, count + 1)
+        } else {
+            (sum, count)
+        }
+    });
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
+fn stair_statistics(
+    events: &[CrossingEvent],
+    predictions: &[VirtualPredictionResult],
+    trades: &[VirtualTradeResult],
+) -> StairStatistics {
+    const STAIR_PATTERNS: [&str; 2] = ["STAIRS_UP", "STAIRS_DOWN"];
+    let mut by_pattern = Vec::with_capacity(STAIR_PATTERNS.len());
+    for pattern in STAIR_PATTERNS {
+        let observations = events
+            .iter()
+            .filter(|event| event.pattern_kind == Some(pattern))
+            .collect::<Vec<_>>();
+        let pattern_predictions = predictions
+            .iter()
+            .filter(|prediction| prediction.pattern_key == pattern)
+            .collect::<Vec<_>>();
+        let pattern_trades = trades
+            .iter()
+            .filter(|trade| trade.pattern_key == pattern)
+            .collect::<Vec<_>>();
+        let wins = pattern_trades
+            .iter()
+            .filter(|trade| trade.pnl_pct > 0.0)
+            .count();
+        let losses = pattern_trades.len().saturating_sub(wins);
+
+        by_pattern.push(StairPatternStatistics {
+            pattern,
+            observations: observations.len(),
+            average_steps: average_f64(observations.iter().map(|event| event.pattern_steps as f64)),
+            average_elapsed_ms: average_f64(
+                observations
+                    .iter()
+                    .map(|event| event.pattern_elapsed_ms as f64),
+            ),
+            average_volume_gain: average_f64(observations.iter().map(|event| event.volume_gain)),
+            prediction_matches: pattern_predictions.len(),
+            filled_predictions: pattern_predictions
+                .iter()
+                .filter(|prediction| prediction.filled)
+                .count(),
+            followed_predictions: pattern_predictions
+                .iter()
+                .filter(|prediction| {
+                    prediction.outcome == "reached_and_followed"
+                        || prediction.outcome == "not_reached_but_followed"
+                })
+                .count(),
+            broken_predictions: pattern_predictions
+                .iter()
+                .filter(|prediction| prediction.outcome == "prediction_broken")
+                .count(),
+            closed_positions: pattern_trades.len(),
+            wins,
+            losses,
+            win_rate_pct: wins as f64 / pattern_trades.len().max(1) as f64 * 100.0,
+            total_gross_pnl_pct: pattern_trades.iter().map(|trade| trade.gross_pnl_pct).sum(),
+            total_fees_pct: pattern_trades
+                .iter()
+                .map(|trade| trade.entry_fee_pct + trade.exit_fee_pct)
+                .sum(),
+            total_pnl_pct: pattern_trades.iter().map(|trade| trade.pnl_pct).sum(),
+        });
+    }
+
+    let mut step_groups: BTreeMap<(&'static str, u32), Vec<&CrossingEvent>> = BTreeMap::new();
+    for event in events {
+        let Some(pattern) = event.pattern_kind else {
+            continue;
+        };
+        if !STAIR_PATTERNS.contains(&pattern) {
+            continue;
+        }
+        step_groups
+            .entry((pattern, event.pattern_steps))
+            .or_default()
+            .push(event);
+    }
+    let by_steps = step_groups
+        .into_iter()
+        .map(|((pattern, steps), observations)| StairStepStatistics {
+            pattern,
+            steps,
+            observations: observations.len(),
+            average_elapsed_ms: average_f64(
+                observations
+                    .iter()
+                    .map(|event| event.pattern_elapsed_ms as f64),
+            ),
+            average_volume_gain: average_f64(observations.iter().map(|event| event.volume_gain)),
+        })
+        .collect::<Vec<_>>();
+
+    let observations = by_pattern.iter().map(|stats| stats.observations).sum();
+    let prediction_matches = by_pattern
+        .iter()
+        .map(|stats| stats.prediction_matches)
+        .sum();
+    let filled_predictions = by_pattern
+        .iter()
+        .map(|stats| stats.filled_predictions)
+        .sum();
+    let followed_predictions = by_pattern
+        .iter()
+        .map(|stats| stats.followed_predictions)
+        .sum();
+    let broken_predictions = by_pattern
+        .iter()
+        .map(|stats| stats.broken_predictions)
+        .sum();
+    let closed_positions = by_pattern.iter().map(|stats| stats.closed_positions).sum();
+    let wins = by_pattern.iter().map(|stats| stats.wins).sum();
+    let losses = by_pattern.iter().map(|stats| stats.losses).sum();
+    StairStatistics {
+        observations,
+        prediction_matches,
+        filled_predictions,
+        followed_predictions,
+        broken_predictions,
+        closed_positions,
+        wins,
+        losses,
+        win_rate_pct: wins as f64 / closed_positions.max(1) as f64 * 100.0,
+        total_gross_pnl_pct: by_pattern
+            .iter()
+            .map(|stats| stats.total_gross_pnl_pct)
+            .sum(),
+        total_fees_pct: by_pattern.iter().map(|stats| stats.total_fees_pct).sum(),
+        total_pnl_pct: by_pattern.iter().map(|stats| stats.total_pnl_pct).sum(),
+        by_pattern,
+        by_steps,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Analyzer {
     vlines: [VLineState; LINE_COUNT],
@@ -523,8 +746,8 @@ pub(crate) struct Analyzer {
 }
 
 impl Analyzer {
-    pub(crate) fn new() -> Self {
-        Self {
+    pub(crate) fn new(direction_lock: Option<i8>, decision_components: DecisionComponents) -> Self {
+        let mut analyzer = Self {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
             model: MrcCrossingModel::default(),
@@ -539,7 +762,10 @@ impl Analyzer {
             forecast_entries: 0,
             forecast_blocked: 0,
             started_at: Instant::now(),
-        }
+        };
+        analyzer.model.trade_direction_lock = direction_lock;
+        analyzer.model.decision_components = decision_components;
+        analyzer
     }
 
     pub(crate) fn observe(&mut self, row: &CandleRow) {
@@ -732,10 +958,14 @@ impl Analyzer {
             return None;
         }
         let reason = format!(
-            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={:.0} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
+            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={:.0} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
             event.pattern_key,
             event.pattern_steps,
             event.pattern_elapsed_ms,
+            format_line_sequence(&event.stair_sequence),
+            event.stair_price_move_pct,
+            event.stair_favorable_move_pct,
+            event.stair_adverse_move_pct,
             event.line_name,
             event.target_name.unwrap_or("na"),
             prediction.predicted_line_price.unwrap_or(0.0),
@@ -762,6 +992,10 @@ impl Analyzer {
                 .unwrap_or("na"),
             stop_price,
             entry_price,
+            prediction.volume_gain,
+            prediction.volume_gain_min,
+            prediction.volume_gain_max,
+            prediction.buy_sell_gain,
             event.history_scope,
             prediction.context_samples,
             prediction.no_pullback_count,
@@ -818,6 +1052,10 @@ impl Analyzer {
             if let Some(pattern) = MrcPatternKind::from_str(&result.pattern_key) {
                 mrc_crossing::record_pattern_result(&mut self.model, pattern, result.pnl_pct);
             }
+            // The selector key prevents repeated offers while this virtual
+            // position is active. A closed position may seek a new route in
+            // the reserved direction, just like the live engine.
+            self.model.last_plan_key = None;
         }
         self.selected_completed_seen = completed.len();
     }
@@ -843,6 +1081,11 @@ impl Analyzer {
             pattern_win_rates: pattern_win_rate_reports(
                 &self.trades.completed(),
                 &self.predictions.results(),
+            ),
+            stair_statistics: stair_statistics(
+                &self.events,
+                &self.predictions.results(),
+                &self.trades.completed(),
             ),
             pattern_performance: MrcPatternKind::ALL
                 .into_iter()

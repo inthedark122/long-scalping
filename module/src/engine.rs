@@ -1,5 +1,5 @@
 use crate::debug;
-use crate::detection::{mrc_crossing, mrc_pattern_classification, vlines};
+use crate::detection::{decision, mrc_crossing, mrc_pattern_classification, vlines};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
@@ -7,7 +7,9 @@ use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
 use crate::order_manager;
 use crate::orders::{tp_limit_order, tp_mark};
 use crate::risk;
-use crate::state::{dir_to_position, sync_position_state, EngineState, PositionRuntime};
+use crate::state::{
+    dir_to_position, direction_sign, sync_position_state, EngineState, PositionRuntime,
+};
 use lte_strategy_bridge::abi::{
     Direction, ModuleEvent, ModuleInput, ModuleOrderStatus, ModuleOutput, OrderRole,
 };
@@ -82,7 +84,7 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             code,
             values,
         } => handle_signal(input, direction, code, values, state),
-        ModuleEvent::Action { name, values } => handle_action(input, name, values),
+        ModuleEvent::Action { name, values } => handle_action(input, state, name, values),
         ModuleEvent::NewPosition {
             direction,
             entry_price,
@@ -121,6 +123,9 @@ fn handle_signal(
 ) -> ModuleOutput {
     if code == "start" {
         state.allowed_direction = *direction;
+        // A directional start is an explicit reservation. Direction::Both
+        // intentionally remains free to switch sides.
+        state.mrc_crossing_model.trade_direction_lock = direction_sign(*direction);
         state.trade_budget = 0.0;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
@@ -160,6 +165,19 @@ fn handle_signal(
             state.cfg.required_samples =
                 required_samples.round().clamp(0.0, u32::MAX as f64) as u32;
         }
+        if let Some(names) = value_names(values.get("decision_components")) {
+            apply_decision_components(state, names, false);
+        } else if let Some(mode) = primary_mode_name(values.get("primary_mode")) {
+            if let Some(components) = decision::DecisionComponents::for_primary_mode(&mode) {
+                apply_decision_components(state, components.names(), false);
+            } else {
+                state.mrc_crossing_model.decision_components =
+                    decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
+            }
+        } else {
+            state.mrc_crossing_model.decision_components =
+                decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
+        }
         // Restart the market sequence, not the learned ledger. Pattern
         // performance must survive a fresh start signal so the selector can
         // keep improving instead of relearning from zero every session.
@@ -174,6 +192,7 @@ fn handle_signal(
         state.mrc_crossing_model.active_pattern_score = 0.0;
         state.mrc_crossing_model.active_pattern_since_ms = 0;
         state.mrc_crossing_model.last_plan_key = None;
+        state.mrc_crossing_model.decision_state.reset();
         state.vlines = [crate::state::VLineState::default(); 9];
         state.mrc_crossing = crate::state::MrcCrossingState::default();
         if let Some(now_ms) = input
@@ -194,7 +213,7 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} exit={:?}",
+                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}] exit={:?}",
                 state.allowed_direction,
                 "pattern-engine",
                 state.cfg.entry_type.as_str(),
@@ -204,6 +223,7 @@ fn handle_signal(
                 state.cfg.min_sl_percent(),
                 state.cfg.risk_target_percent(),
                 state.cfg.required_samples(),
+                state.cfg.decision_components.join(","),
                 MRC_CROSSING_EXIT_TYPE
             ),
             ..Default::default()
@@ -218,13 +238,128 @@ fn handle_signal(
 
 fn handle_action(
     _input: &ModuleInput,
+    state: &mut EngineState,
     name: &str,
-    _values: &std::collections::HashMap<String, serde_json::Value>,
+    values: &std::collections::HashMap<String, serde_json::Value>,
 ) -> ModuleOutput {
+    let normalized = name.replace('-', "_").to_ascii_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "decision_components" | "decision_component"
+    ) {
+        return ModuleOutput {
+            debug: format!("action {} ignored", name),
+            ..Default::default()
+        };
+    }
+
+    let operation = if values.contains_key("components") {
+        let Some(names) = value_names(values.get("components")) else {
+            return ModuleOutput {
+                debug: "action decision_components invalid components".to_string(),
+                ..Default::default()
+            };
+        };
+        apply_decision_components(state, names, true)
+    } else if values.contains_key("add") {
+        let Some(names) = value_names(values.get("add")) else {
+            return ModuleOutput {
+                debug: "action decision_components invalid add".to_string(),
+                ..Default::default()
+            };
+        };
+        let mut components = state.cfg.decision_components.clone();
+        components.extend(names);
+        apply_decision_components(state, components, true)
+    } else if values.contains_key("remove") {
+        let Some(names) = value_names(values.get("remove")) else {
+            return ModuleOutput {
+                debug: "action decision_components invalid remove".to_string(),
+                ..Default::default()
+            };
+        };
+        let names = names.into_iter().collect::<std::collections::HashSet<_>>();
+        let components = state
+            .cfg
+            .decision_components
+            .iter()
+            .filter(|component| !names.contains(*component))
+            .cloned()
+            .collect();
+        apply_decision_components(state, components, true)
+    } else {
+        return ModuleOutput {
+            debug: "action decision_components requires components, add, or remove".to_string(),
+            ..Default::default()
+        };
+    };
     ModuleOutput {
-        debug: format!("action {} ignored", name),
+        debug: format!("action decision_components {}", operation),
         ..Default::default()
     }
+}
+
+fn value_names(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    match value? {
+        serde_json::Value::String(name) => Some(
+            name.split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(|value| value.as_str().map(str::to_string))
+            .collect(),
+        _ => None,
+    }
+}
+
+fn primary_mode_name(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(mode) => Some(mode.clone()),
+        serde_json::Value::Number(value) => match value.as_f64()?.round() as i32 {
+            0 => Some("all".to_string()),
+            1 => Some("stairs".to_string()),
+            2 => Some("outward".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn apply_decision_components(
+    state: &mut EngineState,
+    names: Vec<String>,
+    report_unknown: bool,
+) -> String {
+    let (components, unknown) = decision::DecisionComponents::from_names(&names);
+    if report_unknown && !unknown.is_empty() && !names.is_empty() && components.names().is_empty() {
+        return format!(
+            "rejected unknown=[{}] current=[{}]",
+            unknown.join(","),
+            state.cfg.decision_components.join(",")
+        );
+    }
+    let previous_primary = state.mrc_crossing_model.decision_state.primary;
+    state.cfg.decision_components = components.names();
+    state.mrc_crossing_model.decision_components = components;
+    state
+        .mrc_crossing_model
+        .decision_state
+        .reconfigure(components);
+    if previous_primary.is_some() && state.mrc_crossing_model.decision_state.primary.is_none() {
+        state.mrc_crossing_model.current_entry = None;
+        state.mrc_crossing_model.last_plan_key = None;
+        state.mrc_crossing_model.active_pattern = None;
+        state.mrc_crossing_model.active_pattern_score = 0.0;
+    }
+    let mut result = format!("components=[{}]", state.cfg.decision_components.join(","));
+    if report_unknown && !unknown.is_empty() {
+        result.push_str(&format!(" unknown=[{}]", unknown.join(",")));
+    }
+    result
 }
 
 fn handle_new_position(
@@ -321,6 +456,7 @@ fn handle_finish_position(
     if state.position.side == dir_to_position(direction) {
         state.position = PositionRuntime::default();
         state.pending_entry_bar = None;
+        state.mrc_crossing_model.last_plan_key = None;
     }
     ModuleOutput {
         debug: format!("finish {:?} pnl={:.4}", direction, pnl),
@@ -597,13 +733,28 @@ fn process_realtime(
                         .or_else(|| mrc_observation.events.last())
                         .map(|event| {
                             format!(
-                                "forecast={} pattern={} steps={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} buy_sell_gain={:.3}",
+                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
                                 mrc_observation.forecast.is_some(),
                                 event
                                     .pattern_kind
                                     .map(|kind| kind.as_str())
                                     .unwrap_or("none"),
                                 event.pattern_steps,
+                                if event.stair_sequence.is_empty() {
+                                    "na".to_string()
+                                } else {
+                                    event
+                                        .stair_sequence
+                                        .iter()
+                                        .filter_map(|line| {
+                                            mrc_crossing::LINE_LABELS.get(*line as usize).copied()
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(">")
+                                },
+                                event.stair_price_move_pct,
+                                event.stair_favorable_move_pct,
+                                event.stair_adverse_move_pct,
                                 event.barrier_state.as_str(),
                                 event
                                     .barrier_line
@@ -642,6 +793,8 @@ fn process_realtime(
                                     .map(|value| format!("{value:.4}%"))
                                     .unwrap_or_else(|| "na".to_string()),
                                 event.volume_gain,
+                                event.volume_gain_min,
+                                event.volume_gain_max,
                                 event.buy_sell_gain,
                             )
                         });

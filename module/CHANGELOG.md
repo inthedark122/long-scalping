@@ -1,5 +1,14 @@
 # Changelog
 
+# 1.0.96
+
+State-machine primary pattern selection release.
+
+- Add runtime selection between All, Stairs, and Outward primary rules.
+- Keep support evidence available for the selected primary rule without allowing support patterns to open trades alone.
+- Expose the selected pattern and all-pattern PnL/reason views in the research report.
+- Preserve stair sequences and price-movement metrics in live and research decision traces.
+
 # 1.0.95
 
 Adaptive MRC prediction and pattern-selection release.

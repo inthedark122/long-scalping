@@ -49,6 +49,10 @@ pub struct MrcCrossAnalysis {
     pub pattern_kind: Option<MrcPatternKind>,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
+    pub stair_sequence: Vec<u8>,
+    pub stair_price_move_pct: f64,
+    pub stair_favorable_move_pct: f64,
+    pub stair_adverse_move_pct: f64,
     pub estimated_time_ms: Option<f64>,
     pub favorable_move_pct: Option<f64>,
     pub adverse_move_pct: Option<f64>,
@@ -290,6 +294,10 @@ pub fn build(
         pattern_kind: None,
         pattern_steps: 0,
         pattern_elapsed_ms: 0,
+        stair_sequence: Vec::new(),
+        stair_price_move_pct: 0.0,
+        stair_favorable_move_pct: 0.0,
+        stair_adverse_move_pct: 0.0,
         estimated_time_ms: None,
         favorable_move_pct: None,
         adverse_move_pct: None,
@@ -404,6 +412,10 @@ pub fn build(
     analysis.pattern_kind = Some(prediction.pattern_kind);
     analysis.pattern_steps = prediction.pattern_steps;
     analysis.pattern_elapsed_ms = prediction.pattern_elapsed_ms;
+    analysis.stair_sequence = prediction.stair_sequence.clone();
+    analysis.stair_price_move_pct = prediction.stair_price_move_pct;
+    analysis.stair_favorable_move_pct = prediction.stair_favorable_move_pct;
+    analysis.stair_adverse_move_pct = prediction.stair_adverse_move_pct;
     analysis.estimated_time_ms = prediction.stats.average_duration_ms();
     analysis.favorable_move_pct = favorable_move_pct;
     analysis.adverse_move_pct = adverse_move_pct;

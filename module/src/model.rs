@@ -86,6 +86,8 @@ pub struct Config {
     pub entry_type: EntryType,
     #[serde(default = "default_required_samples")]
     pub required_samples: u32,
+    #[serde(default = "default_decision_components")]
+    pub decision_components: Vec<String>,
 }
 
 fn default_cap_init() -> f64 {
@@ -100,6 +102,21 @@ fn default_required_samples() -> u32 {
     3
 }
 
+fn default_decision_components() -> Vec<String> {
+    [
+        "primary-stairs",
+        "primary-outward",
+        "support-fast-break-return",
+        "support-pullback",
+        "support-volume",
+        "support-extreme",
+        "support-trend",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -110,6 +127,7 @@ impl Default for Config {
             risk_target_percent: 0.0,
             entry_type: EntryType::default(),
             required_samples: default_required_samples(),
+            decision_components: default_decision_components(),
         }
     }
 }

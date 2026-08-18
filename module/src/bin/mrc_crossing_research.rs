@@ -7,6 +7,7 @@ use std::time::Instant;
 
 mod research;
 
+use long_scalping::detection::decision::DecisionComponents;
 use research::data::{fetch_history_for_timeframe_cached, CacheSettings, CacheStatus};
 use research::mrc_crossing::{AnalysisReport, Analyzer};
 use research::mrc_crossing_html;
@@ -16,8 +17,23 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--direction both|long|short] [--primary all|stairs|outward] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
+}
+
+fn parse_direction(value: &str) -> Result<Option<i8>, Box<dyn Error>> {
+    match value.to_ascii_lowercase().as_str() {
+        "both" | "auto" => Ok(None),
+        "long" => Ok(Some(1)),
+        "short" => Ok(Some(-1)),
+        _ => Err(format!("invalid direction '{value}', expected both, long, or short").into()),
+    }
+}
+
+fn parse_primary(value: &str) -> Result<DecisionComponents, Box<dyn Error>> {
+    DecisionComponents::for_primary_mode(value).ok_or_else(|| {
+        format!("invalid primary mode '{value}', expected all, stairs, or outward").into()
+    })
 }
 
 fn symbol_slug(symbol_key: &str) -> String {
@@ -225,6 +241,8 @@ fn analyze_symbol(
     symbol_key: &str,
     history: usize,
     end_time_ms: Option<i64>,
+    direction_lock: Option<i8>,
+    decision_components: DecisionComponents,
     cache_settings: CacheSettings,
 ) -> Result<(usize, CacheStatus, AnalysisReport), Box<dyn Error>> {
     let started = Instant::now();
@@ -245,7 +263,7 @@ fn analyze_symbol(
         .into_iter()
         .filter(|row| end_time_ms.is_none_or(|end| row.time_ms < end))
         .collect::<Vec<_>>();
-    let mut analyzer = Analyzer::new();
+    let mut analyzer = Analyzer::new(direction_lock, decision_components);
 
     for row in &minute {
         analyzer.observe(row);
@@ -273,6 +291,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut symbol_keys = Vec::new();
     let mut history = 500usize;
+    let mut direction_lock = None::<i8>;
+    let mut decision_components = DecisionComponents::default();
     let mut end_time_ms = None::<i64>;
     let mut output = None::<String>;
     let mut html = None::<String>;
@@ -296,6 +316,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             "--history" if args.get(index + 1).is_some() => {
                 history = args[index + 1].parse().unwrap_or(history);
+                index += 2;
+            }
+            "--direction" if args.get(index + 1).is_some() => {
+                direction_lock = parse_direction(&args[index + 1])?;
+                index += 2;
+            }
+            "--primary" if args.get(index + 1).is_some() => {
+                decision_components = parse_primary(&args[index + 1])?;
                 index += 2;
             }
             "--end-time" if args.get(index + 1).is_some() => {
@@ -335,9 +363,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     symbol_keys.dedup();
     eprintln!(
-        "[mrc-research] start cwd={} symbols={:?} history={} end_time_ms={:?} cache_enabled={} cache_clear={} cache_refresh={} output={:?} html={:?}",
+        "[mrc-research] start cwd={} symbols={:?} direction={} primary={} history={} end_time_ms={:?} cache_enabled={} cache_clear={} cache_refresh={} output={:?} html={:?}",
         std::env::current_dir()?.display(),
         symbol_keys,
+        direction_lock
+            .map(|direction| if direction > 0 { "long" } else { "short" })
+            .unwrap_or("both"),
+        if decision_components.primary_stairs && decision_components.primary_outward {
+            "all"
+        } else if decision_components.primary_stairs {
+            "stairs"
+        } else if decision_components.primary_outward {
+            "outward"
+        } else {
+            "none"
+        },
         history,
         end_time_ms,
         cache_settings.enabled,
@@ -357,8 +397,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, minute_cache, report) =
-            analyze_symbol(symbol_key, history, end_time_ms, cache_settings)?;
+        let (minute_count, minute_cache, report) = analyze_symbol(
+            symbol_key,
+            history,
+            end_time_ms,
+            direction_lock,
+            decision_components,
+            cache_settings,
+        )?;
         print_summary(
             symbol_key,
             minute_count,
@@ -370,6 +416,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let path = symbol_output_path(requested, symbol_key, "json", multiple_symbols)?;
             let document = json!({
                 "symbol_key": symbol_key,
+                "direction": direction_lock.map(|direction| if direction > 0 { "long" } else { "short" }).unwrap_or("both"),
+                "primary": if decision_components.primary_stairs && decision_components.primary_outward { "all" } else if decision_components.primary_stairs { "stairs" } else if decision_components.primary_outward { "outward" } else { "none" },
+                "decision_components": decision_components.names(),
                 "history_requested_1m": history,
                 "end_time_ms": end_time_ms,
                 "cache": {"1m": minute_cache.to_string()},

@@ -25,13 +25,18 @@ pub(crate) fn write_report(
         "pending_predictions": report.pending_predictions,
         "active_predictions": report.active_predictions,
         "pattern_win_rates": report.pattern_win_rates,
+        "stair_statistics": report.stair_statistics,
         "pattern_performance": report.pattern_performance,
         "parallel_pattern_trades": report.parallel_pattern_trades,
         "active_pattern": report.active_pattern,
         "active_pattern_score": report.active_pattern_score,
         "pattern_definitions": {
             "pattern": "A stable local movement classification: staircase, break-return, range/trend cycle, pullback, or outward continuation.",
-            "pattern_steps": "The number of local line steps supporting the classified pattern.",
+            "pattern_steps": "For a staircase, the number of same-direction zigzag legs supporting the classified pattern.",
+            "stair_sequence": "The MRC line sequence used by the STAIRS_UP or STAIRS_DOWN decision.",
+            "stair_price_move_pct": "Direction-adjusted net price movement from the beginning of the stair to the current event.",
+            "stair_favorable_move_pct": "Maximum favorable price excursion from the beginning of the stair.",
+            "stair_adverse_move_pct": "Maximum adverse price excursion from the beginning of the stair.",
             "outcome_counts": "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
             "resistance": "The opposite reverted MRC line and its barrier state at the signal.",
             "tp_sl": "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
@@ -105,6 +110,21 @@ const TEMPLATE: &str = r###"<!doctype html>
     .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
     .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
     .legend-swatch { width: 12px; height: 3px; border-radius: 2px; }
+    .pattern-filter-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      margin: 18px 0; padding: 12px 14px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 12px;
+    }
+    .pattern-filter-label { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .pattern-chips { display: flex; flex: 1 1 560px; flex-wrap: wrap; gap: 7px; }
+    .pattern-chip, .pattern-filter-action {
+      color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 999px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 12px;
+    }
+    .pattern-chip:hover, .pattern-filter-action:hover { border-color: var(--blue); color: var(--text); }
+    .pattern-chip.selected { color: var(--text); border-color: var(--blue); background: rgba(114, 167, 255, .18); }
+    .pattern-filter-actions { display: flex; gap: 6px; }
+    .pattern-filter-summary { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .pattern-reason-group { margin: 10px 0; }
     .pattern-reason-group summary { cursor: pointer; color: var(--text); font-weight: 700; }
     .pattern-reason-group table { margin-top: 8px; }
@@ -157,6 +177,16 @@ const TEMPLATE: &str = r###"<!doctype html>
       <div id="context" class="subtle"></div>
     </section>
 
+    <section class="pattern-filter-bar" aria-label="Pattern display selection">
+      <span class="pattern-filter-label">Display patterns</span>
+      <div id="pattern-filter" class="pattern-chips" role="group" aria-label="Patterns"></div>
+      <div class="pattern-filter-actions">
+        <button type="button" class="pattern-filter-action" id="select-all-patterns">All</button>
+        <button type="button" class="pattern-filter-action" id="clear-patterns">Clear</button>
+      </div>
+      <div id="pattern-filter-summary" class="pattern-filter-summary"></div>
+    </section>
+
     <section id="cards" class="cards"></section>
 
     <section class="panel">
@@ -169,13 +199,19 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     <section class="panel">
       <h2>All-pattern PnL comparison</h2>
-      <p class="subtle">Each line is a separate parallel diagnostic account that follows one pattern only. This is the counterfactual pattern comparison, not the single selected-position account above.</p>
+      <p class="subtle">Each line is a separate parallel diagnostic account that follows one pattern only. This is the counterfactual pattern comparison, not the single selected-position account above. The selection is global across this report.</p>
       <div class="chart-wrap tall" id="patterns-pnl-chart-wrap">
         <canvas id="patterns-pnl-chart"></canvas>
         <div id="patterns-pnl-chart-empty" class="empty">No completed pattern trades</div>
         <div id="patterns-pnl-tooltip" class="chart-tooltip"></div>
       </div>
       <div id="patterns-pnl-legend" class="chart-legend"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Aggregated stair statistics</h2>
+      <p class="subtle">This aggregates every detected zigzag staircase, not only filled positions. Observations count crossing detections; prediction matches include forecast evaluations; selected-position PnL is the actual account route for this run.</p>
+      <div id="stair-statistics" class="table-wrap"></div>
     </section>
 
     <section class="panel">
@@ -187,7 +223,7 @@ const TEMPLATE: &str = r###"<!doctype html>
               <th>#</th><th>Side</th><th>Route</th><th>Opened</th>
               <th>Entry</th><th>Target</th><th>Stop</th><th>Closed</th>
               <th>Exit</th><th>Outcome</th><th>Gross PnL</th><th>Fees</th><th>Net PnL</th>
-              <th>Duration</th>
+              <th>MFE price move</th><th>MAE price move</th><th>Duration</th>
             </tr>
           </thead>
           <tbody id="positions"></tbody>
@@ -216,7 +252,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       <h2>Pattern definitions</h2>
       <div class="subtle">
         <p><b>Pattern</b> is a stable local movement classification such as <code>STAIRS_UP</code> or <code>FAST_BREAK_RETURN</code>. The long crossing sequence remains diagnostic only.</p>
-        <p><b>Pattern steps</b> and elapsed time describe how much local evidence is currently visible. Outcome counts are supporting evidence; the pattern itself selects the direction.</p>
+        <p><b>Pattern steps</b> and elapsed time describe how much local evidence is currently visible. For stairs, steps are alternating zigzag legs; outcome counts are supporting evidence and the pattern itself selects the direction.</p>
         <p><b>Resistance</b> is the opposite reverted MRC line and its current barrier state. <b>TP / SL</b> are the actual MRC lines used by the executed side.</p>
         <p><b>Max/furthest line before return</b> is the exact MRC line index/name farthest from the source line before the first return; it does not use the changing line price.</p>
         <p><b>Win rate</b> is wins divided by closed virtual positions for the exact displayed pattern. Always read it together with the position count.</p>
@@ -253,14 +289,53 @@ const TEMPLATE: &str = r###"<!doctype html>
     const predictions = DATA.predictions || [];
     const summary = DATA.prediction_summary || {};
     const patternWinRates = DATA.pattern_win_rates || [];
+    const stairStatistics = DATA.stair_statistics || {};
     const patternPerformance = DATA.pattern_performance || [];
     const parallelPatternTrades = DATA.parallel_pattern_trades || [];
     const activePattern = DATA.active_pattern || null;
     const esc = (value) => String(value ?? "")
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    const patternFilter = document.getElementById("pattern-filter");
+    const patternFilterSummary = document.getElementById("pattern-filter-summary");
+    const patternNames = [...new Set([
+      ...parallelPatternTrades.map((group) => group.pattern),
+      ...patternWinRates.map((pattern) => pattern.pattern),
+      ...patternPerformance.map((pattern) => pattern.pattern),
+      ...trades.map((trade) => trade.pattern_key),
+      ...predictions.map((prediction) => prediction.pattern_key),
+      ...(DATA.events || []).map((event) => event.pattern_key),
+    ].filter((pattern) => pattern && pattern !== "none"))];
+    patternFilter.innerHTML = patternNames.map((pattern) =>
+      '<button type="button" class="pattern-chip selected" data-pattern="' + esc(pattern) +
+      '" aria-pressed="true">' + esc(pattern) + '</button>'
+    ).join("");
+    let selectedPatternNames = new Set(patternNames);
+    const patternIsSelected = (pattern) => selectedPatternNames.has(pattern);
+    const updatePatternSelection = () => {
+      selectedPatternNames = new Set([...patternFilter.querySelectorAll(".pattern-chip.selected")]
+        .map((chip) => chip.dataset.pattern));
+      patternFilterSummary.textContent = selectedPatternNames.size + " of " + patternNames.length + " selected";
+    };
+    updatePatternSelection();
+    let selectedTrades = [];
+    let selectedPredictions = [];
+    let selectedEvents = [];
+    let selectedOpenTrade = null;
+    const refreshSelectedData = () => {
+      selectedTrades = trades.filter((trade) => patternIsSelected(trade.pattern_key));
+      selectedPredictions = predictions.filter((prediction) => patternIsSelected(prediction.pattern_key));
+      selectedEvents = (DATA.events || []).filter((event) => patternIsSelected(event.pattern_key));
+      selectedOpenTrade = DATA.open_trade && patternIsSelected(DATA.open_trade.pattern_key)
+        ? DATA.open_trade : null;
+    };
+    refreshSelectedData();
     const money = (value) => Number(value || 0).toFixed(4) + "%";
     const price = (value) => Number(value || 0).toFixed(6);
+    const valueRange = (values) => {
+      const finite = values.map(Number).filter((value) => Number.isFinite(value));
+      return finite.length ? money(Math.min(...finite)) + " .. " + money(Math.max(...finite)) : "—";
+    };
     const date = (value) => value ? new Date(Number(value)).toLocaleString() : "—";
     const shortDate = (value) => value ? new Date(Number(value)).toLocaleString([], {
       month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
@@ -313,6 +388,10 @@ const TEMPLATE: &str = r###"<!doctype html>
           ["Pattern", "pattern"],
           ["Pattern steps", "pattern_steps"],
           ["Pattern elapsed", "pattern_elapsed_ms"],
+          ["Stair sequence", "stair_sequence"],
+          ["Stair net price move", "stair_price_move_pct"],
+          ["Stair favorable move", "stair_favorable_move_pct"],
+          ["Stair adverse move", "stair_adverse_move_pct"],
           ["Crossed line", "source_line"],
           ["Learned destination", "learned_line"],
           ["Predicted movement", "predicted_direction"],
@@ -322,6 +401,11 @@ const TEMPLATE: &str = r###"<!doctype html>
           ["Entry price", "entry"],
           ["Take-profit line / price", "tp_line", "tp", "level"],
           ["Stop-loss line / price", "sl_line", "sl", "level"],
+        ]],
+        ["Volume", [
+          ["Volume gain", "volume_gain"],
+          ["Volume gain min / max", "volume_gain_min", "volume_gain_max"],
+          ["Buy/sell flow", "buy_sell_gain"],
         ]],
         ["Resistance", [
           ["Barrier state / line", "barrier"],
@@ -371,25 +455,70 @@ const TEMPLATE: &str = r###"<!doctype html>
       DATA.symbol_key + " · 1m history " + DATA.history_loaded_1m +
       (DATA.latest_event_time_ms ? " · as of " + date(DATA.latest_event_time_ms) : "");
 
-    const cardData = [
-      ["Positions", tradeSummary.trades || 0],
-      ["Win rate", Number(tradeSummary.win_rate_pct || 0).toFixed(1) + "%"],
-      ["Net PnL", Number(tradeSummary.total_pnl_pct || 0).toFixed(4) + "%"],
-      ["Fees", Number(tradeSummary.total_fees_pct || 0).toFixed(4) + "%"],
-      ["Max drawdown", Number(tradeSummary.max_drawdown_pct || 0).toFixed(4) + "%"],
-      ["Avg duration", tradeSummary.average_duration_ms
-        ? (Number(tradeSummary.average_duration_ms) / 60000).toFixed(2) + "m" : "—"],
-      ["Predictions", summary.predictions || 0],
-      ["Filled predictions", summary.filled || 0],
-      ["Follow rate", Number(summary.followed_rate_pct || 0).toFixed(1) + "%"],
-    ];
-    document.getElementById("cards").innerHTML = cardData.map(([label, value]) =>
-      '<div class="card"><div class="card-label">' + esc(label) +
-      '</div><div class="card-value">' + esc(value) + '</div></div>'
-    ).join("");
+    const summarizeTrades = (rows) => {
+      let net = 0, fees = 0, cumulative = 0, peak = 0, maxDrawdown = 0, durationSum = 0, durationCount = 0;
+      const ordered = [...rows].sort((left, right) =>
+        Number(left.closed_at || left.opened_at || 0) - Number(right.closed_at || right.opened_at || 0));
+      ordered.forEach((trade) => {
+        net += Number(trade.pnl_pct || 0);
+        fees += Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0);
+        cumulative += Number(trade.pnl_pct || 0);
+        peak = Math.max(peak, cumulative);
+        maxDrawdown = Math.max(maxDrawdown, peak - cumulative);
+        if (trade.opened_at && trade.closed_at) {
+          durationSum += Number(trade.closed_at) - Number(trade.opened_at);
+          durationCount += 1;
+        }
+      });
+      return {
+        trades: rows.length,
+        winRate: rows.length ? rows.filter((trade) => Number(trade.pnl_pct || 0) > 0).length / rows.length * 100 : 0,
+        net,
+        fees,
+        maxDrawdown,
+        minNet: rows.length ? Math.min(...rows.map((trade) => Number(trade.pnl_pct || 0))) : 0,
+        maxNet: rows.length ? Math.max(...rows.map((trade) => Number(trade.pnl_pct || 0))) : 0,
+        mfeRange: valueRange(rows.map((trade) => trade.mfe_pct)),
+        maeRange: valueRange(rows.map((trade) => trade.mae_pct)),
+        averageDuration: durationCount ? durationSum / durationCount : 0,
+      };
+    };
+    const summarizePredictions = (rows) => {
+      const followed = rows.filter((prediction) =>
+        prediction.outcome === "reached_and_followed" || prediction.outcome === "not_reached_but_followed").length;
+      return {
+        predictions: rows.length,
+        filled: rows.filter((prediction) => prediction.filled).length,
+        followedRate: rows.length ? followed / rows.length * 100 : 0,
+      };
+    };
+    const renderCards = () => {
+      const tradeStats = summarizeTrades(selectedTrades);
+      const predictionStats = summarizePredictions(selectedPredictions);
+      const cardData = [
+        ["Positions", tradeStats.trades],
+        ["Win rate", tradeStats.winRate.toFixed(1) + "%"],
+        ["Net PnL", tradeStats.net.toFixed(4) + "%"],
+        ["Min net PnL", tradeStats.minNet.toFixed(4) + "%"],
+        ["Max net PnL", tradeStats.maxNet.toFixed(4) + "%"],
+        ["MFE price move min..max", tradeStats.mfeRange],
+        ["MAE price move min..max", tradeStats.maeRange],
+        ["Fees", tradeStats.fees.toFixed(4) + "%"],
+        ["Max drawdown", tradeStats.maxDrawdown.toFixed(4) + "%"],
+        ["Avg duration", tradeStats.averageDuration
+          ? (tradeStats.averageDuration / 60000).toFixed(2) + "m" : "—"],
+        ["Predictions", predictionStats.predictions],
+        ["Filled predictions", predictionStats.filled],
+        ["Follow rate", predictionStats.followedRate.toFixed(1) + "%"],
+      ];
+      document.getElementById("cards").innerHTML = cardData.map(([label, value]) =>
+        '<div class="card"><div class="card-label">' + esc(label) +
+        '</div><div class="card-value">' + esc(value) + '</div></div>'
+      ).join("");
+    };
 
-    const crossings = DATA.events || [];
-    const crossingRows = crossings.slice(-500).reverse().map((event) => {
+    const renderCrossings = () => {
+      const crossingRows = selectedEvents.slice(-500).reverse().map((event) => {
       const direction = Number(event.direction || 0) > 0 ? "UP" : "DOWN";
       const learned = event.target_name
         ? (event.pattern_kind || "pattern") + " steps=" + (event.pattern_steps || 0) + " -> " +
@@ -426,6 +555,12 @@ const TEMPLATE: &str = r###"<!doctype html>
           " next=" + event.next_line_crosses +
           " support/resistance=" + event.support_resistance_moves +
           " price-only=" + event.price_only_moves;
+      const stair = event.stair_sequence && event.stair_sequence.length
+        ? "stair=" + event.stair_sequence.join(">") +
+          " net=" + Number(event.stair_price_move_pct || 0).toFixed(3) + "%" +
+          " favorable=" + Number(event.stair_favorable_move_pct || 0).toFixed(3) + "%" +
+          " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%"
+        : "";
       return '<tr><td>' + esc(date(event.time_ms)) + '</td><td>' + direction +
         ' ' + esc(event.line_name) + '</td><td>' + price(event.market_price) +
         '</td><td>' + price(event.mrc_min) + '..' + price(event.mrc_max) +
@@ -433,44 +568,87 @@ const TEMPLATE: &str = r###"<!doctype html>
         '</td><td>' + esc(exits) + '</td><td>' + esc(resistance) +
         '</td><td>' + expected + '</td><td>' + realizedPrice + '</td><td>' + targetRange +
         '</td><td><code>' + esc(event.mrc_trace || "—") + '</code></td><td>' +
-        esc(evidence) + '</td></tr>';
-    }).join("");
-    document.getElementById("crossings").innerHTML = crossings.length
-      ? '<table><thead><tr><th>Time</th><th>Cross</th><th>Market price</th>' +
-        '<th>MRC min..max</th><th>Prediction</th>' +
-        '<th>Trade side</th><th>TP / SL lines</th><th>Resistance</th>' +
-        '<th>Expected price</th><th>Observed price low..high</th><th>Target MRC low..high</th>' +
-        '<th>MRC movement</th><th>Evidence</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
-      : '<div class="subtle">No crossing observations</div>';
+        esc(evidence + (stair ? " " + stair : "")) + '</td></tr>';
+      }).join("");
+      document.getElementById("crossings").innerHTML = selectedEvents.length
+        ? '<table><thead><tr><th>Time</th><th>Cross</th><th>Market price</th>' +
+          '<th>MRC min..max</th><th>Prediction</th>' +
+          '<th>Trade side</th><th>TP / SL lines</th><th>Resistance</th>' +
+          '<th>Expected price</th><th>Observed price low..high</th><th>Target MRC low..high</th>' +
+          '<th>MRC movement</th><th>Evidence</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
+        : '<div class="subtle">No crossing observations for selected patterns</div>';
+    };
 
-    const patternRows = patternWinRates.map((pattern) =>
-      '<tr><td><code>' + esc(pattern.pattern) + '</code></td><td>' + pattern.matches + '</td><td>' +
-      pattern.filled_predictions + '</td><td>' + pattern.closed_positions + '</td><td>' +
-      pattern.wins + ' / ' + pattern.losses + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
-      pattern.followed_predictions + ' / ' + pattern.broken_predictions + '</td><td>' +
-      money(pattern.total_gross_pnl_pct) + '</td><td>' + money(pattern.total_fees_pct) +
-      '</td><td class="' + signedClass(pattern.total_pnl_pct) + '">' + money(pattern.total_pnl_pct) +
-      '</td><td>' + money(pattern.average_win_pnl_pct) + '</td><td>' +
-      money(pattern.average_loss_pnl_pct) + '</td></tr>'
-    ).join("");
-    document.getElementById("patterns").innerHTML = patternWinRates.length
-      ? '<table><thead><tr><th>Pattern</th><th>Matches</th><th>Filled</th><th>Closed</th>' +
-        '<th>Wins / losses</th><th>Win rate</th><th>Followed / broken</th><th>Gross</th><th>Fees</th><th>Net</th>' +
-        '<th>Average win</th><th>Average loss</th></tr></thead><tbody>' + patternRows + '</tbody></table>'
-      : '<div class="subtle">No matched patterns with completed positions</div>';
+    const renderStairStatistics = () => {
+      const byPattern = stairStatistics.by_pattern || [];
+      const bySteps = stairStatistics.by_steps || [];
+      const duration = (value) => Number(value || 0) / 60000;
+      const patternRows = byPattern.map((pattern) =>
+        '<tr><td><code>' + esc(pattern.pattern) + '</code></td><td>' + pattern.observations + '</td><td>' +
+        Number(pattern.average_steps || 0).toFixed(2) + '</td><td>' + duration(pattern.average_elapsed_ms).toFixed(1) +
+        'm</td><td>' + Number(pattern.average_volume_gain || 0).toFixed(2) + '</td><td>' +
+        pattern.prediction_matches + '</td><td>' + pattern.filled_predictions + '</td><td>' +
+        pattern.followed_predictions + ' / ' + pattern.broken_predictions + '</td><td>' +
+        pattern.closed_positions + '</td><td>' + pattern.wins + ' / ' + pattern.losses + '</td><td>' +
+        Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' + money(pattern.total_gross_pnl_pct) +
+        '</td><td>' + money(pattern.total_fees_pct) + '</td><td class="' + signedClass(pattern.total_pnl_pct) + '">' +
+        money(pattern.total_pnl_pct) + '</td></tr>'
+      ).join('');
+      const stepRows = bySteps.map((step) =>
+        '<tr><td><code>' + esc(step.pattern) + '</code></td><td>' + step.steps + '</td><td>' +
+        step.observations + '</td><td>' + duration(step.average_elapsed_ms).toFixed(1) + 'm</td><td>' +
+        Number(step.average_volume_gain || 0).toFixed(2) + '</td></tr>'
+      ).join('');
+      const total = '<div class="subtle">All stairs: <b>' + (stairStatistics.observations || 0) +
+        '</b> observations · <b>' + (stairStatistics.prediction_matches || 0) + '</b> prediction matches · <b>' +
+        (stairStatistics.followed_predictions || 0) + '</b> followed / <b>' + (stairStatistics.broken_predictions || 0) +
+        '</b> broken · selected trades <b>' + (stairStatistics.closed_positions || 0) + '</b> · net <span class="' +
+        signedClass(stairStatistics.total_pnl_pct) + '">' + money(stairStatistics.total_pnl_pct) + '</span></div>';
+      document.getElementById('stair-statistics').innerHTML = total +
+        (patternRows ? '<h3>By direction</h3><table><thead><tr><th>Pattern</th><th>Observations</th><th>Avg steps</th><th>Avg elapsed</th><th>Avg volume</th><th>Predictions</th><th>Filled</th><th>Followed / broken</th><th>Closed</th><th>Wins / losses</th><th>Win rate</th><th>Gross</th><th>Fees</th><th>Net</th></tr></thead><tbody>' + patternRows + '</tbody></table>' : '') +
+        (stepRows ? '<h3>By zigzag depth</h3><table><thead><tr><th>Pattern</th><th>Steps</th><th>Observations</th><th>Avg elapsed</th><th>Avg volume</th></tr></thead><tbody>' + stepRows + '</tbody></table>' : '');
+    };
+    renderStairStatistics();
 
-    const performanceRows = patternPerformance.map((pattern) =>
-      '<tr class="' + (pattern.pattern === activePattern ? 'active-row' : '') + '"><td><code>' + esc(pattern.pattern) + '</code></td><td>' +
-      pattern.observations + '</td><td>' + pattern.trades + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
-      money(pattern.total_pnl_pct) + '</td><td>' + money(pattern.average_pnl_pct) + '</td><td>' + money(pattern.ema_pnl_pct) +
-      '</td><td>' + money(pattern.last_pnl_pct) + '</td><td>' + (pattern.pattern === activePattern ? 'ACTIVE' : '') + '</td></tr>'
-    ).join('');
-    document.getElementById("pattern-performance").innerHTML = performanceRows
-      ? '<table><thead><tr><th>Pattern</th><th>Observations</th><th>Trades</th><th>Win rate</th><th>Total net</th><th>Average net</th><th>EMA net</th><th>Last net</th><th>State</th></tr></thead><tbody>' + performanceRows + '</tbody></table>'
-      : '<div class="subtle">No pattern performance yet</div>';
+    const renderPatternTables = () => {
+      const visibleWinRates = patternWinRates.filter((pattern) => patternIsSelected(pattern.pattern));
+      const parallelByPattern = new Map(parallelPatternTrades.map((group) => [group.pattern, group]));
+      const patternRows = visibleWinRates.map((pattern) =>
+        '<tr><td><code>' + esc(pattern.pattern) + '</code></td><td>' + pattern.matches + '</td><td>' +
+        pattern.filled_predictions + '</td><td>' + pattern.closed_positions + '</td><td>' +
+        pattern.wins + ' / ' + pattern.losses + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
+        pattern.followed_predictions + ' / ' + pattern.broken_predictions + '</td><td>' +
+        money(pattern.total_gross_pnl_pct) + '</td><td>' + money(pattern.total_fees_pct) +
+        '</td><td class="' + signedClass(pattern.total_pnl_pct) + '">' + money(pattern.total_pnl_pct) +
+        '</td><td>' + money(pattern.average_win_pnl_pct) + '</td><td>' +
+        money(pattern.average_loss_pnl_pct) + '</td><td>' +
+        valueRange((parallelByPattern.get(pattern.pattern)?.trades || []).map((trade) => trade.mfe_pct)) +
+        '</td><td>' + valueRange((parallelByPattern.get(pattern.pattern)?.trades || [])
+          .map((trade) => trade.mae_pct)) + '</td></tr>'
+      ).join("");
+      document.getElementById("patterns").innerHTML = visibleWinRates.length
+        ? '<table><thead><tr><th>Pattern</th><th>Matches</th><th>Filled</th><th>Closed</th>' +
+          '<th>Wins / losses</th><th>Win rate</th><th>Followed / broken</th><th>Gross</th><th>Fees</th><th>Net</th>' +
+          '<th>Average win</th><th>Average loss</th><th>MFE price min..max</th><th>MAE price min..max</th></tr></thead><tbody>' +
+          patternRows + '</tbody></table>'
+        : '<div class="subtle">No selected patterns with completed positions</div>';
+
+      const visiblePerformance = patternPerformance.filter((pattern) => patternIsSelected(pattern.pattern));
+      const performanceRows = visiblePerformance.map((pattern) =>
+        '<tr class="' + (pattern.pattern === activePattern ? 'active-row' : '') + '"><td><code>' + esc(pattern.pattern) + '</code></td><td>' +
+        pattern.observations + '</td><td>' + pattern.trades + '</td><td>' + Number(pattern.win_rate_pct || 0).toFixed(1) + '%</td><td>' +
+        money(pattern.total_pnl_pct) + '</td><td>' + money(pattern.average_pnl_pct) + '</td><td>' + money(pattern.ema_pnl_pct) +
+        '</td><td>' + money(pattern.last_pnl_pct) + '</td><td>' + (pattern.pattern === activePattern ? 'ACTIVE' : '') + '</td></tr>'
+      ).join('');
+      document.getElementById("pattern-performance").innerHTML = performanceRows
+        ? '<table><thead><tr><th>Pattern</th><th>Observations</th><th>Trades</th><th>Win rate</th><th>Total net</th><th>Average net</th><th>EMA net</th><th>Last net</th><th>State</th></tr></thead><tbody>' + performanceRows + '</tbody></table>'
+        : '<div class="subtle">No selected pattern performance</div>';
+    };
 
     const patternColors = ["#72a7ff", "#55d69b", "#ff7185", "#d7a6ff", "#ffbf69", "#6ee7e7", "#f08cae"];
-    const parallelSeries = parallelPatternTrades.map((group, groupIndex) => {
+    const buildParallelSeries = () => parallelPatternTrades
+      .filter((group) => patternIsSelected(group.pattern))
+      .map((group, groupIndex) => {
       const completed = [...(group.trades || [])].sort((left, right) =>
         Number(left.closed_at || left.opened_at || 0) - Number(right.closed_at || right.opened_at || 0));
       let cumulative = 0;
@@ -496,9 +674,11 @@ const TEMPLATE: &str = r###"<!doctype html>
         pattern: group.pattern || "UNKNOWN",
         color: patternColors[groupIndex % patternColors.length],
         points,
+        trades: completed,
         summary: group.summary || {},
       };
-    }).filter((series) => series.points.length);
+      }).filter((series) => series.points.length);
+    let parallelSeries = buildParallelSeries();
 
     let allPatternChartState = null;
     const allPatternChart = document.getElementById("patterns-pnl-chart");
@@ -510,6 +690,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       const fields = [
         ["pattern", "pattern"], ["source_line", "source"], ["learned_line", "learned"],
         ["trade_direction", "trade"], ["barrier", "barrier"],
+        ["volume_gain", "volume"], ["buy_sell_gain", "buy/sell"],
         ["transition_samples", "transitions"], ["movement_samples", "movements"],
         ["expected_move_pct", "expected move"],
       ];
@@ -518,7 +699,7 @@ const TEMPLATE: &str = r###"<!doctype html>
     };
 
     const renderPatternReasons = () => {
-      const groups = parallelPatternTrades.map((group) => {
+      const groups = parallelPatternTrades.filter((group) => patternIsSelected(group.pattern)).map((group) => {
         const groupTrades = group.trades || [];
         const summary = group.summary || {};
         const rows = groupTrades.map((trade, index) => {
@@ -531,17 +712,20 @@ const TEMPLATE: &str = r###"<!doctype html>
             price(trade.entry_price) + '</td><td>' + price(trade.target_price) + '</td><td>' +
             price(trade.stop_price) + '</td><td>' + esc(trade.exit_reason) + '</td><td>' +
             money(trade.gross_pnl_pct) + '</td><td class="negative">-' + money(fees) +
-            '</td><td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td></tr>' +
-            '<tr class="trade-reason"><td colspan="11"><span class="trade-reason-label">Reason:</span> ' +
+            '</td><td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td><td>' +
+            money(trade.mfe_pct) + '</td><td>' + money(trade.mae_pct) + '</td></tr>' +
+            '<tr class="trade-reason"><td colspan="13"><span class="trade-reason-label">Reason:</span> ' +
             formatReason(trade.reason) + '</td></tr>';
         }).join("");
         const net = money(summary.total_pnl_pct);
+        const mfeRange = valueRange(groupTrades.map((trade) => trade.mfe_pct));
+        const maeRange = valueRange(groupTrades.map((trade) => trade.mae_pct));
         return '<details class="pattern-reason-group" open><summary><code>' +
           esc(group.pattern) + '</code> · ' + groupTrades.length + ' closed · net ' +
           '<span class="' + signedClass(summary.total_pnl_pct) + '">' + net +
-          '</span></summary>' + (rows
+          '</span> · MFE ' + mfeRange + ' · MAE ' + maeRange + '</summary>' + (rows
             ? '<table><thead><tr><th>#</th><th>Closed</th><th>Side</th><th>Route</th><th>Entry</th>' +
-              '<th>Target</th><th>Stop</th><th>Exit</th><th>Gross</th><th>Fees</th><th>Net</th></tr></thead><tbody>' +
+              '<th>Target</th><th>Stop</th><th>Exit</th><th>Gross</th><th>Fees</th><th>Net</th><th>MFE price</th><th>MAE price</th></tr></thead><tbody>' +
               rows + '</tbody></table>'
             : '<div class="subtle">No completed trades for this pattern.</div>') +
           '</details>';
@@ -555,7 +739,10 @@ const TEMPLATE: &str = r###"<!doctype html>
       const empty = document.getElementById("patterns-pnl-chart-empty");
       empty.style.display = parallelSeries.length ? "none" : "grid";
       allPatternChartState = null;
-      if (!parallelSeries.length) return;
+      if (!parallelSeries.length) {
+        allPatternChart.getContext("2d").clearRect(0, 0, allPatternChart.width, allPatternChart.height);
+        return;
+      }
       const rect = allPatternChart.getBoundingClientRect();
       const ratio = window.devicePixelRatio || 1;
       allPatternChart.width = Math.max(1, Math.floor(rect.width * ratio));
@@ -645,7 +832,8 @@ const TEMPLATE: &str = r###"<!doctype html>
         point.point.tradeIndex + '<br>Closed: ' + esc(date(trade.closed_at)) +
         '<br>Route: ' + esc(route) + '<br>Trade net: <span class="' + signedClass(trade.pnl_pct) + '">' +
         money(trade.pnl_pct) + '</span> · cumulative: <span class="' + signedClass(point.point.value) + '">' +
-        money(point.point.value) + '</span><br>Exit: ' + esc(trade.exit_reason) +
+        money(point.point.value) + '</span><br>MFE price move: ' + money(trade.mfe_pct) +
+        ' · MAE price move: ' + money(trade.mae_pct) + '<br>Exit: ' + esc(trade.exit_reason) +
         '<br><span class="reason-key">' + compactReason(trade.reason) + '</span>';
       allPatternTooltip.style.display = "block";
       const tooltipWidth = allPatternTooltip.offsetWidth;
@@ -654,52 +842,97 @@ const TEMPLATE: &str = r###"<!doctype html>
       allPatternTooltip.style.top = Math.max(8, Math.min(mouseY + 14, rect.height - tooltipHeight - 8)) + "px";
     });
     allPatternChart.addEventListener("mouseleave", hidePatternTooltip);
-    document.getElementById("patterns-pnl-legend").innerHTML = parallelSeries.map((series) =>
-      '<span class="legend-item"><span class="legend-swatch" style="background:' + series.color + '"></span>' +
-      '<code>' + esc(series.pattern) + '</code> ' + money(series.summary.total_pnl_pct) +
-      ' (' + (series.summary.trades || series.points.length - 1) + ' trades)</span>'
-    ).join("");
-
-    const positionRows = trades.map((trade, index) => {
-      const side = trade.side > 0 ? "LONG" : "SHORT";
-      const route = side + " " + trade.source_name + " → " + trade.target_name;
-      const pnlClass = signedClass(trade.pnl_pct);
-      return '<tr>' +
-        '<td>' + (index + 1) + '</td>' +
-        '<td>' + esc(side) + '</td>' +
-        '<td>' + esc(route) + '</td>' +
-        '<td>' + esc(date(trade.opened_at)) + '</td>' +
-        '<td>' + price(trade.entry_price) + '</td>' +
-        '<td>' + price(trade.target_price) + '</td>' +
-        '<td>' + price(trade.stop_price) + '</td>' +
-        '<td>' + esc(date(trade.closed_at)) + '</td>' +
-        '<td>' + price(trade.exit_price) + '</td>' +
-        '<td>' + esc(trade.exit_reason) + '</td>' +
-        '<td>' + money(trade.gross_pnl_pct) + '</td>' +
-        '<td class="negative">-' + money(Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0)) + '</td>' +
-        '<td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td>' +
-        '<td>' + duration(trade.opened_at, trade.closed_at) + '</td>' +
-        '</tr>' +
-        '<tr class="trade-reason"><td colspan="14"><span class="trade-reason-label">Entry reason:</span>' +
-        formatReason(trade.reason) + '</td></tr>';
+    const renderPatternLegend = () => {
+      document.getElementById("patterns-pnl-legend").innerHTML = parallelSeries.map((series) =>
+        '<span class="legend-item"><span class="legend-swatch" style="background:' + series.color + '"></span>' +
+        '<code>' + esc(series.pattern) + '</code> ' + money(series.summary.total_pnl_pct) +
+        ' (' + (series.summary.trades || series.points.length - 1) + ' trades, MFE ' +
+        valueRange(series.trades.map((trade) => trade.mfe_pct)) + ', MAE ' +
+        valueRange(series.trades.map((trade) => trade.mae_pct)) + ')</span>'
+      ).join("") || '<span class="subtle">No selected patterns with completed trades</span>';
+    };
+    const refreshPatternDisplay = () => {
+      updatePatternSelection();
+      refreshSelectedData();
+      parallelSeries = buildParallelSeries();
+      renderCards();
+      renderCrossings();
+      renderPatternTables();
+      renderPatternReasons();
+      renderPatternLegend();
+      renderPositions();
+      renderPredictions();
+      drawChart();
+      drawAllPatternChart();
+    };
+    patternFilter.addEventListener("click", (event) => {
+      const chip = event.target.closest(".pattern-chip");
+      if (!chip) return;
+      chip.classList.toggle("selected");
+      chip.setAttribute("aria-pressed", chip.classList.contains("selected") ? "true" : "false");
+      refreshPatternDisplay();
     });
-    if (DATA.open_trade) {
-      const trade = DATA.open_trade;
-      const side = trade.side > 0 ? "LONG" : "SHORT";
-      const route = side + " " + trade.source_name + " → " + trade.target_name;
-      positionRows.push(
-        '<tr class="open"><td>open</td><td>' + esc(side) + '</td><td>' + esc(route) +
-        '</td><td>' + esc(date(trade.opened_at)) + '</td><td>' + price(trade.entry_price) +
-        '</td><td>' + price(trade.target_price) + '</td><td>' + price(trade.stop_price) +
-        '</td><td>—</td><td>—</td><td>OPEN</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>' +
-        '<tr class="trade-reason"><td colspan="14"><span class="trade-reason-label">Entry reason:</span>' +
-        formatReason(trade.reason) + '</td></tr>'
-      );
-    }
-    document.getElementById("positions").innerHTML = positionRows.join("") ||
-      '<tr><td colspan="14" class="subtle">No positions</td></tr>';
+    document.getElementById("select-all-patterns").addEventListener("click", () => {
+      [...patternFilter.querySelectorAll(".pattern-chip")].forEach((chip) => {
+        chip.classList.add("selected");
+        chip.setAttribute("aria-pressed", "true");
+      });
+      refreshPatternDisplay();
+    });
+    document.getElementById("clear-patterns").addEventListener("click", () => {
+      [...patternFilter.querySelectorAll(".pattern-chip")].forEach((chip) => {
+        chip.classList.remove("selected");
+        chip.setAttribute("aria-pressed", "false");
+      });
+      refreshPatternDisplay();
+    });
+    renderPatternLegend();
 
-    const predictionRows = predictions.map((prediction, index) => {
+    const renderPositions = () => {
+      const positionRows = selectedTrades.map((trade, index) => {
+        const side = trade.side > 0 ? "LONG" : "SHORT";
+        const route = side + " " + trade.source_name + " → " + trade.target_name;
+        const pnlClass = signedClass(trade.pnl_pct);
+        return '<tr>' +
+          '<td>' + (index + 1) + '</td>' +
+          '<td>' + esc(side) + '</td>' +
+          '<td>' + esc(route) + '</td>' +
+          '<td>' + esc(date(trade.opened_at)) + '</td>' +
+          '<td>' + price(trade.entry_price) + '</td>' +
+          '<td>' + price(trade.target_price) + '</td>' +
+          '<td>' + price(trade.stop_price) + '</td>' +
+          '<td>' + esc(date(trade.closed_at)) + '</td>' +
+          '<td>' + price(trade.exit_price) + '</td>' +
+          '<td>' + esc(trade.exit_reason) + '</td>' +
+          '<td>' + money(trade.gross_pnl_pct) + '</td>' +
+          '<td class="negative">-' + money(Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0)) + '</td>' +
+          '<td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td>' +
+          '<td>' + money(trade.mfe_pct) + '</td>' +
+          '<td>' + money(trade.mae_pct) + '</td>' +
+          '<td>' + duration(trade.opened_at, trade.closed_at) + '</td>' +
+          '</tr>' +
+          '<tr class="trade-reason"><td colspan="16"><span class="trade-reason-label">Entry reason:</span>' +
+          formatReason(trade.reason) + '</td></tr>';
+      });
+      if (selectedOpenTrade) {
+        const trade = selectedOpenTrade;
+        const side = trade.side > 0 ? "LONG" : "SHORT";
+        const route = side + " " + trade.source_name + " → " + trade.target_name;
+        positionRows.push(
+          '<tr class="open"><td>open</td><td>' + esc(side) + '</td><td>' + esc(route) +
+          '</td><td>' + esc(date(trade.opened_at)) + '</td><td>' + price(trade.entry_price) +
+          '</td><td>' + price(trade.target_price) + '</td><td>' + price(trade.stop_price) +
+          '</td><td>—</td><td>—</td><td>OPEN</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>' +
+          '<tr class="trade-reason"><td colspan="16"><span class="trade-reason-label">Entry reason:</span>' +
+          formatReason(trade.reason) + '</td></tr>'
+        );
+      }
+      document.getElementById("positions").innerHTML = positionRows.join("") ||
+        '<tr><td colspan="16" class="subtle">No selected positions</td></tr>';
+    };
+
+    const renderPredictions = () => {
+      const predictionRows = selectedPredictions.map((prediction, index) => {
       const side = prediction.side > 0 ? "LONG" : "SHORT";
       const route = side + " " + prediction.source_name + " → " + prediction.target_name;
       const outcomeClass = prediction.outcome === "prediction_broken" ? "negative"
@@ -718,13 +951,17 @@ const TEMPLATE: &str = r###"<!doctype html>
         formatReason(prediction.reason) + '</td></tr>';
     });
     document.getElementById("predictions").innerHTML = predictionRows.join("") ||
-      '<tr><td colspan="11" class="subtle">No predictions</td></tr>';
+      '<tr><td colspan="11" class="subtle">No selected predictions</td></tr>';
+    };
 
     function drawChart() {
       const canvas = document.getElementById("pnl-chart");
       const empty = document.getElementById("chart-empty");
-      empty.style.display = trades.length ? "none" : "grid";
-      if (!trades.length) return;
+      empty.style.display = selectedTrades.length ? "none" : "grid";
+      if (!selectedTrades.length) {
+        canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
       const rect = canvas.getBoundingClientRect();
       const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.floor(rect.width * ratio));
@@ -734,7 +971,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       const width = rect.width, height = rect.height;
       const pad = { left: 58, right: 18, top: 18, bottom: 34 };
       const values = [0];
-      trades.forEach((trade) => values.push(values[values.length - 1] + Number(trade.pnl_pct || 0)));
+      selectedTrades.forEach((trade) => values.push(values[values.length - 1] + Number(trade.pnl_pct || 0)));
       let min = Math.min(...values), max = Math.max(...values);
       if (min === max) { min -= 1; max += 1; }
       const span = max - min;
@@ -768,7 +1005,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       });
       ctx.stroke();
       values.forEach((value, index) => {
-        ctx.fillStyle = index === 0 || trades[index - 1].pnl_pct >= 0 ? "#55d69b" : "#ff7185";
+        ctx.fillStyle = index === 0 || selectedTrades[index - 1].pnl_pct >= 0 ? "#55d69b" : "#ff7185";
         ctx.beginPath(); ctx.arc(x(index), y(value), 3.5, 0, Math.PI * 2); ctx.fill();
       });
       ctx.fillStyle = "#91a0bd";
@@ -776,16 +1013,15 @@ const TEMPLATE: &str = r###"<!doctype html>
       const labelIndexes = [...new Set([0, Math.floor((values.length - 1) / 2), values.length - 1])];
       labelIndexes.forEach((index) => {
         const time = index === 0
-          ? trades[0].opened_at
-          : trades[index - 1] && trades[index - 1].closed_at;
+          ? selectedTrades[0].opened_at
+          : selectedTrades[index - 1] && selectedTrades[index - 1].closed_at;
         ctx.fillText(shortDate(time), x(index), height - 8);
       });
       ctx.textAlign = "left";
     }
     window.addEventListener("resize", drawChart);
     window.addEventListener("resize", drawAllPatternChart);
-    drawChart();
-    drawAllPatternChart();
+    refreshPatternDisplay();
   </script>
 </body>
 </html>
@@ -820,6 +1056,7 @@ mod tests {
             pending_predictions: 0,
             active_predictions: 0,
             pattern_win_rates: Vec::new(),
+            stair_statistics: super::super::mrc_crossing::StairStatistics::default(),
             pattern_performance: Vec::new(),
             parallel_pattern_trades: Vec::new(),
             active_pattern: None,
@@ -838,11 +1075,19 @@ mod tests {
         let html = TEMPLATE.replace("__DATA__", &serde_json::to_string(&data).unwrap());
         assert!(html.contains("<canvas id=\"pnl-chart\"></canvas>"));
         assert!(html.contains("<canvas id=\"patterns-pnl-chart\"></canvas>"));
+        assert!(html.contains("id=\"pattern-filter\""));
+        assert!(html.contains("class=\"pattern-chip selected\""));
+        assert!(html.contains(">All</button>"));
+        assert!(html.contains("Clear"));
         assert!(html.contains("Positions"));
         assert!(html.contains("Entry reason:"));
         assert!(html.contains("Cumulative PnL"));
         assert!(html.contains("All-pattern PnL comparison"));
         assert!(html.contains("Reasons for all pattern trades"));
+        assert!(html.contains("Volume gain"));
+        assert!(html.contains("Buy/sell flow"));
+        assert!(html.contains("MFE price move"));
+        assert!(html.contains("MAE price move"));
         assert!(html.contains("Prediction outcomes"));
         assert!(html.contains("Win rate by pattern"));
     }

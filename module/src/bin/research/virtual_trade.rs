@@ -54,9 +54,7 @@ pub(crate) struct VirtualTradeResult {
     pub(crate) entry_fee_pct: f64,
     pub(crate) exit_fee_pct: f64,
     pub(crate) exit_order_type: String,
-    #[serde(skip_serializing)]
     pub(crate) mfe_pct: f64,
-    #[serde(skip_serializing)]
     pub(crate) mae_pct: f64,
     pub(crate) opened_at: i64,
     pub(crate) closed_at: i64,

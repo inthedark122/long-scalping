@@ -1,3 +1,4 @@
+use crate::detection::decision::CandidateView;
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
 use crate::detection::mrc_pattern_classification::{self, MrcPatternKind};
 use crate::detection::vlines::MrcCrossEvent;
@@ -134,6 +135,10 @@ pub struct MrcPrediction {
     pub pattern_direction: i8,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
+    pub stair_sequence: Vec<u8>,
+    pub stair_price_move_pct: f64,
+    pub stair_favorable_move_pct: f64,
+    pub stair_adverse_move_pct: f64,
     pub pattern: Vec<u8>,
     pub elapsed_ms: Vec<u64>,
     pub target_line: u8,
@@ -177,12 +182,19 @@ pub struct Observation {
     /// crossing event.
     pub forecast: Option<MrcCrossAnalysis>,
     pub candidates: Vec<PatternCandidate>,
+    pub selected_candidate_index: Option<usize>,
     pub selected_pattern: Option<MrcPatternKind>,
     pub selected_score: Option<f64>,
 }
 
 impl Observation {
     pub fn selected_candidate(&self) -> Option<&PatternCandidate> {
+        if let Some(index) = self.selected_candidate_index {
+            return self
+                .candidates
+                .get(index)
+                .filter(|candidate| candidate.entry.is_some());
+        }
         let selected_pattern = self.selected_pattern?;
         self.candidates.iter().rev().find(|candidate| {
             candidate.pattern_kind == selected_pattern && candidate.entry.is_some()
@@ -246,8 +258,8 @@ pub fn valid_price_levels_for_pattern(
         return false;
     }
 
-    // A staircase is a sequence of adjacent continuation legs. Its
-    // MRC stop can span more than the next line, so a strict
+    // A staircase is an alternating zigzag with progressively deeper legs.
+    // Its MRC stop can span more than the next line, so a strict
     // reward/risk check would suppress the very continuation being learned.
     if matches!(
         pattern_kind,
@@ -460,8 +472,6 @@ fn current_cycle_elapsed_ms(state: &MrcCrossingModel) -> Vec<u64> {
     elapsed
 }
 
-const PATTERN_SWITCH_MARGIN_PCT: f64 = 0.05;
-
 fn pattern_prior(prediction: &MrcPrediction) -> f64 {
     prediction
         .stats
@@ -509,55 +519,33 @@ fn select_candidate(
     candidates: &[PatternCandidate],
     now_ms: u64,
 ) -> Option<usize> {
-    let tradable = candidates
+    let views = candidates
         .iter()
         .enumerate()
-        .filter(|(_, candidate)| candidate.entry.is_some());
-    let best = tradable.max_by(|(left_index, left), (right_index, right)| {
-        left.score
-            .partial_cmp(&right.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left_index.cmp(right_index))
-    });
-    let Some((best_index, best_candidate)) = best else {
+        .map(|(index, candidate)| CandidateView {
+            index,
+            pattern_kind: candidate.pattern_kind,
+            score: candidate.score,
+            entry: candidate.entry.is_some(),
+            direction: candidate.analysis.trade_direction,
+            volume_gain: candidate.analysis.volume_gain,
+            realized_favorable_pct: candidate.analysis.realized_favorable_move_pct,
+            realized_adverse_pct: candidate.analysis.realized_adverse_move_pct,
+            market_price: candidate.analysis.market_price,
+        })
+        .collect::<Vec<_>>();
+    let result = state.decision_state.choose_with_direction_lock(
+        state.decision_components,
+        &views,
+        state.trade_direction_lock,
+        now_ms,
+    );
+    let Some(selected_index) = result.selected_index else {
+        if result.primary_kind.is_none() {
+            state.active_pattern = None;
+            state.active_pattern_score = 0.0;
+        }
         return None;
-    };
-
-    let active_index = state
-        .active_pattern
-        .map(|pattern| pattern as usize)
-        .and_then(|pattern| {
-            candidates
-                .iter()
-                .enumerate()
-                .filter(|(_, candidate)| {
-                    candidate.entry.is_some() && candidate.pattern_kind.index() == pattern
-                })
-                .max_by(|(left_index, left), (right_index, right)| {
-                    left.score
-                        .partial_cmp(&right.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| left_index.cmp(right_index))
-                })
-                .map(|(index, _)| index)
-        });
-
-    let selected_index = match active_index {
-        None if state.active_pattern.is_none() => best_index,
-        None if best_candidate.score > state.active_pattern_score + PATTERN_SWITCH_MARGIN_PCT => {
-            best_index
-        }
-        None => return None,
-        Some(active_index) => {
-            let active = &candidates[active_index];
-            if best_candidate.pattern_kind != active.pattern_kind
-                && best_candidate.score > active.score + PATTERN_SWITCH_MARGIN_PCT
-            {
-                best_index
-            } else {
-                active_index
-            }
-        }
     };
     let selected = &candidates[selected_index];
     let pattern_index = selected.pattern_kind.index() as u8;
@@ -688,6 +676,10 @@ fn predict_for_pattern(
         pattern_direction,
         pattern_steps: pattern.steps,
         pattern_elapsed_ms: pattern.elapsed_ms,
+        stair_sequence: pattern.sequence.clone(),
+        stair_price_move_pct: pattern.price_move_pct,
+        stair_favorable_move_pct: pattern.favorable_move_pct,
+        stair_adverse_move_pct: pattern.adverse_move_pct,
         pattern: cycle,
         elapsed_ms: cycle_elapsed_ms,
         target_line: target,
@@ -971,6 +963,7 @@ fn observe_events(
                 .unwrap_or_default()
         }),
     ) {
+        observation.selected_candidate_index = Some(selected_index);
         let selected = &observation.candidates[selected_index];
         observation.selected_pattern = Some(selected.pattern_kind);
         observation.selected_score = Some(selected.score);

@@ -210,6 +210,66 @@ fn new_position_uses_mrc_entry_reason_exits() {
 }
 
 #[test]
+fn both_direction_filled_position_does_not_create_a_permanent_lock() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 10.0,
+                pnl: 0.0,
+                qty: 0.1,
+            }),
+            short: None,
+        },
+    );
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 0.1,
+    };
+
+    run(&new_position, &mut state);
+    assert_eq!(state.mrc_crossing_model.trade_direction_lock, None);
+
+    let mut finish = input(
+        100.0,
+        ModulePositions {
+            long: None,
+            short: None,
+        },
+    );
+    finish.event = ModuleEvent::FinishPosition {
+        direction: Direction::Long,
+        pnl: 0.5,
+    };
+    run(&finish, &mut state);
+    assert_eq!(state.mrc_crossing_model.trade_direction_lock, None);
+}
+
+#[test]
+fn explicit_long_start_keeps_the_long_direction_reservation() {
+    let mut state = EngineState::default();
+    let mut start = input(
+        100.0,
+        ModulePositions {
+            long: None,
+            short: None,
+        },
+    );
+    start.event = ModuleEvent::Signal {
+        direction: Direction::Long,
+        code: "start".to_string(),
+        values: HashMap::new(),
+    };
+
+    run(&start, &mut state);
+    assert_eq!(state.mrc_crossing_model.trade_direction_lock, Some(1));
+}
+
+#[test]
 fn mrc_entry_reason_exits_apply_minimums_once_from_entry_price() {
     let mut state = EngineState::default();
     state.cfg.min_tp_percent = 1.5;

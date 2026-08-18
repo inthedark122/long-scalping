@@ -65,20 +65,22 @@ supporting evidence; they are not a percentage or the trade win rate.
 
 ### Meaning
 
-Price crosses successive MRC lines upward without a meaningful downward
-interruption. A typical example is:
+Price forms an upward zigzag. The upward legs are separated by pullbacks, and
+each new upward leg reaches farther than the previous one. A typical path is:
 
 ```text
-down_inner -> mean -> up_inner -> up_small -> up_outer -> up_big
+2 -> 3 -> 2 -> 3 -> 2 -> 3 -> 4 -> 3 -> 4 -> 5
 ```
 
 ### Detection
 
-- the line index keeps increasing across local transitions;
-- the movement does not return through a previously crossed line before the
-  next step is confirmed;
-- record the number of steps, total line span, elapsed time, favorable move,
-  adverse move, and highest line reached.
+- at least two upward legs exist;
+- upward legs are separated by downward pullbacks;
+- the newest upward leg reaches above the previous upward leg;
+- a pullback after a successful leg keeps the staircase active for a possible
+  support-assisted entry;
+- an attempted upward leg that fails to exceed the previous peak ends the
+  staircase as exhaustion.
 
 There is no fixed full-path length. The pattern becomes stronger as additional
 local steps are observed and ends when the sequence reverses, stalls, or
@@ -94,19 +96,20 @@ current MRC lines at execution time.
 
 ### Meaning
 
-The mirror of `STAIRS_UP`. Price crosses successive MRC lines downward:
+The mirror of `STAIRS_UP`. Price forms a downward zigzag with progressively
+deeper downward legs:
 
 ```text
-up_inner -> mean -> down_inner -> down_small -> down_outer -> down_big
+6 -> 5 -> 6 -> 5 -> 6 -> 5 -> 4 -> 5 -> 4
 ```
 
 ### Detection
 
-- the line index keeps decreasing across local transitions;
-- the movement does not return through a previously crossed line before the
-  next step is confirmed;
-- record the number of steps, total line span, elapsed time, favorable move,
-  adverse move, and lowest line reached.
+- at least two downward legs exist;
+- downward legs are separated by upward pullbacks;
+- the newest downward leg reaches below the previous downward leg;
+- an attempted downward leg that fails to exceed the previous trough ends the
+  staircase as exhaustion.
 
 ### Prediction
 

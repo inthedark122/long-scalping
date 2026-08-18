@@ -8,6 +8,7 @@ mod mrc_crossing;
 mod virtual_trade;
 
 use data::CandleRow;
+use long_scalping::detection::decision::DecisionComponents;
 use long_scalping::model::MrcBands;
 use mrc_crossing::Analyzer;
 use virtual_trade::{TradeSetup, VirtualPredictionSimulator, VirtualTradeSimulator};
@@ -39,7 +40,7 @@ fn row(time_ms: i64, close: f64, high: f64, low: f64) -> CandleRow {
 
 #[test]
 fn research_retains_variable_length_event_history() {
-    let mut analyzer = Analyzer::new();
+    let mut analyzer = Analyzer::new(None, DecisionComponents::default());
     analyzer.observe(&row(0, 99.0, 99.0, 99.0));
     analyzer.observe(&row(60_000, 111.0, 111.0, 99.0));
     let report = analyzer.report();

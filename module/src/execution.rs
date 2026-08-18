@@ -411,6 +411,27 @@ pub fn evaluate_with_mrc(
         });
     }
 
+    let locked_direction = state.mrc_crossing_model.trade_direction_lock;
+    let requested_direction = match entry_side {
+        PositionState::Long => Some(1),
+        PositionState::Short => Some(-1),
+        PositionState::Flat => None,
+    };
+    if decision_is_open {
+        if let (Some(locked_direction), Some(requested_direction)) =
+            (locked_direction, requested_direction)
+        {
+            if locked_direction != requested_direction {
+                return finish(ExecutionResult {
+                    constraint: Some(format!(
+                        "trade-direction-lock:locked={locked_direction}:requested={requested_direction}:rearm=same-direction"
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     if matches!(&decision.entry, EntryGate::Wait(_)) {
         return None;
     }

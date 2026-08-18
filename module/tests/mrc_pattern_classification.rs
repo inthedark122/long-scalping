@@ -71,25 +71,99 @@ fn each_pattern_has_a_definition() {
 }
 
 #[test]
-fn classification_uses_local_shapes_instead_of_full_paths() {
-    let signal =
-        classify(&history(&[(3, 100.0), (4, 101.0), (5, 102.0)])).expect("upward local staircase");
+fn classification_requires_an_expanding_upward_zigzag() {
+    let signal = classify(&history(&[
+        (2, 100.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (4, 102.0),
+    ]))
+    .expect("upward zigzag staircase");
     assert_eq!(signal.kind, MrcPatternKind::StairsUp);
     assert_eq!(signal.direction, 1);
-    assert_eq!(signal.target_line, 6);
-    assert_eq!(signal.steps, 2);
+    assert_eq!(signal.target_line, 5);
+    assert_eq!(signal.steps, 3);
+    assert_eq!(signal.sequence, vec![2, 3, 2, 3, 2, 3, 4]);
+    assert!((signal.price_move_pct - 2.0).abs() < 1e-12);
+    assert!((signal.favorable_move_pct - 2.0).abs() < 1e-12);
+    assert!((signal.adverse_move_pct - 1.0).abs() < 1e-12);
 
-    let signal = classify(&history(&[(5, 102.0), (4, 101.0), (3, 100.0)]))
-        .expect("downward local staircase");
+    let signal = classify(&history(&[
+        (6, 102.0),
+        (5, 101.0),
+        (6, 103.0),
+        (5, 101.0),
+        (6, 103.0),
+        (5, 101.0),
+        (4, 100.0),
+    ]))
+    .expect("downward zigzag staircase");
     assert_eq!(signal.kind, MrcPatternKind::StairsDown);
-    assert_eq!(signal.direction, -1);
-    assert_eq!(signal.target_line, 2);
+    assert_eq!(signal.target_line, 3);
+    assert_eq!(signal.steps, 3);
+}
+
+#[test]
+fn classification_stays_active_during_pullback_and_ends_on_failed_new_extreme() {
+    let active = classify(&history(&[
+        (2, 100.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (4, 102.0),
+        (3, 101.0),
+    ]))
+    .expect("pullback remains part of the upward staircase");
+    assert_eq!(active.kind, MrcPatternKind::StairsUp);
+    assert_eq!(active.source_line, 3);
+    assert_eq!(active.target_line, 4);
+    assert_eq!(active.sequence, vec![2, 3, 2, 3, 2, 3, 4, 3]);
+    assert!((active.price_move_pct - 1.0).abs() < 1e-12);
+
+    let exhausted = classify(&history(&[
+        (2, 100.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (4, 102.0),
+        (3, 101.0),
+        (4, 102.0),
+    ]));
+    assert_ne!(
+        exhausted.map(|signal| signal.kind),
+        Some(MrcPatternKind::StairsUp)
+    );
+}
+
+#[test]
+fn repeated_equal_zigzags_are_not_a_staircase() {
+    let signal = classify(&history(&[
+        (2, 100.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+        (2, 99.0),
+        (3, 101.0),
+    ]));
+    assert_ne!(
+        signal.map(|value| value.kind),
+        Some(MrcPatternKind::StairsUp)
+    );
 }
 
 #[test]
 fn classification_prioritizes_break_return_and_pullback() {
-    let signal =
-        classify(&history(&[(5, 100.0), (6, 102.0), (5, 101.0)])).expect("fast break-return");
+    let mut fast_break = history(&[(5, 100.0), (6, 102.0), (5, 101.0)]);
+    fast_break[1].now_ms = 5 * 60_000;
+    fast_break[2].now_ms = 10 * 60_000;
+    let signal = classify(&fast_break).expect("fast break-return");
     assert_eq!(signal.kind, MrcPatternKind::FastBreakReturn);
     assert_eq!(signal.direction, -1);
     assert_eq!(signal.target_line, 4);
@@ -99,6 +173,27 @@ fn classification_prioritizes_break_return_and_pullback() {
     assert_eq!(signal.kind, MrcPatternKind::PullbackToInner);
     assert_eq!(signal.direction, -1);
     assert_eq!(signal.target_line, 3);
+}
+
+#[test]
+fn fast_break_return_requires_five_to_fifteen_minutes() {
+    let mut too_fast = history(&[(5, 100.0), (6, 102.0), (5, 101.0)]);
+    too_fast[1].now_ms = 60_000;
+    too_fast[2].now_ms = 4 * 60_000;
+    assert!(classify(&too_fast).is_none());
+
+    let mut boundary = history(&[(5, 100.0), (6, 102.0), (5, 101.0)]);
+    boundary[1].now_ms = 5 * 60_000;
+    boundary[2].now_ms = 15 * 60_000;
+    assert_eq!(
+        classify(&boundary).map(|signal| signal.kind),
+        Some(MrcPatternKind::FastBreakReturn)
+    );
+
+    let mut too_slow = history(&[(5, 100.0), (6, 102.0), (5, 101.0)]);
+    too_slow[1].now_ms = 10 * 60_000;
+    too_slow[2].now_ms = 26 * 60_000;
+    assert!(classify(&too_slow).is_none());
 }
 
 #[test]
@@ -128,8 +223,8 @@ fn classification_records_outward_continuation_from_movement_result() {
 
 #[test]
 fn classification_keeps_overlapping_pattern_matches_for_parallel_learning() {
-    let mut events = history(&[(3, 100.0), (4, 101.0), (5, 102.0)]);
-    events[2].completed_movement = Some(successful_movement());
+    let mut events = history(&[(3, 100.0), (4, 101.0), (3, 99.0), (4, 101.0), (5, 102.0)]);
+    events[4].completed_movement = Some(successful_movement());
 
     let kinds = classify_all(&events)
         .into_iter()

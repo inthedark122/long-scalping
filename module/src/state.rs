@@ -1,3 +1,4 @@
+use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
     MRC_CROSSING_EXIT_TYPE,
@@ -191,6 +192,11 @@ pub struct MrcCrossingModel {
     pub active_pattern_score: f64,
     pub active_pattern_since_ms: u64,
     pub last_plan_key: Option<(u8, u8, u8)>,
+    pub decision_components: DecisionComponents,
+    pub decision_state: DecisionState,
+    /// Explicit direction reservation from a directional start signal.
+    /// Direction::Both leaves this unset so the strategy may switch sides.
+    pub trade_direction_lock: Option<i8>,
 }
 
 impl Default for MrcCrossingModel {
@@ -208,6 +214,9 @@ impl Default for MrcCrossingModel {
             active_pattern_score: 0.0,
             active_pattern_since_ms: 0,
             last_plan_key: None,
+            decision_components: DecisionComponents::default(),
+            decision_state: DecisionState::default(),
+            trade_direction_lock: None,
         }
     }
 }
@@ -317,6 +326,10 @@ struct PersistedState {
     active_pattern: Option<u8>,
     #[serde(default)]
     active_pattern_score: f64,
+    #[serde(default)]
+    decision_state: DecisionState,
+    #[serde(default)]
+    trade_direction_lock: Option<i8>,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -331,6 +344,8 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         pattern_performance: state.mrc_crossing_model.pattern_performance,
         active_pattern: state.mrc_crossing_model.active_pattern,
         active_pattern_score: state.mrc_crossing_model.active_pattern_score,
+        decision_state: state.mrc_crossing_model.decision_state.clone(),
+        trade_direction_lock: state.mrc_crossing_model.trade_direction_lock,
     })
     .ok()
 }
@@ -353,6 +368,14 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.mrc_crossing_model.pattern_performance = persisted.pattern_performance;
     state.mrc_crossing_model.active_pattern = persisted.active_pattern.filter(|index| *index < 7);
     state.mrc_crossing_model.active_pattern_score = persisted.active_pattern_score;
+    state.mrc_crossing_model.decision_components =
+        DecisionComponents::from_names(&state.cfg.decision_components).0;
+    state.mrc_crossing_model.decision_state = persisted.decision_state;
+    state.mrc_crossing_model.trade_direction_lock = persisted.trade_direction_lock;
+    state
+        .mrc_crossing_model
+        .decision_state
+        .reconfigure(state.mrc_crossing_model.decision_components);
     true
 }
 
@@ -363,6 +386,12 @@ pub fn sync_position_state(
     price: f64,
 ) {
     if long.is_none() && short.is_none() {
+        if state.position.side != PositionState::Flat {
+            // The plan key only suppresses duplicate offers for the current
+            // position. Once the host reports flat, the primary selector may
+            // offer a fresh same-direction route again.
+            state.mrc_crossing_model.last_plan_key = None;
+        }
         state.tp_reprice_history.reset();
         state.pending_entry_bar = None;
     }
@@ -423,5 +452,13 @@ pub fn dir_to_position(direction: Direction) -> PositionState {
         Direction::Long => PositionState::Long,
         Direction::Short => PositionState::Short,
         Direction::Both => PositionState::Flat,
+    }
+}
+
+pub fn direction_sign(direction: Direction) -> Option<i8> {
+    match direction {
+        Direction::Long => Some(1),
+        Direction::Short => Some(-1),
+        Direction::Both => None,
     }
 }

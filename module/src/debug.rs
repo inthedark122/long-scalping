@@ -22,6 +22,19 @@ pub fn render(
         .and_then(|index| mrc_pattern_classification::MrcPatternKind::ALL.get(index as usize))
         .map(|pattern| pattern.as_str())
         .unwrap_or("none");
+    let decision_state = state
+        .mrc_crossing_model
+        .decision_state
+        .primary
+        .map(|primary| {
+            format!(
+                "primary={:?}:dir={}:phase={:?}:best_favorable={:.4}%",
+                primary.kind, primary.direction, primary.phase, primary.best_favorable_pct
+            )
+        })
+        .unwrap_or_else(|| "primary=none".to_string());
+    let support = state.mrc_crossing_model.decision_state.support;
+    let primary_trace = &state.mrc_crossing_model.decision_state.trace;
     let mut parts = vec![
         format!("t={}", state.ticks),
         "strategy=pattern-engine".to_string(),
@@ -40,6 +53,42 @@ pub fn render(
             active_pattern,
             state.mrc_crossing_model.active_pattern_score,
             state.mrc_crossing_model.active_pattern_since_ms
+        ),
+        format!(
+            "plan-key={:?} direction-lock={:?}",
+            state.mrc_crossing_model.last_plan_key,
+            state.mrc_crossing_model.trade_direction_lock
+        ),
+        format!(
+            "decision={} support=[fbr={},pullback={},volume={},trend={},extreme_update={},extreme_failed={}] components=[{}]",
+            decision_state,
+            support.fast_break_return,
+            support.pullback,
+            support.volume_climax,
+            support.trend,
+            support.favorable_extreme_updated,
+            support.favorable_extreme_failed,
+            state.mrc_crossing_model.decision_components.names().join(",")
+        ),
+        format!(
+            "primary-trace=stairs_up={}/{} stairs_down={}/{} outward={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} end=[fbr={},extreme={},volume={}] reset={} reason={}",
+            primary_trace.stairs_up_candidates,
+            primary_trace.stairs_up_tradeable,
+            primary_trace.stairs_down_candidates,
+            primary_trace.stairs_down_tradeable,
+            primary_trace.outward_candidates,
+            primary_trace.outward_tradeable,
+            primary_trace.direction_lock,
+            primary_trace.blocked_by_direction_lock,
+            primary_trace.primary_before,
+            primary_trace.primary_after,
+            primary_trace.selected_index,
+            primary_trace.selected_direction,
+            primary_trace.ended_by_fbr,
+            primary_trace.ended_by_extreme,
+            primary_trace.ended_by_volume,
+            primary_trace.direction_lock_reset_primary,
+            primary_trace.reason
         ),
         format!(
             "dir={:?}:src={}:why={}",

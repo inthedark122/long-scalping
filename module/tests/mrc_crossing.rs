@@ -108,30 +108,24 @@ fn learned_model(samples: usize) -> MrcCrossingModel {
         }
     }
     let base = samples as u64 * 10_000;
-    model.history.extend([
-        MrcHistoryEvent {
-            line: 3,
-            direction: 1,
-            now_ms: base,
-            market_price: lines()[3],
-            mrc_low: lines()[0],
-            mrc_high: lines()[8],
-            no_pullback_count: 0,
-            reverted_line: None,
-            completed_movement: None,
-        },
-        MrcHistoryEvent {
-            line: 4,
-            direction: 1,
-            now_ms: base + 1_000,
-            market_price: lines()[4],
-            mrc_low: lines()[0],
-            mrc_high: lines()[8],
-            no_pullback_count: 0,
-            reverted_line: None,
-            completed_movement: None,
-        },
-    ]);
+    model
+        .history
+        .extend(
+            [3, 4, 3, 4]
+                .into_iter()
+                .enumerate()
+                .map(|(offset, line)| MrcHistoryEvent {
+                    line,
+                    direction: if offset % 2 == 0 { 1 } else { -1 },
+                    now_ms: base + offset as u64 * 1_000,
+                    market_price: lines()[line as usize],
+                    mrc_low: lines()[0],
+                    mrc_high: lines()[8],
+                    no_pullback_count: 0,
+                    reverted_line: None,
+                    completed_movement: None,
+                }),
+        );
     model.last_line = Some(4);
     model.last_direction = 1;
     model
@@ -506,7 +500,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
     // The same failed upward break is observed four times and is rejected
     // downward every time.
     for (index, next_line) in [4, 4, 4, 4].into_iter().enumerate() {
-        let base = index as u64 * 10_000;
+        let base = index as u64 * 30 * 60_000;
         model.history.extend([
             MrcHistoryEvent {
                 line: 5,
@@ -522,7 +516,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
             MrcHistoryEvent {
                 line: 6,
                 direction: 1,
-                now_ms: base + 1_000,
+                now_ms: base + 5 * 60_000,
                 market_price: lines()[6],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -533,7 +527,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
             MrcHistoryEvent {
                 line: 5,
                 direction: 1,
-                now_ms: base + 2_000,
+                now_ms: base + 10 * 60_000,
                 market_price: lines()[5],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -544,7 +538,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
             MrcHistoryEvent {
                 line: next_line,
                 direction: 1,
-                now_ms: base + 3_000,
+                now_ms: base + 11 * 60_000,
                 market_price: lines()[next_line as usize],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -563,7 +557,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
         MrcHistoryEvent {
             line: 5,
             direction: 1,
-            now_ms: 40_000,
+            now_ms: 4 * 30 * 60_000,
             market_price: lines()[5],
             mrc_low: lines()[0],
             mrc_high: lines()[8],
@@ -574,7 +568,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
         MrcHistoryEvent {
             line: 6,
             direction: 1,
-            now_ms: 41_000,
+            now_ms: 4 * 30 * 60_000 + 5 * 60_000,
             market_price: lines()[6],
             mrc_low: lines()[0],
             mrc_high: lines()[8],
@@ -584,22 +578,11 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
         },
     ]);
 
-    let mut crossing = event(5, 42_000);
+    let mut crossing = event(5, 4 * 30 * 60_000 + 10 * 60_000);
     crossing.price = 104.5;
     let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
-    let Some(entry) = observation.entry else {
-        panic!("a learned fast break-return should be tradable");
-    };
-    assert_eq!(mrc_crossing::reason_direction(&entry), -1);
-    let EntryReason::MrcCrossing {
-        price,
-        target_price,
-        stop_price,
-        ..
-    } = &entry;
-    assert_eq!(*price, 104.5);
-    assert!(target_price < price);
-    assert!(stop_price > price);
+    assert!(observation.entry.is_none());
+    assert!(observation.selected_candidate_index.is_none());
     let event = &observation.events[0];
     assert_eq!(event.target_line, Some(4));
     assert_eq!(
@@ -620,7 +603,7 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
 fn pattern_prediction_follows_exact_break_return_continuation() {
     let mut model = MrcCrossingModel::default();
     for (index, next_line) in [6, 6, 6, 6].into_iter().enumerate() {
-        let base = index as u64 * 10_000;
+        let base = index as u64 * 30 * 60_000;
         model.history.extend([
             MrcHistoryEvent {
                 line: 5,
@@ -636,7 +619,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
             MrcHistoryEvent {
                 line: 6,
                 direction: 1,
-                now_ms: base + 1_000,
+                now_ms: base + 5 * 60_000,
                 market_price: lines()[6],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -647,7 +630,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
             MrcHistoryEvent {
                 line: 5,
                 direction: 1,
-                now_ms: base + 2_000,
+                now_ms: base + 10 * 60_000,
                 market_price: lines()[5],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -658,7 +641,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
             MrcHistoryEvent {
                 line: next_line,
                 direction: 1,
-                now_ms: base + 3_000,
+                now_ms: base + 11 * 60_000,
                 market_price: lines()[next_line as usize],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -675,7 +658,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
             model.history.push(MrcHistoryEvent {
                 line: 3,
                 direction: 1,
-                now_ms: base + 4_000,
+                now_ms: base + 12 * 60_000,
                 market_price: lines()[3],
                 mrc_low: lines()[0],
                 mrc_high: lines()[8],
@@ -686,7 +669,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
         }
     }
 
-    let mut crossing = event(5, 40_000);
+    let mut crossing = event(5, 3 * 30 * 60_000 + 20 * 60_000);
     crossing.price = 103.0;
     let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
     let event = &observation.events[0];
@@ -708,7 +691,7 @@ fn fast_break_return_without_exact_outcome_does_not_trade() {
         MrcHistoryEvent {
             line: 5,
             direction: 1,
-            now_ms: 1_000,
+            now_ms: 5 * 60_000,
             market_price: lines()[5],
             mrc_low: lines()[0],
             mrc_high: lines()[8],
@@ -719,7 +702,7 @@ fn fast_break_return_without_exact_outcome_does_not_trade() {
         MrcHistoryEvent {
             line: 4,
             direction: -1,
-            now_ms: 2_000,
+            now_ms: 10 * 60_000,
             market_price: lines()[4],
             mrc_low: lines()[0],
             mrc_high: lines()[8],
@@ -731,7 +714,7 @@ fn fast_break_return_without_exact_outcome_does_not_trade() {
 
     // The latest A -> B -> A is visible, but no historical A -> B -> A -> X
     // outcome exists for this exact break.
-    let observation = mrc_crossing::observe(&mut model, &[event(5, 3_000)], lines());
+    let observation = mrc_crossing::observe(&mut model, &[event(5, 11 * 60_000)], lines());
     assert!(observation.entry.is_none());
     assert_eq!(
         observation.wait_reason,
