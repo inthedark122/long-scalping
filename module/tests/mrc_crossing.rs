@@ -852,6 +852,23 @@ fn staircase_continuation_is_allowed_when_adjacent_reward_is_smaller_than_stop_r
 }
 
 #[test]
+fn selected_analysis_matches_the_candidate_used_for_entry() {
+    let mut model = learned_model(3);
+    let mut crossing = event(5, 40_000);
+    crossing.price = 104.5;
+
+    let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
+    let selected = observation
+        .selected_candidate()
+        .expect("the crossing should select a tradeable candidate");
+    let selected_analysis = observation
+        .selected_analysis()
+        .expect("the observation should expose the selected analysis");
+
+    assert_eq!(selected_analysis, &selected.analysis);
+}
+
+#[test]
 fn current_entry_is_only_for_the_current_observation() {
     let mut model = learned_model(3);
     let mut crossing = event(5, 40_000);

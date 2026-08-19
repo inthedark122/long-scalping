@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.98
+
+Selected-candidate direction diagnostics release.
+
+- Render the selected candidate's prediction in entry notes instead of the last evaluated candidate.
+- Keep selected pattern, predicted direction, trade direction, and order side aligned in diagnostics.
+- Preserve stairs-only execution while removing misleading outward/short annotations from stairs entries.
+
 # 1.0.97
 
 Current prediction and long-only evaluation release.

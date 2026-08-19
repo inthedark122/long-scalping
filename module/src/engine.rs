@@ -698,10 +698,7 @@ fn process_realtime(
     );
 
     state.direction_source = "pattern-selector".to_string();
-    let selected_analysis = mrc_observation
-        .forecast
-        .as_ref()
-        .or_else(|| mrc_observation.events.last());
+    let selected_analysis = mrc_observation.selected_analysis();
     let selected_pattern_reason = mrc_observation
         .selected_pattern
         .map(|pattern| pattern.as_str().to_string())

@@ -205,6 +205,17 @@ impl Observation {
             candidate.pattern_kind == selected_pattern && candidate.entry.is_some()
         })
     }
+
+    /// Return the analysis that belongs to the selected candidate. The event
+    /// list contains every candidate evaluated for the crossing, so its last
+    /// item is not necessarily the candidate that was selected for execution.
+    pub fn selected_analysis(&self) -> Option<&MrcCrossAnalysis> {
+        self.selected_candidate_index
+            .and_then(|index| self.candidates.get(index))
+            .map(|candidate| &candidate.analysis)
+            .or_else(|| self.forecast.as_ref())
+            .or_else(|| self.events.last())
+    }
 }
 
 pub fn valid_price_levels(
