@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
+use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
-    decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, vlines,
+    cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction, vlines,
 };
+use long_scalping::model::Candle;
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
+use long_scalping::{fmt_duration_f64, fmt_duration_ms};
 use serde::Serialize;
 
 use super::data::CandleRow;
@@ -16,6 +19,10 @@ use super::virtual_trade::{
 
 const LINE_COUNT: usize = 9;
 const LABELS: [&str; LINE_COUNT] = mrc_crossing::LINE_LABELS;
+
+fn duration_token(value: String) -> String {
+    value.replace(' ', "")
+}
 
 fn sequence_duration(duration_ms: u64) -> String {
     let seconds = duration_ms / 1_000;
@@ -84,6 +91,7 @@ fn format_mrc_trace(
     crossing: &MrcCrossingState,
     line: u8,
     direction: i8,
+    realized_movement_direction: Option<i8>,
     realized_favorable_move_pct: Option<f64>,
     realized_adverse_move_pct: Option<f64>,
     movement_completed: bool,
@@ -111,13 +119,18 @@ fn format_mrc_trace(
         })
         .collect::<Vec<_>>()
         .join(">");
+    let movement_direction = realized_movement_direction.unwrap_or(direction);
     let movement = realized_favorable_move_pct
         .zip(realized_adverse_move_pct)
         .or_else(|| active_move_percentages(crossing))
         .map(|(favorable, adverse)| {
             format!(
                 "{}:+{:.2}%:-{:.2}%",
-                if direction > 0 { "long" } else { "short" },
+                if movement_direction > 0 {
+                    "long"
+                } else {
+                    "short"
+                },
                 favorable.max(0.0),
                 adverse.min(0.0)
             )
@@ -189,6 +202,10 @@ pub(crate) struct CrossingEvent {
     pub(crate) mrc_min: f64,
     pub(crate) mrc_max: f64,
     pub(crate) mrc_trace: String,
+    pub(crate) line_plans: [MrcLinePlan; LINE_COUNT],
+    pub(crate) ntps: i64,
+    pub(crate) cascade_direction: i8,
+    pub(crate) cascade_speed_pct_per_min: Option<f64>,
     pub(crate) barrier_line: Option<usize>,
     pub(crate) barrier_line_name: Option<&'static str>,
     pub(crate) barrier_price: Option<f64>,
@@ -240,8 +257,21 @@ pub(crate) struct CrossingEvent {
     pub(crate) expected_price_low: Option<f64>,
     pub(crate) expected_price_high: Option<f64>,
     pub(crate) realized_duration_ms: Option<u64>,
+    pub(crate) realized_movement_direction: Option<i8>,
     pub(crate) realized_favorable_move_pct: Option<f64>,
     pub(crate) realized_adverse_move_pct: Option<f64>,
+    pub(crate) trace_outcome: Option<&'static str>,
+    pub(crate) trace_result_move_pct: Option<f64>,
+    pub(crate) prediction_side: Option<i8>,
+    pub(crate) prediction_filled: Option<bool>,
+    pub(crate) prediction_outcome: Option<&'static str>,
+    pub(crate) prediction_result_move_pct: Option<f64>,
+    pub(crate) prediction_resolved_at: Option<i64>,
+    pub(crate) position_outcome: Option<&'static str>,
+    pub(crate) position_pnl_pct: Option<f64>,
+    pub(crate) position_mfe_pct: Option<f64>,
+    pub(crate) position_mae_pct: Option<f64>,
+    pub(crate) position_exit_reason: Option<String>,
     pub(crate) realized_price_high: Option<f64>,
     pub(crate) realized_price_low: Option<f64>,
     pub(crate) realized_target_low: Option<f64>,
@@ -253,6 +283,26 @@ pub(crate) struct CrossingEvent {
 
 fn format_pattern_key(event: &CrossingEvent) -> String {
     event.pattern_kind.unwrap_or("none").to_string()
+}
+
+fn prediction_result_move_pct(prediction: &VirtualPredictionResult) -> Option<f64> {
+    let result_price = match prediction.outcome {
+        "reached_and_followed" | "not_reached_but_followed" => prediction.target_price,
+        "prediction_broken" => prediction.stop_price,
+        _ => return None,
+    };
+    if !prediction.entry_price.is_finite()
+        || prediction.entry_price <= 0.0
+        || !result_price.is_finite()
+        || !matches!(prediction.side, 1 | -1)
+    {
+        return None;
+    }
+    Some(
+        (result_price - prediction.entry_price) / prediction.entry_price
+            * 100.0
+            * prediction.side as f64,
+    )
 }
 
 fn crossing_event_from_analysis(
@@ -309,11 +359,27 @@ fn crossing_event_from_analysis(
             crossing,
             event.line_idx,
             event.direction,
+            event.realized_movement_direction,
             event.realized_favorable_move_pct,
             event.realized_adverse_move_pct,
             event.realized_duration_ms.is_some(),
             cross_count,
         ),
+        line_plans: event.line_plans,
+        ntps: event
+            .line_plans
+            .first()
+            .map(|plan| plan.ntps)
+            .unwrap_or_default(),
+        cascade_direction: event
+            .line_plans
+            .first()
+            .map(|plan| plan.cascade_direction)
+            .unwrap_or_default(),
+        cascade_speed_pct_per_min: event
+            .line_plans
+            .iter()
+            .find_map(|plan| plan.cascade_speed_pct_per_min),
         target_line: event.target_line.map(|line| line as usize),
         target_name: event.target_line.map(|line| LABELS[line as usize]),
         target_price: event.target_price,
@@ -341,8 +407,31 @@ fn crossing_event_from_analysis(
         expected_price_low: event.expected_price_low,
         expected_price_high: event.expected_price_high,
         realized_duration_ms: event.realized_duration_ms,
+        realized_movement_direction: event.realized_movement_direction,
         realized_favorable_move_pct: event.realized_favorable_move_pct,
         realized_adverse_move_pct: event.realized_adverse_move_pct,
+        trace_outcome: event
+            .realized_favorable_move_pct
+            .zip(event.realized_adverse_move_pct)
+            .and_then(|(favorable, adverse)| {
+                mrc_cross_analysis::movement_outcome(favorable, adverse).map(|(outcome, _)| outcome)
+            }),
+        trace_result_move_pct: event
+            .realized_favorable_move_pct
+            .zip(event.realized_adverse_move_pct)
+            .and_then(|(favorable, adverse)| {
+                mrc_cross_analysis::movement_outcome(favorable, adverse).map(|(_, result)| result)
+            }),
+        prediction_side: None,
+        prediction_filled: None,
+        prediction_outcome: None,
+        prediction_result_move_pct: None,
+        prediction_resolved_at: None,
+        position_outcome: None,
+        position_pnl_pct: None,
+        position_mfe_pct: None,
+        position_mae_pct: None,
+        position_exit_reason: None,
         realized_price_high: event.realized_price_high,
         realized_price_low: event.realized_price_low,
         realized_target_low: event.realized_target_low,
@@ -732,6 +821,8 @@ pub(crate) struct Analyzer {
     vlines: [VLineState; LINE_COUNT],
     crossing: MrcCrossingState,
     model: MrcCrossingModel,
+    cascade: cascade::CascadeState,
+    cascade_signal: cascade::CascadeSignal,
     events: Vec<CrossingEvent>,
     trades: VirtualTradeSimulator,
     pattern_trades: [VirtualTradeSimulator; LINE_COUNT - 2],
@@ -751,6 +842,8 @@ impl Analyzer {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
             model: MrcCrossingModel::default(),
+            cascade: cascade::CascadeState::default(),
+            cascade_signal: cascade::CascadeSignal::default(),
             events: Vec::new(),
             trades: VirtualTradeSimulator::default(),
             pattern_trades: std::array::from_fn(|_| VirtualTradeSimulator::default()),
@@ -788,6 +881,16 @@ impl Analyzer {
         }
         self.record_selected_results();
         self.predictions.update(row);
+        self.cascade_signal = cascade::update_from_candle_at(
+            &mut self.cascade,
+            &Candle {
+                open: row.open,
+                high: row.high,
+                low: row.low,
+                close: row.close,
+            },
+            row.time_ms.max(0) as u64,
+        );
         let lines = row.mrc.lines();
         let crossed = vlines::update_with_events(
             &mut self.vlines,
@@ -812,7 +915,15 @@ impl Analyzer {
             );
         }
         let prediction_started = Instant::now();
-        let observation = mrc_crossing::observe_with_forecast(
+        let prediction_context = mrc_prediction::MrcPredictionContext {
+            ntps: row.ntps,
+            ntps_fast_time_ms: None,
+            cascade_direction: self.cascade_signal.dir,
+            cascade_speed_pct_per_min: self.cascade_signal.speed_pct_per_min,
+            cascade_strength: self.cascade_signal.strength,
+            cascade_stretched: self.cascade_signal.stretched,
+        };
+        let observation = mrc_crossing::observe_with_forecast_context(
             &mut self.model,
             &crossed,
             lines,
@@ -820,6 +931,7 @@ impl Analyzer {
             (row.gain, 0.0, row.gain, row.buy_sell_gain),
             row.close,
             row.time_ms.max(0) as u64,
+            prediction_context,
         );
         if log_prediction {
             eprintln!(
@@ -888,12 +1000,13 @@ impl Analyzer {
                 })
                 .cloned()
                 .unwrap_or_else(|| {
-                    mrc_cross_analysis::build(
+                    mrc_cross_analysis::build_with_context(
                         raw_event,
                         None,
                         lines,
                         &self.crossing,
                         (row.gain, 0.0, row.gain, row.buy_sell_gain),
+                        prediction_context,
                     )
                 });
             let crossing_event = crossing_event_from_analysis(
@@ -958,10 +1071,10 @@ impl Analyzer {
             return None;
         }
         let reason = format!(
-            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={:.0} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
+            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
             event.pattern_key,
             event.pattern_steps,
-            event.pattern_elapsed_ms,
+            duration_token(fmt_duration_ms(event.pattern_elapsed_ms)),
             format_line_sequence(&event.stair_sequence),
             event.stair_price_move_pct,
             event.stair_favorable_move_pct,
@@ -1014,7 +1127,7 @@ impl Analyzer {
             prediction.expected_value_pct.unwrap_or(0.0),
             prediction.favorable_move_pct.unwrap_or(0.0),
             prediction.adverse_move_pct.unwrap_or(0.0),
-            prediction.estimated_time_ms.unwrap_or(0.0),
+            duration_token(fmt_duration_f64(prediction.estimated_time_ms.unwrap_or(0.0))),
             prediction.market_price,
             prediction.mrc_min,
             prediction.mrc_max,
@@ -1060,33 +1173,75 @@ impl Analyzer {
         self.selected_completed_seen = completed.len();
     }
 
+    fn attach_position_result(events: &mut [CrossingEvent], trade: &VirtualTradeResult) {
+        let Some(event) = events.iter_mut().rev().find(|event| {
+            event.time_ms == trade.signal_time_ms
+                && event.line == trade.source_line
+                && event.trade_direction == trade.side
+                && event.pattern_key == trade.pattern_key
+        }) else {
+            return;
+        };
+        event.position_outcome = Some(if trade.pnl_pct > 0.0 {
+            "profitable"
+        } else {
+            "negative"
+        });
+        event.position_pnl_pct = Some(trade.pnl_pct);
+        event.position_mfe_pct = Some(trade.mfe_pct);
+        event.position_mae_pct = Some(trade.mae_pct);
+        event.position_exit_reason = Some(trade.exit_reason.clone());
+    }
+
+    fn attach_prediction_result(
+        events: &mut [CrossingEvent],
+        prediction: &VirtualPredictionResult,
+    ) {
+        let Some(event) = events.iter_mut().rev().find(|event| {
+            event.time_ms == prediction.created_at
+                && event.line == prediction.source_line
+                && event.pattern_key == prediction.pattern_key
+        }) else {
+            return;
+        };
+        event.prediction_side = Some(prediction.side);
+        event.prediction_filled = Some(prediction.filled);
+        event.prediction_outcome = Some(prediction.outcome);
+        event.prediction_result_move_pct = prediction_result_move_pct(prediction);
+        event.prediction_resolved_at = Some(prediction.resolved_at);
+    }
+
     pub(crate) fn report(&self) -> AnalysisReport {
-        let latest_event = self.events.last().cloned();
+        let trades = self.trades.completed();
+        let mut events = self.events.clone();
+        for trade in &trades {
+            Self::attach_position_result(&mut events, trade);
+        }
+        let predictions = self.predictions.results();
+        for prediction in &predictions {
+            Self::attach_prediction_result(&mut events, prediction);
+        }
+        let latest_event = events.last().cloned();
         let forecast = forecast(latest_event.clone(), &self.model);
         let patterns = forecast.likely_destinations.clone();
+        let stair_statistics = stair_statistics(&events, &predictions, &trades);
+        let pattern_win_rates = pattern_win_rate_reports(&trades, &predictions);
         AnalysisReport {
-            crossing_count: self.events.len(),
+            crossing_count: events.len(),
             pattern_count: patterns.len(),
             patterns,
             latest_event,
             forecast,
-            events: self.events.clone(),
+            events,
             trade_summary: self.trades.summary(),
-            trades: self.trades.completed(),
+            trades,
             open_trade: self.trades.active(),
             prediction_summary: self.predictions.summary(),
-            predictions: self.predictions.results(),
+            predictions,
             pending_predictions: self.predictions.pending_count(),
             active_predictions: self.predictions.active_count(),
-            pattern_win_rates: pattern_win_rate_reports(
-                &self.trades.completed(),
-                &self.predictions.results(),
-            ),
-            stair_statistics: stair_statistics(
-                &self.events,
-                &self.predictions.results(),
-                &self.trades.completed(),
-            ),
+            pattern_win_rates,
+            stair_statistics,
             pattern_performance: MrcPatternKind::ALL
                 .into_iter()
                 .map(|pattern| {

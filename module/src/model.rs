@@ -238,6 +238,9 @@ pub struct TimeframeSnapshot {
     pub volume_gain_min: f64,
     pub volume_gain_max: f64,
     pub buy_sell_gain: f64,
+    /// Average trades per second-window from the NTPS indicator.
+    #[serde(default)]
+    pub ntps: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

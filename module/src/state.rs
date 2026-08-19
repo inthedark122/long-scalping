@@ -1,3 +1,4 @@
+use crate::detection::cascade::{CascadeSignal, CascadeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
@@ -265,6 +266,8 @@ pub struct EngineState {
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
     pub mrc_crossing_model: MrcCrossingModel,
+    pub cascade: CascadeState,
+    pub cascade_signal: CascadeSignal,
     pub pending_entry_bar: Option<u64>,
     pub volume_gain: VolumeGainTracker,
     pub direction_source: String,
@@ -291,6 +294,8 @@ impl Default for EngineState {
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
             mrc_crossing_model: MrcCrossingModel::default(),
+            cascade: CascadeState::default(),
+            cascade_signal: CascadeSignal::default(),
             pending_entry_bar: None,
             volume_gain: VolumeGainTracker::default(),
             direction_source: "pattern-selector".to_string(),

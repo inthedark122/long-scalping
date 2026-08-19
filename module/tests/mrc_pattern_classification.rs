@@ -143,6 +143,49 @@ fn classification_stays_active_during_pullback_and_ends_on_failed_new_extreme() 
 }
 
 #[test]
+fn last_confirmed_lower_expansion_keeps_the_stair_short() {
+    let signal = classify(&history(&[
+        (3, 100.0),
+        (4, 101.0),
+        (3, 99.0),
+        (2, 98.0),
+        (3, 99.0),
+        (2, 98.0),
+        (3, 99.0),
+        (4, 101.0),
+    ]))
+    .expect("the lower staircase should remain active during the pullback");
+
+    assert_eq!(signal.kind, MrcPatternKind::StairsDown);
+    assert_eq!(signal.direction, -1);
+    assert_eq!(signal.source_line, 4);
+    assert_eq!(signal.target_line, 3);
+    assert_eq!(signal.sequence, vec![4, 3, 2, 3, 2, 3, 4]);
+    assert_eq!(signal.steps, 2);
+}
+
+#[test]
+fn last_confirmed_upper_expansion_keeps_the_stair_long() {
+    let signal = classify(&history(&[
+        (5, 100.0),
+        (4, 99.0),
+        (5, 101.0),
+        (6, 102.0),
+        (5, 101.0),
+        (6, 102.0),
+        (5, 101.0),
+        (4, 99.0),
+    ]))
+    .expect("the upper staircase should remain active during the pullback");
+
+    assert_eq!(signal.kind, MrcPatternKind::StairsUp);
+    assert_eq!(signal.direction, 1);
+    assert_eq!(signal.source_line, 4);
+    assert_eq!(signal.target_line, 5);
+    assert_eq!(signal.steps, 2);
+}
+
+#[test]
 fn repeated_equal_zigzags_are_not_a_staircase() {
     let signal = classify(&history(&[
         (2, 100.0),

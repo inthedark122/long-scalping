@@ -67,6 +67,44 @@ fn read_float(
     }
 }
 
+fn read_optional_float(
+    history: &IndicatorHistory,
+    timeframe: TimeframeSec,
+    indicator: IndicatorKey,
+    field: IndicatorField,
+    offset: usize,
+) -> Result<Option<f64>, String> {
+    match history.get_prev(
+        IndicatorFieldKey {
+            timeframe,
+            indicator,
+            field,
+        },
+        offset,
+    ) {
+        None => Ok(None),
+        Some(ModuleIndicatorValue::Float(value)) => Ok(Some(*value)),
+        Some(ModuleIndicatorValue::String(value)) => value.parse::<f64>().map(Some).map_err(|_| {
+            format!(
+                "invalid-optional-float tf={} indicator={} field={} offset={} value={}",
+                timeframe.as_i64(),
+                indicator.as_name(),
+                field.as_name(),
+                offset,
+                value
+            )
+        }),
+        Some(other) => Err(format!(
+            "invalid-optional-value tf={} indicator={} field={} offset={} value={:?}",
+            timeframe.as_i64(),
+            indicator.as_name(),
+            field.as_name(),
+            offset,
+            other
+        )),
+    }
+}
+
 pub(crate) type RawIndicators =
     BTreeMap<i64, Vec<HashMap<String, HashMap<String, ModuleIndicatorValue>>>>;
 
@@ -305,6 +343,15 @@ fn build_timeframe(
         "BuySellGain"
     ))
     .unwrap_or_default();
+    let ntps = optional!(read_optional_float(
+        history,
+        timeframe,
+        IndicatorKey::Ntps,
+        IndicatorField::Value,
+        0,
+    ))
+    .unwrap_or_default()
+    .round() as i64;
 
     if !errors.is_empty() {
         return Err(format!("tf={} {}", timeframe.as_i64(), errors.join(" | ")));
@@ -353,6 +400,7 @@ fn build_timeframe(
         volume_gain_min,
         volume_gain_max,
         buy_sell_gain,
+        ntps,
     })
 }
 

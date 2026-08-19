@@ -1,8 +1,7 @@
-//! Stateful candle cascade detector retained for future research.
+//! Stateful candle cascade detector used as movement-speed context.
 //!
-//! This module is deliberately not part of the live MRC entry/exit decision
-//! path. It turns an OHLC stream into movement blocks, movement strength, and
-//! a bounded history that can later be combined with MRC and volume features.
+//! The cascade does not choose a side by itself. It measures the active
+//! movement and supplies direction, speed, and stretch to the MRC line plan.
 
 use crate::model::{Candle, TimeframeSnapshot};
 
@@ -38,6 +37,8 @@ pub struct CascadeState {
     pub movement_history: [CascadeMovement; CASCADE_SAMPLE_WINDOW],
     pub movement_history_pos: usize,
     pub movement_history_len: usize,
+    pub movement_start_ms: u64,
+    pub last_time_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +71,8 @@ pub struct CascadeSignal {
     pub average_size: f64,
     pub samples: u32,
     pub break_price: f64,
+    pub elapsed_ms: u64,
+    pub speed_pct_per_min: Option<f64>,
 }
 
 pub fn average_size_percent(average_size: f64, price: f64) -> Option<f64> {
@@ -81,7 +84,14 @@ pub fn average_size_percent(average_size: f64, price: f64) -> Option<f64> {
     (percent.is_finite() && percent > 0.0).then_some(percent)
 }
 
-fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: f64) -> bool {
+fn update_block(
+    memory: &mut CascadeState,
+    dir: i8,
+    high: f64,
+    low: f64,
+    close: f64,
+    now_ms: u64,
+) -> bool {
     if memory.cas_dir == 0 {
         memory.cas_dir = dir;
         memory.cas_high = high;
@@ -91,6 +101,7 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
         memory.run_extreme = if dir >= 0 { high } else { low };
         memory.run_size = high - low;
         memory.last_close = close;
+        memory.movement_start_ms = now_ms;
         return false;
     }
 
@@ -155,6 +166,7 @@ fn update_block(memory: &mut CascadeState, dir: i8, high: f64, low: f64, close: 
         memory.cas_candles = 1;
         memory.break_n = 0;
         memory.breaks = [0.0; 5];
+        memory.movement_start_ms = now_ms;
         true
     }
 }
@@ -213,6 +225,14 @@ pub fn cascade_take_profit_distance(memory: &CascadeState) -> Option<f64> {
 }
 
 pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> CascadeSignal {
+    update_from_candle_at(memory, candle, 0)
+}
+
+pub fn update_from_candle_at(
+    memory: &mut CascadeState,
+    candle: &Candle,
+    now_ms: u64,
+) -> CascadeSignal {
     let high = candle.high;
     let low = candle.low;
     let close = candle.close;
@@ -239,12 +259,15 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
     let phase_hint = if dir == 0 {
         false
     } else {
-        update_block(memory, dir, high, low, close)
+        update_block(memory, dir, high, low, close, now_ms)
     };
 
     let prev_dir = memory.dir;
     memory.dir = if dir == 0 { memory.dir } else { dir };
     memory.last_close = close;
+    if now_ms > 0 {
+        memory.last_time_ms = now_ms;
+    }
     memory.run_extreme = if memory.dir >= 0 {
         if memory.run_extreme == 0.0 {
             high
@@ -289,6 +312,14 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
         MovementPhase::Building
     };
 
+    let elapsed_ms = if now_ms > 0 && memory.movement_start_ms > 0 {
+        now_ms.saturating_sub(memory.movement_start_ms)
+    } else {
+        0
+    };
+    let speed_pct_per_min = (elapsed_ms > 0 && close > 0.0 && active_size > 0.0)
+        .then(|| active_size / close * 100.0 / (elapsed_ms as f64 / 60_000.0));
+
     CascadeSignal {
         dir: memory.dir,
         prev_dir,
@@ -303,6 +334,8 @@ pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> Cascade
             .break_n
             .saturating_sub(1)
             .min(memory.breaks.len() - 1)],
+        elapsed_ms,
+        speed_pct_per_min,
     }
 }
 
@@ -425,4 +458,8 @@ pub fn preview_from_candle(memory: &CascadeState, candle: &Candle) -> CascadeSig
 
 pub fn update(memory: &mut CascadeState, tf: &TimeframeSnapshot) -> CascadeSignal {
     update_from_candle(memory, &tf.candle)
+}
+
+pub fn update_at(memory: &mut CascadeState, tf: &TimeframeSnapshot, now_ms: u64) -> CascadeSignal {
+    update_from_candle_at(memory, &tf.candle, now_ms)
 }

@@ -338,11 +338,12 @@ fn zigzag_legs(history: &[MrcHistoryEvent]) -> Vec<ZigzagLeg> {
 /// legs in one direction.
 ///
 /// For an upward staircase, the upward legs must be separated by pullbacks
-/// and the newest upward leg must reach above the previous upward leg. The
-/// detector remains active during the pullback after a successful leg, so the
-/// decision layer can use the pullback as a possible entry. If the next
-/// upward attempt fails to exceed the previous peak, no staircase is emitted;
-/// that is the exhaustion transition.
+/// and at least one leg must expand beyond the previous directional extreme.
+/// The detector remains active during an opposite-direction pullback, so the
+/// decision layer can use the pullback as a possible entry. If a new leg in
+/// the same direction fails to exceed the confirmed extreme, that is the
+/// exhaustion transition. Direction is therefore based on confirmed legs,
+/// not on the last line crossed.
 fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     let legs = zigzag_legs(history);
     if legs.len() < 3 {
@@ -350,6 +351,8 @@ fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     }
 
     let current = history.last()?;
+    let current_leg = legs.last()?;
+    let mut selected: Option<(i8, Vec<usize>, usize, (usize, u8, usize))> = None;
     for trend_direction in [1_i8, -1_i8] {
         let trend_indices = legs
             .iter()
@@ -360,46 +363,70 @@ fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
             continue;
         }
 
-        let latest_index = *trend_indices.last()?;
-        let previous_index = trend_indices[trend_indices.len() - 2];
-        let latest = legs[latest_index];
-        let previous = legs[previous_index];
-        let penetrated_deeper = if trend_direction > 0 {
-            latest.end_line > previous.end_line
-        } else {
-            latest.end_line < previous.end_line
-        };
-        if !penetrated_deeper {
+        let first_index = *trend_indices.first()?;
+        let first = legs[first_index];
+        let first_span = history[first.start_index].line.abs_diff(first.end_line);
+        let mut best_end_line = first.end_line;
+        let mut last_progress_index = first_index;
+        let mut expanded_after_first = false;
+        for index in trend_indices.iter().copied().skip(1) {
+            let leg = legs[index];
+            let penetrated_deeper = if trend_direction > 0 {
+                leg.end_line > best_end_line
+            } else {
+                leg.end_line < best_end_line
+            };
+            if penetrated_deeper {
+                best_end_line = leg.end_line;
+                last_progress_index = index;
+                expanded_after_first = true;
+            }
+        }
+
+        // Repeated one-line oscillations are a range, not a staircase. A
+        // staircase needs either an initial multi-line impulse or a later
+        // directional expansion.
+        if first_span <= 1 && !expanded_after_first {
             continue;
         }
 
-        let first = legs[*trend_indices.first()?];
-        let (sequence, price_move_pct, favorable_move_pct, adverse_move_pct) =
-            stair_price_metrics(history, first.start_index, trend_direction);
-        let kind = if trend_direction > 0 {
-            MrcPatternKind::StairsUp
-        } else {
-            MrcPatternKind::StairsDown
-        };
-        return Some(MrcPatternSignal {
-            kind,
-            source_line: current.line,
-            target_line: adjacent_line(current.line, trend_direction)?,
-            direction: trend_direction,
-            failed_break_line: None,
-            failed_break_direction: 0,
-            steps: trend_indices.len() as u32,
-            elapsed_ms: current
-                .now_ms
-                .saturating_sub(history[first.start_index].now_ms),
-            sequence,
-            price_move_pct,
-            favorable_move_pct,
-            adverse_move_pct,
-        });
+        // A same-direction leg that failed to beat the confirmed extreme is
+        // exhaustion. An opposite final leg is only a pullback.
+        if current_leg.direction == trend_direction && last_progress_index != legs.len() - 1 {
+            continue;
+        }
+
+        let rank = (last_progress_index, first.end_line, trend_indices.len());
+        if selected
+            .as_ref()
+            .is_none_or(|(_, _, _, selected_rank)| rank > *selected_rank)
+        {
+            selected = Some((trend_direction, trend_indices, first.start_index, rank));
+        }
     }
 
-    None
+    let (trend_direction, trend_indices, start_index, _) = selected?;
+    let (sequence, price_move_pct, favorable_move_pct, adverse_move_pct) =
+        stair_price_metrics(history, start_index, trend_direction);
+    let kind = if trend_direction > 0 {
+        MrcPatternKind::StairsUp
+    } else {
+        MrcPatternKind::StairsDown
+    };
+    Some(MrcPatternSignal {
+        kind,
+        source_line: current.line,
+        target_line: adjacent_line(current.line, trend_direction)?,
+        direction: trend_direction,
+        failed_break_line: None,
+        failed_break_direction: 0,
+        steps: trend_indices.len() as u32,
+        elapsed_ms: current.now_ms.saturating_sub(history[start_index].now_ms),
+        sequence,
+        price_move_pct,
+        favorable_move_pct,
+        adverse_move_pct,
+    })
 }
 
 fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {

@@ -17,6 +17,7 @@ fn candle(time_ms: i64, high: f64, low: f64, close: f64) -> CandleRow {
         close,
         gain: 0.0,
         buy_sell_gain: 0.0,
+        ntps: 0,
         mrc: Default::default(),
     }
 }

@@ -26,12 +26,24 @@ pub fn fmt_price_tick(value: f64, tick_size: f64) -> String {
 pub fn fmt_duration_ms(value: u64) -> String {
     if value == 0 {
         "na".to_string()
+    } else if value >= 3_600_000 {
+        let total_minutes = value / 60_000;
+        format!("{}h {:02}m", total_minutes / 60, total_minutes % 60)
     } else if value >= 60_000 {
-        format!("{:.1}m", value as f64 / 60_000.0)
+        let total_seconds = value / 1_000;
+        format!("{}m {:02}s", total_seconds / 60, total_seconds % 60)
     } else if value >= 1_000 {
         format!("{:.1}s", value as f64 / 1_000.0)
     } else {
         format!("{}ms", value)
+    }
+}
+
+pub fn fmt_duration_f64(value: f64) -> String {
+    if !value.is_finite() || value <= 0.0 {
+        "na".to_string()
+    } else {
+        fmt_duration_ms(value.round() as u64)
     }
 }
 

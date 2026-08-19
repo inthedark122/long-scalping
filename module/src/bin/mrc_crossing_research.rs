@@ -8,6 +8,7 @@ use std::time::Instant;
 mod research;
 
 use long_scalping::detection::decision::DecisionComponents;
+use long_scalping::fmt_duration_f64;
 use research::data::{fetch_history_for_timeframe_cached, CacheSettings, CacheStatus};
 use research::mrc_crossing::{AnalysisReport, Analyzer};
 use research::mrc_crossing_html;
@@ -83,8 +84,8 @@ fn symbol_output_path(
 
 fn format_minutes(value_ms: Option<f64>) -> String {
     value_ms
-        .map(|value| format!("{:.2} minutes", value / 60_000.0))
-        .unwrap_or_else(|| "n/a".to_string())
+        .map(fmt_duration_f64)
+        .unwrap_or_else(|| "na".to_string())
 }
 
 fn print_trade_log(report: &AnalysisReport) {
@@ -439,6 +440,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_key,
                 history,
                 minute_count,
+                direction_lock,
                 &report,
             )?;
             println!("html report            : {}", path.display());

@@ -30,6 +30,7 @@ pub(crate) struct VirtualPosition {
     pub(crate) target_exit_order: &'static str,
     pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
+    pub(crate) signal_time_ms: i64,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
     #[serde(skip_serializing)]
@@ -57,6 +58,9 @@ pub(crate) struct VirtualTradeResult {
     pub(crate) mfe_pct: f64,
     pub(crate) mae_pct: f64,
     pub(crate) opened_at: i64,
+    /// Signal/crossing time that created this position. `opened_at` can be
+    /// later because the simulated limit order fills on the next candle.
+    pub(crate) signal_time_ms: i64,
     pub(crate) closed_at: i64,
     pub(crate) exit_reason: String,
     pub(crate) reason: String,
@@ -163,6 +167,7 @@ pub(crate) struct TradeSetup {
     pub(crate) target_exit_order: &'static str,
     pub(crate) stop_exit_order: &'static str,
     pub(crate) opened_at: i64,
+    pub(crate) signal_time_ms: i64,
     pub(crate) reason: String,
     pub(crate) pattern_key: String,
 }
@@ -514,6 +519,7 @@ impl TradeSetup {
             target_exit_order: "limit",
             stop_exit_order: "market",
             opened_at,
+            signal_time_ms: opened_at,
             reason: reason.into(),
             pattern_key: "generic".to_string(),
         }
@@ -544,6 +550,7 @@ impl TradeSetup {
             target_exit_order: "limit",
             stop_exit_order: "market",
             opened_at,
+            signal_time_ms: opened_at,
             reason: reason.into(),
             pattern_key: format!("{source_name}->{target_name}"),
         }
@@ -623,6 +630,7 @@ impl VirtualTradeSimulator {
             target_exit_order: setup.target_exit_order,
             stop_exit_order: setup.stop_exit_order,
             opened_at,
+            signal_time_ms: setup.signal_time_ms,
             reason: setup.reason,
             pattern_key: setup.pattern_key,
             max_favorable_price: setup.entry_price,
@@ -744,6 +752,7 @@ impl VirtualTradeSimulator {
             mfe_pct: mfe_price / trade.entry_price * 100.0,
             mae_pct: mae_price / trade.entry_price * 100.0,
             opened_at: trade.opened_at,
+            signal_time_ms: trade.signal_time_ms,
             closed_at,
             exit_reason: exit_reason.to_string(),
             reason: trade.reason,
@@ -839,6 +848,7 @@ mod tests {
             close,
             gain: 0.0,
             buy_sell_gain: 0.0,
+            ntps: 0,
             mrc: Default::default(),
         }
     }

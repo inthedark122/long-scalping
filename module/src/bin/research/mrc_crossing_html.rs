@@ -10,12 +10,14 @@ pub(crate) fn write_report(
     symbol_key: &str,
     history_requested: usize,
     minute_count: usize,
+    direction: Option<i8>,
     report: &AnalysisReport,
 ) -> Result<(), Box<dyn Error>> {
     let data = json!({
         "symbol_key": symbol_key,
         "history_requested_1m": history_requested,
         "history_loaded_1m": minute_count,
+        "direction": direction.map(|value| if value > 0 { "long" } else { "short" }),
         "latest_event_time_ms": report.latest_event.as_ref().map(|event| event.time_ms),
         "trade_summary": report.trade_summary,
         "trades": report.trades,
@@ -40,6 +42,8 @@ pub(crate) fn write_report(
             "outcome_counts": "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
             "resistance": "The opposite reverted MRC line and its barrier state at the signal.",
             "tp_sl": "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
+            "trace_outcome": "Observed movement is profitable when its favorable excursion is larger than its absolute adverse excursion; otherwise it is negative.",
+            "position_mfe": "For a completed filled position, MFE is the maximum favorable price movement observed before the simulated target, stop, or end-of-history exit. OHLC data cannot determine intrabar order when target and stop share one candle.",
             "win_rate": "Wins divided by closed virtual positions for the exact displayed pattern; the position count must be read with the percentage."
         },
         "events": report.events,
@@ -78,7 +82,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       color: var(--text);
       line-height: 1.4;
     }
-    .page { max-width: 1400px; margin: 0 auto; padding: 28px; }
+    .page { width: 100%; max-width: 1880px; margin: 0 auto; padding: 28px; }
     h1 { margin: 0 0 5px; font-size: 25px; }
     h2 { margin: 0 0 16px; font-size: 17px; }
     .subtle { color: var(--muted); }
@@ -128,6 +132,11 @@ const TEMPLATE: &str = r###"<!doctype html>
     .pattern-reason-group { margin: 10px 0; }
     .pattern-reason-group summary { cursor: pointer; color: var(--text); font-weight: 700; }
     .pattern-reason-group table { margin-top: 8px; }
+    .copy-id {
+      color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 3px 6px; cursor: pointer; font: inherit; font-size: 11px;
+    }
+    .copy-id:hover { color: var(--text); border-color: var(--blue); }
     .empty {
       position: absolute; inset: 0; display: grid; place-items: center;
       color: var(--muted); pointer-events: none;
@@ -160,13 +169,70 @@ const TEMPLATE: &str = r###"<!doctype html>
     .reason-item { white-space: normal; }
     .reason-key { color: var(--muted); }
     .reason-value { color: var(--text); }
+    .crossing-panel .table-wrap { overflow-x: visible; }
+    .crossing-table { width: 100%; min-width: 0; table-layout: fixed; }
+    .crossing-table th, .crossing-table td { vertical-align: top; }
+    .crossing-table th, .crossing-table td { overflow-wrap: anywhere; }
+    .crossing-table td:last-child { word-break: break-word; }
+    .crossing-table .numeric { white-space: nowrap; }
+    .crossing-table th:nth-child(1), .crossing-table td:nth-child(1) { width: 11%; }
+    .crossing-table th:nth-child(2), .crossing-table td:nth-child(2) { width: 9%; }
+    .crossing-table th:nth-child(3), .crossing-table td:nth-child(3) { width: 9%; }
+    .crossing-table th:nth-child(4), .crossing-table td:nth-child(4) { width: 9%; }
+    .crossing-table th:nth-child(5), .crossing-table td:nth-child(5) { width: 23%; }
+    .crossing-table th:nth-child(6), .crossing-table td:nth-child(6) { width: 7%; }
+    .crossing-table th:nth-child(7), .crossing-table td:nth-child(7) { width: 20%; }
+    .crossing-table th:nth-child(8), .crossing-table td:nth-child(8) { width: 12%; }
+    .crossing-detail td {
+      width: 100%;
+      padding: 10px 12px 14px;
+      background: var(--panel-2);
+      text-align: left;
+      white-space: normal;
+    }
+    .crossing-detail-content { display: grid; gap: 8px; }
+    .crossing-detail-title { color: var(--blue); font-weight: 700; }
+    .crossing-evidence {
+      display: grid; grid-template-columns: max-content minmax(0, 1fr);
+      gap: 4px 12px; color: var(--muted); font-size: 12px;
+    }
+    .crossing-evidence-label { color: var(--text); font-weight: 600; }
+    .crossing-evidence code {
+      display: block; min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+    }
+    .line-plan-meta {
+      display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0 8px;
+      color: var(--muted); font-size: 12px;
+    }
+    .line-plan-meta strong { color: var(--text); font-weight: 600; }
+    .line-plan-table { width: 100%; min-width: 0; table-layout: fixed; margin-top: 8px; font-size: 12px; background: var(--panel-2); }
+    .line-plan-table th, .line-plan-table td { padding: 7px 8px; }
+    .line-plan-table th { text-align: left; }
+    .line-plan-table th, .line-plan-table td { overflow-wrap: anywhere; }
+    .line-plan-table td { text-align: right; white-space: normal; }
+    .line-plan-table th:nth-child(1), .line-plan-table td:nth-child(1) { width: 12%; }
+    .line-plan-table th:nth-child(2), .line-plan-table td:nth-child(2) { width: 24%; }
+    .line-plan-table th:nth-child(3), .line-plan-table td:nth-child(3) { width: 11%; }
+    .line-plan-table th:nth-child(4), .line-plan-table td:nth-child(4) { width: 11%; }
+    .line-plan-table th:nth-child(5), .line-plan-table td:nth-child(5) { width: 8%; }
+    .line-plan-table th:nth-child(6), .line-plan-table td:nth-child(6) { width: 12%; }
+    .line-plan-table th:nth-child(7), .line-plan-table td:nth-child(7) { width: 14%; }
+    .line-plan-table th:nth-child(8), .line-plan-table td:nth-child(8) { width: 8%; }
+    .line-plan-table th:first-child, .line-plan-table td:first-child,
+    .line-plan-table th:nth-child(2), .line-plan-table td:nth-child(2),
+    .line-plan-table th:nth-child(6), .line-plan-table td:nth-child(6) { text-align: left; }
+    .route-role { color: var(--blue); }
+    .line-plan-note { margin-top: 8px; color: var(--muted); font-size: 12px; }
     .positive { color: var(--green); }
     .negative { color: var(--red); }
+    .prediction-lock-note { display: block; margin-top: 2px; }
     .open { color: var(--blue); }
     code { color: var(--text); white-space: normal; }
     @media (max-width: 700px) {
       .page { padding: 16px; }
       .chart-wrap { height: 260px; }
+      .crossing-panel .table-wrap { overflow-x: auto; }
+      .crossing-table { table-layout: auto; min-width: 1080px; }
     }
   </style>
 </head>
@@ -255,6 +321,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         <p><b>Pattern steps</b> and elapsed time describe how much local evidence is currently visible. For stairs, steps are alternating zigzag legs; outcome counts are supporting evidence and the pattern itself selects the direction.</p>
         <p><b>Resistance</b> is the opposite reverted MRC line and its current barrier state. <b>TP / SL</b> are the actual MRC lines used by the executed side.</p>
         <p><b>Max/furthest line before return</b> is the exact MRC line index/name farthest from the source line before the first return; it does not use the changing line price.</p>
+        <p><b>Prediction / long result</b> is tied to this crossing's own prediction. It shows whether that prediction reached its target or stop, the target/SL movement, and the actual long position result when a long position was filled. Historical trace evidence is kept separately and is not used as this prediction's result.</p>
         <p><b>Win rate</b> is wins divided by closed virtual positions for the exact displayed pattern. Always read it together with the position count.</p>
       </div>
     </section>
@@ -276,8 +343,9 @@ const TEMPLATE: &str = r###"<!doctype html>
       <div id="pattern-reasons" class="table-wrap"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel crossing-panel">
       <h2>Crossing / price trace</h2>
+      <p class="subtle">Long-only execution focus. Each crossing shows only its current prediction result, target/SL movement, and filled long-position result when available.</p>
       <div id="crossings" class="table-wrap"></div>
     </section>
   </main>
@@ -337,6 +405,44 @@ const TEMPLATE: &str = r###"<!doctype html>
       return finite.length ? money(Math.min(...finite)) + " .. " + money(Math.max(...finite)) : "—";
     };
     const date = (value) => value ? new Date(Number(value)).toLocaleString() : "—";
+    const sharePart = (value) => String(value ?? "na").replaceAll(":", "_");
+    const shareId = (kind, row) => {
+      const fields = kind === "event"
+        ? [row.time_ms, row.line, row.direction, row.pattern_key || "none"]
+        : kind === "trade"
+          ? [row.opened_at, row.side, row.source_line, row.target_line, row.pattern_key || "none"]
+          : [row.created_at, row.side, row.source_line, row.target_line, row.pattern_key || "none"];
+      return [kind, DATA.symbol_key || "unknown", ...fields].map(sharePart).join(":");
+    };
+    const shareMarkup = (kind, row) => {
+      const id = shareId(kind, row);
+      return '<button type="button" class="copy-id" title="Copy identifier" aria-label="Copy identifier" data-copy-id="' + esc(id) + '">Copy</button>';
+    };
+    const copyToClipboard = (value) => {
+      const fallback = () => {
+        const area = document.createElement("textarea");
+        area.value = value;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      };
+      return navigator.clipboard && navigator.clipboard.writeText
+        ? navigator.clipboard.writeText(value).catch(fallback)
+        : Promise.resolve(fallback());
+    };
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest(".copy-id");
+      if (!button) return;
+      copyToClipboard(button.dataset.copyId || "").then(() => {
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = original; }, 1200);
+      });
+    });
     const shortDate = (value) => value ? new Date(Number(value)).toLocaleString([], {
       month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
     }) : "—";
@@ -344,6 +450,149 @@ const TEMPLATE: &str = r###"<!doctype html>
       if (!opened || !closed) return "—";
       const minutes = (Number(closed) - Number(opened)) / 60000;
       return minutes.toFixed(2) + "m";
+    };
+    const humanDuration = (value) => {
+      const milliseconds = Number(value);
+      if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "—";
+      if (milliseconds >= 3600000) {
+        const totalMinutes = Math.floor(milliseconds / 60000);
+        return Math.floor(totalMinutes / 60) + "h " + String(totalMinutes % 60).padStart(2, "0") + "m";
+      }
+      if (milliseconds >= 60000) {
+        const totalSeconds = Math.floor(milliseconds / 1000);
+        return Math.floor(totalSeconds / 60) + "m " + String(totalSeconds % 60).padStart(2, "0") + "s";
+      }
+      if (milliseconds >= 1000) return (milliseconds / 1000).toFixed(1) + "s";
+      return Math.round(milliseconds) + "ms";
+    };
+    const formatDurationValue = (value) => {
+      if (value == null || value === "") return "—";
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? humanDuration(numeric) : String(value);
+    };
+    const lineLabels = ["down_big", "down_outer", "down_small", "down_inner", "mean", "up_inner", "up_small", "up_outer", "up_big"];
+    const lineRole = (role) => {
+      if (!role || !role.kind) return "unknown";
+      if (role.kind === "covered_by_target") {
+        return "covered-by-" + (lineLabels[role.target_line] || "line-" + role.target_line);
+      }
+      return role.kind.replaceAll("_", "-");
+    };
+    const lineIsCurrent = (plan) => plan.route_role && plan.route_role.kind === "current";
+    const lineEta = (plan) => {
+      if (plan.time_source === "current") return "now";
+      if (plan.time_source === "unavailable") return "unavailable";
+      return humanDuration(plan.estimated_time_ms);
+    };
+    const signedPercent = (value) => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "unavailable";
+      return (number >= 0 ? "+" : "") + number.toFixed(3) + "%";
+    };
+    const outcomeClass = (outcome) => outcome === "profitable" ? "positive" : "negative";
+    const predictionSummary = (event) => {
+      if (!event.prediction_outcome) return '<span class="subtle">no current prediction</span>';
+      const side = Number(event.prediction_side) > 0 ? "LONG" : Number(event.prediction_side) < 0 ? "SHORT" : "—";
+      const labels = {
+        reached_and_followed: "target reached",
+        not_reached_but_followed: "target reached · entry missed",
+        prediction_broken: "SL reached",
+        unresolved: "unresolved",
+      };
+      const outcome = labels[event.prediction_outcome] || String(event.prediction_outcome).replaceAll("_", " ");
+      const lockedOut = DATA.direction && ((DATA.direction === "long" && Number(event.prediction_side) < 0) ||
+        (DATA.direction === "short" && Number(event.prediction_side) > 0));
+      const lockText = lockedOut
+        ? '<span class="subtle prediction-lock-note">· ' + esc(String(DATA.direction).toUpperCase()) + '-only lock</span>'
+        : "";
+      const className = event.prediction_outcome === "prediction_broken" ? "negative" : "positive";
+      return '<span class="' + className + '">' + esc(side + " " + outcome) + " " +
+        esc(signedPercent(event.prediction_result_move_pct)) + '</span>' + lockText;
+    };
+    const directionalMove = (entry, level, side) => {
+      const e = Number(entry);
+      const l = Number(level);
+      const s = Number(side);
+      if (!Number.isFinite(e) || e <= 0 || !Number.isFinite(l) || !Number.isFinite(s) || ![1, -1].includes(s)) return null;
+      return (l - e) / e * 100 * s;
+    };
+    const currentPredictionMove = (event) => {
+      const side = Number(event.prediction_side || event.trade_direction || 0);
+      const targetMove = directionalMove(event.effective_entry_price, event.target_price, side);
+      const stopMove = directionalMove(event.effective_entry_price, event.stop_price, side);
+      if (targetMove == null && stopMove == null) return "not available";
+      const targetText = targetMove == null ? "target unavailable" : "target " + signedPercent(targetMove);
+      const stopText = stopMove == null ? "SL unavailable" : "SL " + signedPercent(stopMove);
+      return targetText + " · " + stopText;
+    };
+    const positionSummary = (event) => {
+      if (!event.position_outcome) return '<span class="subtle">no completed long position</span>';
+      const outcome = String(event.position_outcome).replaceAll("_", " ");
+      const exit = event.position_exit_reason
+        ? String(event.position_exit_reason).replaceAll("-", " ") : "exit";
+      return '<span class="' + outcomeClass(event.position_outcome) + '">' + esc(outcome) +
+        ' ' + esc(signedPercent(event.position_pnl_pct)) + '</span>' +
+        ' <span class="subtle">· MFE ' + esc(signedPercent(event.position_mfe_pct)) +
+        ' before ' + esc(exit) + '</span>';
+    };
+    const linePlanDetails = (event) => {
+      const plans = Array.isArray(event.line_plans) ? event.line_plans : [];
+      if (!plans.length) return "—";
+      const rows = plans.map((plan) => {
+        const current = lineIsCurrent(plan);
+        const lineName = lineLabels[plan.line_idx] || "line-" + plan.line_idx;
+        const movement = current ? "entry" : signedPercent(plan.move_pct);
+        const movementClass = current ? "" : Number(plan.move_pct) >= 0 ? "positive" : "negative";
+        const distance = current ? "entry" : Number(plan.distance_pct).toFixed(3) + "%";
+        const stop = plan.stop_loss_set ? Number(plan.stop_loss_pct).toFixed(3) + "%" : "not set";
+        return '<tr>' +
+          '<th scope="row">' + esc(lineName) + '</th>' +
+          '<td class="route-role">' + esc(lineRole(plan.route_role)) + '</td>' +
+          '<td class="' + movementClass + '">' + esc(movement) + '</td>' +
+          '<td>' + esc(distance) + '</td>' +
+          '<td>' + esc(stop) + '</td>' +
+          '<td>' + esc(lineEta(plan)) + '</td>' +
+          '<td>' + esc(String(plan.time_source || "unknown").replaceAll("_", "-")) + '</td>' +
+          '<td>' + Number(plan.historical_samples || 0) + '</td>' +
+          '</tr>';
+      }).join("");
+      const target = event.take_profit_name || event.target_name || "not selected";
+      const expectedText = event.expected_price_low != null
+        ? price(event.expected_price_low) + " .. " + price(event.expected_price_high)
+        : "not available";
+      const evidenceText = event.target_line == null
+        ? "no prediction"
+        : "history=" + event.history_scope +
+          " · context=" + event.context_samples +
+          " · next-line=" + event.next_line_crosses +
+          " · support/resistance=" + event.support_resistance_moves +
+          " · price-only=" + event.price_only_moves;
+      const ntps = Number(event.ntps);
+      const ntpsText = Number.isFinite(ntps) && ntps > 0 ? String(ntps) : "unavailable";
+      const possibleMoveBeforeSl = event.position_mfe_pct != null
+        ? signedPercent(event.position_mfe_pct) + " before " +
+          (event.position_exit_reason === "stop" ? "SL" : event.position_exit_reason === "target" ? "TP" : "exit")
+        : "no filled long position";
+      return '<div class="crossing-route">' +
+        '<div class="crossing-detail-title">' + plans.length +
+          ' line plans · target ' + esc(target) + '</div>' +
+        '<div class="line-plan-meta">' +
+          '<span><strong>Side:</strong> ' + esc(event.trade_direction > 0 ? "LONG" : event.trade_direction < 0 ? "SHORT" : "not selected") + '</span>' +
+          '<span><strong>Expected:</strong> ' + esc(expectedText) + '</span>' +
+          '<span><strong>Current prediction:</strong> ' + predictionSummary(event) + '</span>' +
+          '<span><strong>Prediction movement:</strong> ' + esc(currentPredictionMove(event)) + '</span>' +
+          '<span><strong>Long position:</strong> ' + positionSummary(event) + '</span>' +
+          '<span><strong>Possible move before SL:</strong> ' + esc(possibleMoveBeforeSl) + '</span>' +
+          '<span><strong>Historical evidence:</strong> ' + esc(evidenceText) + '</span>' +
+        '</div>' +
+        '<div class="table-wrap"><table class="line-plan-table"><thead><tr>' +
+          '<th>Line</th><th>Route role</th><th>Move</th><th>Distance</th><th>SL</th>' +
+          '<th>ETA</th><th>ETA source</th><th>Samples</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<div class="line-plan-note">Cascade speed: ' +
+          esc(event.cascade_speed_pct_per_min == null ? "unavailable" : Number(event.cascade_speed_pct_per_min).toFixed(3) + "%/min") +
+          ' · NTPS: ' + esc(ntpsText) + '</div>' +
+      '</div>';
     };
     const signedClass = (value) => Number(value) >= 0 ? "positive" : "negative";
     const percentFrom = (value, reference) => {
@@ -387,7 +636,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         ["Decision", [
           ["Pattern", "pattern"],
           ["Pattern steps", "pattern_steps"],
-          ["Pattern elapsed", "pattern_elapsed_ms"],
+          ["Pattern elapsed", "pattern_elapsed_ms", null, "duration"],
           ["Stair sequence", "stair_sequence"],
           ["Stair net price move", "stair_price_move_pct"],
           ["Stair favorable move", "stair_favorable_move_pct"],
@@ -430,7 +679,7 @@ const TEMPLATE: &str = r###"<!doctype html>
           ["Expected price", "expected_price"],
           ["Expected move", "expected_move_pct"],
           ["Favorable / adverse move", "favorable_move_pct", "adverse_move_pct"],
-          ["Estimated time", "eta_ms"],
+          ["Estimated time", "eta_ms", null, "duration"],
           ["Projection", "projection"],
         ]],
       ];
@@ -439,6 +688,8 @@ const TEMPLATE: &str = r###"<!doctype html>
           if (values[firstKey] == null && (!secondKey || values[secondKey] == null)) return "";
           const value = valueType === "level"
             ? formatLevel(firstKey, secondKey)
+            : valueType === "duration"
+              ? formatDurationValue(values[firstKey])
             : secondKey && values[secondKey] != null
               ? values[firstKey] + " / " + values[secondKey]
               : values[firstKey];
@@ -453,6 +704,7 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     document.getElementById("context").textContent =
       DATA.symbol_key + " · 1m history " + DATA.history_loaded_1m +
+      " · direction " + String(DATA.direction || "both").toUpperCase() +
       (DATA.latest_event_time_ms ? " · as of " + date(DATA.latest_event_time_ms) : "");
 
     const summarizeTrades = (rows) => {
@@ -532,20 +784,6 @@ const TEMPLATE: &str = r###"<!doctype html>
       const resistance = event.barrier_state + ":" + (event.barrier_line != null
         ? (event.barrier_line_name || event.barrier_line) + " @ " + price(event.barrier_price)
         : "na");
-      const expected = event.expected_price_low != null
-        ? price(event.expected_price_low) + ".." + price(event.expected_price_high) +
-          " (" + esc(event.direction > 0
-            ? (event.expected_price_high > event.mrc_max ? "above_mrc_max"
-              : event.expected_price_high < event.mrc_max ? "below_mrc_max" : "same_mrc_max")
-            : (event.expected_price_low < event.mrc_min ? "below_mrc_min"
-              : event.expected_price_low > event.mrc_min ? "above_mrc_min" : "same_mrc_min")) + ")"
-        : "—";
-      const realizedPrice = event.realized_price_low != null
-        ? price(event.realized_price_low) + ".." + price(event.realized_price_high)
-        : "—";
-      const targetRange = event.realized_target_low != null
-        ? price(event.realized_target_low) + ".." + price(event.realized_target_high)
-        : "—";
       const evidence = event.target_line == null
         ? "no prediction"
         : "history=" + event.history_scope +
@@ -561,21 +799,24 @@ const TEMPLATE: &str = r###"<!doctype html>
           " favorable=" + Number(event.stair_favorable_move_pct || 0).toFixed(3) + "%" +
           " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%"
         : "";
-      return '<tr><td>' + esc(date(event.time_ms)) + '</td><td>' + direction +
-        ' ' + esc(event.line_name) + '</td><td>' + price(event.market_price) +
-        '</td><td>' + price(event.mrc_min) + '..' + price(event.mrc_max) +
-        '</td><td>' + esc(learned) + '</td><td>' + esc(event.trade_direction > 0 ? "LONG" : "SHORT") +
-        '</td><td>' + esc(exits) + '</td><td>' + esc(resistance) +
-        '</td><td>' + expected + '</td><td>' + realizedPrice + '</td><td>' + targetRange +
-        '</td><td><code>' + esc(event.mrc_trace || "—") + '</code></td><td>' +
-        esc(evidence + (stair ? " " + stair : "")) + '</td></tr>';
+      const compactResult = predictionSummary(event) +
+        (event.position_outcome ? '<br><span class="subtle">LONG ' + positionSummary(event) + '</span>' : '');
+      return '<tr><td class="numeric">' + esc(date(event.time_ms)) + ' ' + shareMarkup("event", event) + '</td><td>' + direction +
+        ' ' + esc(event.line_name) + '</td><td class="numeric">' + price(event.market_price) +
+        '</td><td class="numeric">' + price(event.effective_entry_price) +
+        '</td><td>' + esc(learned) + '</td><td>' + esc(event.trade_direction > 0 ? "LONG" : event.trade_direction < 0 ? "SHORT" : "—") +
+        '</td><td>' + esc(exits) + '<br><span class="subtle">' + esc(resistance) + '</span></td>' +
+        '<td>' + compactResult + '</td></tr>' +
+        '<tr class="crossing-detail"><td colspan="8"><div class="crossing-detail-content">' +
+          linePlanDetails(event) +
+          '<div class="crossing-evidence">' +
+            '<span class="crossing-evidence-label">Historical evidence</span><span>' + esc(evidence + (stair ? " " + stair : "")) + '</span>' +
+          '</div>' +
+        '</div></td></tr>';
       }).join("");
       document.getElementById("crossings").innerHTML = selectedEvents.length
-        ? '<table><thead><tr><th>Time</th><th>Cross</th><th>Market price</th>' +
-          '<th>MRC min..max</th><th>Prediction</th>' +
-          '<th>Trade side</th><th>TP / SL lines</th><th>Resistance</th>' +
-          '<th>Expected price</th><th>Observed price low..high</th><th>Target MRC low..high</th>' +
-          '<th>MRC movement</th><th>Evidence</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
+        ? '<table class="crossing-table"><thead><tr><th>Time</th><th>Cross</th><th>Market price</th><th>Entry</th>' +
+          '<th>Prediction</th><th>Side</th><th>TP / SL</th><th>Prediction / long result</th></tr></thead><tbody>' + crossingRows + '</tbody></table>'
         : '<div class="subtle">No crossing observations for selected patterns</div>';
     };
 
@@ -707,7 +948,7 @@ const TEMPLATE: &str = r###"<!doctype html>
           const fees = Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0);
           const pnlClass = signedClass(trade.pnl_pct);
           const route = side + " " + trade.source_name + " → " + trade.target_name;
-          return '<tr><td>' + (index + 1) + '</td><td>' + esc(date(trade.closed_at)) +
+          return '<tr><td>' + (index + 1) + ' ' + shareMarkup("trade", trade) + '</td><td>' + esc(date(trade.closed_at)) +
             '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td><td>' +
             price(trade.entry_price) + '</td><td>' + price(trade.target_price) + '</td><td>' +
             price(trade.stop_price) + '</td><td>' + esc(trade.exit_reason) + '</td><td>' +
@@ -894,7 +1135,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         const route = side + " " + trade.source_name + " → " + trade.target_name;
         const pnlClass = signedClass(trade.pnl_pct);
         return '<tr>' +
-          '<td>' + (index + 1) + '</td>' +
+          '<td>' + (index + 1) + ' ' + shareMarkup("trade", trade) + '</td>' +
           '<td>' + esc(side) + '</td>' +
           '<td>' + esc(route) + '</td>' +
           '<td>' + esc(date(trade.opened_at)) + '</td>' +
@@ -919,7 +1160,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         const side = trade.side > 0 ? "LONG" : "SHORT";
         const route = side + " " + trade.source_name + " → " + trade.target_name;
         positionRows.push(
-          '<tr class="open"><td>open</td><td>' + esc(side) + '</td><td>' + esc(route) +
+          '<tr class="open"><td>open ' + shareMarkup("trade", trade) + '</td><td>' + esc(side) + '</td><td>' + esc(route) +
           '</td><td>' + esc(date(trade.opened_at)) + '</td><td>' + price(trade.entry_price) +
           '</td><td>' + price(trade.target_price) + '</td><td>' + price(trade.stop_price) +
           '</td><td>—</td><td>—</td><td>OPEN</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>' +
@@ -938,7 +1179,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       const outcomeClass = prediction.outcome === "prediction_broken" ? "negative"
         : prediction.outcome === "unresolved" ? "" : "positive";
       return '<tr>' +
-        '<td>' + (index + 1) + '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td>' +
+        '<td>' + (index + 1) + ' ' + shareMarkup("prediction", prediction) + '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td>' +
         '<td>' + esc(date(prediction.created_at)) + '</td><td>' + price(prediction.entry_price) + '</td>' +
         '<td>' + price(prediction.target_price) + '</td><td>' + price(prediction.stop_price) + '</td>' +
         '<td>' + esc(date(prediction.resolved_at)) + '</td><td>' + (prediction.filled ? "yes" : "no") + '</td>' +
@@ -951,7 +1192,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         formatReason(prediction.reason) + '</td></tr>';
     });
     document.getElementById("predictions").innerHTML = predictionRows.join("") ||
-      '<tr><td colspan="11" class="subtle">No selected predictions</td></tr>';
+      '<tr><td colspan="13" class="subtle">No selected predictions</td></tr>';
     };
 
     function drawChart() {
@@ -1077,6 +1318,26 @@ mod tests {
         assert!(html.contains("<canvas id=\"patterns-pnl-chart\"></canvas>"));
         assert!(html.contains("id=\"pattern-filter\""));
         assert!(html.contains("class=\"pattern-chip selected\""));
+        assert!(html.contains("class=\"copy-id\""));
+        assert!(html.contains("navigator.clipboard"));
+        assert!(html.contains("line plans"));
+        assert!(html.contains("covered_by_target"));
+        assert!(html.contains("line-plan-table"));
+        assert!(html.contains("crossing-detail"));
+        assert!(html.contains("crossing-route"));
+        assert!(html.contains("Current prediction"));
+        assert!(html.contains("Prediction / long result"));
+        assert!(html.contains("Possible move before SL"));
+        assert!(html.contains("position_mfe_pct"));
+        assert!(html.contains("max-width: 1880px"));
+        assert!(html.contains(".crossing-panel .table-wrap { overflow-x: visible; }"));
+        assert!(html.contains(".prediction-lock-note { display: block;"));
+        assert!(html.contains("box-sizing: border-box"));
+        assert!(
+            html.contains(".crossing-table { width: 100%; min-width: 0; table-layout: fixed; }")
+        );
+        assert!(!html.contains("min-width: 760px"));
+        assert!(!html.contains("Line probabilities / big break"));
         assert!(html.contains(">All</button>"));
         assert!(html.contains("Clear"));
         assert!(html.contains("Positions"));

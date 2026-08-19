@@ -14,7 +14,10 @@ const BASE_URL: &str = "https://okx.tg.trading.sinvoid.me/api/indicators";
 const BASE_HOST: &str = "okx.tg.trading.sinvoid.me";
 const BASE_FALLBACK_IP: &str = "65.109.35.177";
 const API_PAGE_LIMIT: usize = 200;
-const CACHE_VERSION: u32 = 1;
+// Bump when a cached row gains or changes a parsed indicator. Version 2 was
+// created before NTPS was populated from the nested ntps.Value API field, so
+// accepting it would keep reporting the old zero placeholder forever.
+const CACHE_VERSION: u32 = 3;
 const CACHE_DIRECTORY: &str = "./tmp/cache";
 const ROLLING_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
@@ -27,6 +30,8 @@ pub(crate) struct CandleRow {
     pub(crate) close: f64,
     pub(crate) gain: f64,
     pub(crate) buy_sell_gain: f64,
+    #[serde(default)]
+    pub(crate) ntps: i64,
     pub(crate) mrc: MrcBands,
 }
 
@@ -76,10 +81,13 @@ struct CacheDocument {
 }
 
 pub(crate) fn f64_or(obj: &Value, primary: &str, fallback: &str) -> f64 {
-    let parse = |v: &Value| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    };
+    fn parse(value: &Value) -> Option<f64> {
+        value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|s| s.parse::<f64>().ok()))
+            .or_else(|| value.get("Value").and_then(parse))
+            .or_else(|| value.get("value").and_then(parse))
+    }
     obj.get(primary)
         .and_then(parse)
         .or_else(|| obj.get(fallback).and_then(parse))
@@ -388,6 +396,11 @@ fn parse_candle(item: &Value) -> CandleRow {
     let candle = ind.get("candle").unwrap_or(ind);
     let mrc = ind.get("mrc_200").unwrap_or(&Value::Null);
     let volume = ind.get("volume_50").unwrap_or(&Value::Null);
+    let ntps = if item.get("ntps").is_some() {
+        f64_or(item, "ntps", "NTPS")
+    } else {
+        f64_or(ind, "ntps", "NTPS")
+    };
 
     CandleRow {
         time_ms: get_i64(item, "time"),
@@ -397,6 +410,7 @@ fn parse_candle(item: &Value) -> CandleRow {
         close: f64_or(candle, "Close", "close"),
         gain: f64_or(volume, "Gain", "gain"),
         buy_sell_gain: f64_or(volume, "BuySellGain", "buy_sell_gain"),
+        ntps: ntps.round() as i64,
         mrc: parse_mrc(mrc),
     }
 }

@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.96",
+          "module_version": "1.0.97",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.96"
+              "module_version": "1.0.97"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.96 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Primary rules can be selected as All, Stairs, or Outward. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. STAIRS_UP/DOWN and OUTWARD_CONTINUATION are primary entry authorities; FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, primary-outward, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
+          "description": "Start the 1.0.97 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Primary rules can be selected as All, Stairs, or Outward. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. STAIRS_UP/DOWN and OUTWARD_CONTINUATION are primary entry authorities; FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, primary-outward, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
           "name": "Start",
           "params": [
             {
@@ -127,12 +127,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.96",
+          "module_version": "1.0.97",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.96"
+              "module_version": "1.0.97"
             }
           }
         }
@@ -140,7 +140,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.96 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Primary rules can be selected as All, Stairs, or Outward. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. STAIRS_UP/DOWN and OUTWARD_CONTINUATION are primary entry authorities; FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, primary-outward, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
+          "description": "Start the 1.0.97 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Primary rules can be selected as All, Stairs, or Outward. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. STAIRS_UP/DOWN and OUTWARD_CONTINUATION are primary entry authorities; FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, primary-outward, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
           "name": "Start",
           "params": [
             {

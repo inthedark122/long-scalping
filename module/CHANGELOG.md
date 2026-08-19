@@ -1,5 +1,14 @@
 # Changelog
 
+# 1.0.97
+
+Current prediction and long-only evaluation release.
+
+- Separate the current prediction outcome from the previous completed movement trace.
+- Attach prediction side, fill state, target/SL result, result movement, and resolution time to each crossing.
+- Keep realized movement direction correct and expose current target/SL movement separately from filled-position MFE/MAE.
+- Improve long-only research output with per-line route information, cascade speed, NTPS, readable durations, and clearer prediction results.
+
 # 1.0.96
 
 State-machine primary pattern selection release.

@@ -16,3 +16,4 @@ pub mod state;
 mod stop_loss;
 
 pub use engine::run;
+pub use format::{fmt_duration_f64, fmt_duration_ms};

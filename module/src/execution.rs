@@ -1,6 +1,6 @@
 use crate::detection::mrc_pattern_classification;
 use crate::exit;
-use crate::format::{fmt_price_tick, tick_size};
+use crate::format::{fmt_duration_f64, fmt_duration_ms, fmt_price_tick, tick_size};
 use crate::model::IndicatorSnapshot;
 use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
@@ -77,7 +77,7 @@ fn open_note(
                         estimated_time_ms,
                     ..
                 } => format!(
-                    "{} pattern={} line_price={:.4} market_price={:.4} mrc_range={:.4}..{:.4} source_line={} predicted_target_line={} target={:.4} stop={:.4} cycle={} context_samples={} no_pullback={} reverted_line={} elapsed_ms={:?} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={} eta_ms={:.0}",
+                    "{} pattern={} line_price={:.4} market_price={:.4} mrc_range={:.4}..{:.4} source_line={} predicted_target_line={} target={:.4} stop={:.4} cycle={} context_samples={} no_pullback={} reverted_line={} elapsed={} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={} eta={}",
                     reason.label(),
                     pattern_kind,
                     price,
@@ -98,7 +98,11 @@ fn open_note(
                     reverted_line
                         .map(|line| crate::detection::mrc_crossing::LINE_LABELS[line as usize])
                         .unwrap_or("na"),
-                    pattern_elapsed_ms,
+                    pattern_elapsed_ms
+                        .iter()
+                        .map(|value| fmt_duration_ms(*value))
+                        .collect::<Vec<_>>()
+                        .join(","),
                     pattern_samples,
                     target_samples,
                     movement_samples,
@@ -118,7 +122,7 @@ fn open_note(
                         *expected_price_low,
                         *expected_price_high,
                     ),
-                    estimated_time_ms
+                    fmt_duration_f64(*estimated_time_ms)
                 ),
             })
             .unwrap_or_else(|| "none".to_string()),

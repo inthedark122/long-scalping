@@ -1,8 +1,8 @@
 use long_scalping::detection::cascade::{
     movement_history, recent_average_size, recent_average_size_percent, recent_movement_distance,
     recent_movement_distance_percent, recent_signed_total_size, recent_signed_total_size_percent,
-    recent_total_size, recent_total_size_percent, update_from_candle, CascadeMovement,
-    CascadeState, MovementPhase,
+    recent_total_size, recent_total_size_percent, update_from_candle, update_from_candle_at,
+    CascadeMovement, CascadeState, MovementPhase,
 };
 use long_scalping::model::Candle;
 
@@ -27,6 +27,16 @@ fn movement_starts_then_builds() {
         MovementPhase::Building | MovementPhase::Mature
     ));
     assert!(second.dir > 0);
+}
+
+#[test]
+fn timestamped_cascade_reports_movement_speed() {
+    let mut state = CascadeState::default();
+    let _ = update_from_candle_at(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1_000);
+    let signal = update_from_candle_at(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 61_000);
+
+    assert_eq!(signal.elapsed_ms, 60_000);
+    assert_eq!(signal.speed_pct_per_min, Some(3.5 / 102.5 * 100.0));
 }
 
 #[test]

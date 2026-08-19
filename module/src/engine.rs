@@ -1,5 +1,7 @@
 use crate::debug;
-use crate::detection::{decision, mrc_crossing, mrc_pattern_classification, vlines};
+use crate::detection::{
+    cascade, decision, mrc_crossing, mrc_pattern_classification, mrc_prediction, vlines,
+};
 use crate::execution;
 use crate::exit;
 use crate::market_data;
@@ -195,6 +197,8 @@ fn handle_signal(
         state.mrc_crossing_model.decision_state.reset();
         state.vlines = [crate::state::VLineState::default(); 9];
         state.mrc_crossing = crate::state::MrcCrossingState::default();
+        state.cascade = crate::detection::cascade::CascadeState::default();
+        state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
         if let Some(now_ms) = input
             .sug_info
             .as_ref()
@@ -589,6 +593,12 @@ fn refresh_indicators(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     if is_init || timeframes.contains(&TF_1M) {
+        let now_ms = input
+            .sug_info
+            .as_ref()
+            .map(|sug_info| sug_info.time.max(0) as u64)
+            .unwrap_or_default();
+        state.cascade_signal = cascade::update_at(&mut state.cascade, &snapshot.tf1m, now_ms);
         state.volume_gain.observe(
             state.bar_1m,
             snapshot.tf1m.volume_gain,
@@ -663,7 +673,15 @@ fn process_realtime(
         .mrc_risk
         .observe(&snapshot, input.price, sug_info.time as u64);
 
-    let mrc_observation = mrc_crossing::observe_with_forecast(
+    let prediction_context = mrc_prediction::MrcPredictionContext {
+        ntps: sug_info.indicator.ntps,
+        ntps_fast_time_ms: sug_info.indicator.ntps_fast_time,
+        cascade_direction: state.cascade_signal.dir,
+        cascade_speed_pct_per_min: state.cascade_signal.speed_pct_per_min,
+        cascade_strength: state.cascade_signal.strength,
+        cascade_stretched: state.cascade_signal.stretched,
+    };
+    let mrc_observation = mrc_crossing::observe_with_forecast_context(
         &mut state.mrc_crossing_model,
         &mrc_events,
         snapshot.tf1m.mrc.lines(),
@@ -676,10 +694,15 @@ fn process_realtime(
         ),
         input.price,
         sug_info.time as u64,
+        prediction_context,
     );
 
     state.direction_source = "pattern-selector".to_string();
-    state.direction_reason = mrc_observation
+    let selected_analysis = mrc_observation
+        .forecast
+        .as_ref()
+        .or_else(|| mrc_observation.events.last());
+    let selected_pattern_reason = mrc_observation
         .selected_pattern
         .map(|pattern| pattern.as_str().to_string())
         .unwrap_or_else(|| {
@@ -688,6 +711,15 @@ fn process_realtime(
                 .map(|reason| format!("wait:{reason:?}"))
                 .unwrap_or_else(|| "no-candidate".to_string())
         });
+    state.direction_reason = selected_analysis
+        .map(|analysis| {
+            format!(
+                "{} {}",
+                selected_pattern_reason,
+                mrc_crossing::line_plan_summary(analysis)
+            )
+        })
+        .unwrap_or(selected_pattern_reason);
     let mrc_reason_direction = mrc_observation
         .entry
         .as_ref()

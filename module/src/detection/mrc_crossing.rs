@@ -1,7 +1,9 @@
 use crate::detection::decision::CandidateView;
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
 use crate::detection::mrc_pattern_classification::{self, MrcPatternKind};
+use crate::detection::mrc_prediction;
 use crate::detection::vlines::MrcCrossEvent;
+use crate::format::fmt_duration_f64;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
 };
@@ -144,6 +146,9 @@ pub struct MrcPrediction {
     pub target_line: u8,
     pub samples: u32,
     pub stats: MrcForecastStats,
+    /// Route statistics for every destination line from the current source.
+    /// These are execution timing/movement inputs, not probabilities.
+    pub line_stats: [MrcForecastStats; mrc_prediction::MRC_LINE_COUNT],
     pub next_line_crosses: u32,
     pub support_resistance_moves: u32,
     pub price_only_moves: u32,
@@ -317,9 +322,11 @@ fn record_movement(
     } else {
         stats.price_only_count = stats.price_only_count.saturating_add(1);
     }
-    let successful_move = favorable > adverse.abs();
-    stats.outcome_pct_sum += if successful_move { favorable } else { adverse };
-    if successful_move {
+    let Some((_, outcome_pct)) = mrc_cross_analysis::movement_outcome(favorable, adverse) else {
+        return;
+    };
+    stats.outcome_pct_sum += outcome_pct;
+    if favorable > adverse.abs() {
         stats.success_count = stats.success_count.saturating_add(1);
     } else {
         stats.failure_count = stats.failure_count.saturating_add(1);
@@ -578,6 +585,7 @@ fn predict_for_pattern(
         target,
         total,
         stats,
+        line_stats,
         next_line_crosses,
         support_resistance_moves,
         price_only_moves,
@@ -623,11 +631,14 @@ fn predict_for_pattern(
         } else {
             return None;
         };
+        let mut line_stats = [MrcForecastStats::default(); mrc_prediction::MRC_LINE_COUNT];
+        line_stats[target as usize] = stats;
         (
             pattern_direction,
             target,
             total,
             stats,
+            line_stats,
             evidence.continuation.count,
             evidence.rejection.count,
             evidence.neutral.count,
@@ -658,6 +669,7 @@ fn predict_for_pattern(
             target,
             total,
             stats,
+            routes,
             next_line_crosses,
             support_resistance_moves,
             price_only_moves,
@@ -685,6 +697,7 @@ fn predict_for_pattern(
         target_line: target,
         samples: total,
         stats,
+        line_stats,
         next_line_crosses,
         support_resistance_moves,
         price_only_moves,
@@ -718,6 +731,91 @@ pub fn price_projection(
     } else {
         "same_mrc_min"
     }
+}
+
+fn line_role_summary(role: mrc_prediction::MrcLineRole) -> String {
+    match role {
+        mrc_prediction::MrcLineRole::CoveredByTarget { target_line } => format!(
+            "covered-by={}",
+            LINE_LABELS
+                .get(target_line as usize)
+                .copied()
+                .unwrap_or("na")
+        ),
+        _ => role.as_str().to_string(),
+    }
+}
+
+/// Compact live/debug representation of the per-line execution plan.
+pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
+    let plans = analysis
+        .line_plans
+        .iter()
+        .map(|plan| {
+            let is_current = matches!(plan.route_role, mrc_prediction::MrcLineRole::Current);
+            let eta = match plan.time_source {
+                mrc_prediction::MrcLineTimeSource::Current => "now".to_string(),
+                mrc_prediction::MrcLineTimeSource::Unavailable => "unavailable".to_string(),
+                _ => fmt_duration_f64(plan.estimated_time_ms),
+            };
+            let movement = if is_current {
+                "entry".to_string()
+            } else {
+                format!("{:+.3}%", plan.move_pct)
+            };
+            let distance = if is_current {
+                "entry".to_string()
+            } else {
+                format!("{:.3}%", plan.distance_pct)
+            };
+            let stop = if plan.stop_loss_set {
+                format!("{:.3}%", plan.stop_loss_pct)
+            } else {
+                "not-set".to_string()
+            };
+            format!(
+                "{}:move={}:distance={}:sl={}:eta={}({};{};samples={})",
+                LINE_LABELS
+                    .get(plan.line_idx as usize)
+                    .copied()
+                    .unwrap_or("na"),
+                movement,
+                distance,
+                stop,
+                eta,
+                line_role_summary(plan.route_role),
+                plan.time_source.as_str(),
+                plan.historical_samples,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let ntps = analysis
+        .line_plans
+        .iter()
+        .find(|plan| plan.ntps > 0)
+        .map(|plan| plan.ntps.to_string())
+        .unwrap_or_else(|| "unavailable".to_string());
+    format!(
+        "line_plans=[{}] ntps={} ntps_fast={} cascade_dir={} cascade_speed_pct_min={:.3}",
+        plans,
+        ntps,
+        analysis
+            .line_plans
+            .iter()
+            .any(|plan| plan.ntps_fast_time_ms.is_some()),
+        analysis
+            .line_plans
+            .iter()
+            .find(|plan| plan.cascade_direction != 0)
+            .map(|plan| plan.direction)
+            .unwrap_or(0),
+        analysis
+            .line_plans
+            .iter()
+            .find_map(|plan| plan.cascade_speed_pct_per_min)
+            .unwrap_or(0.0),
+    )
 }
 
 fn append_history_event(state: &mut MrcCrossingModel, event: &MrcCrossEvent) {
@@ -803,7 +901,15 @@ pub fn observe_with_context(
     crossing: &MrcCrossingState,
     volume: (f64, f64, f64, f64),
 ) -> Observation {
-    observe_events(state, events, lines, crossing, volume, None)
+    observe_events(
+        state,
+        events,
+        lines,
+        crossing,
+        volume,
+        None,
+        mrc_prediction::MrcPredictionContext::default(),
+    )
 }
 
 /// Observe new crossings and, when there is no fresh crossing, evaluate the
@@ -819,6 +925,28 @@ pub fn observe_with_forecast(
     current_price: f64,
     now_ms: u64,
 ) -> Observation {
+    observe_with_forecast_context(
+        state,
+        events,
+        lines,
+        crossing,
+        volume,
+        current_price,
+        now_ms,
+        mrc_prediction::MrcPredictionContext::default(),
+    )
+}
+
+pub fn observe_with_forecast_context(
+    state: &mut MrcCrossingModel,
+    events: &[MrcCrossEvent],
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    current_price: f64,
+    now_ms: u64,
+    context: mrc_prediction::MrcPredictionContext,
+) -> Observation {
     observe_events(
         state,
         events,
@@ -826,6 +954,7 @@ pub fn observe_with_forecast(
         crossing,
         volume,
         Some((current_price, now_ms)),
+        context,
     )
 }
 
@@ -836,6 +965,7 @@ fn observe_events(
     crossing: &MrcCrossingState,
     volume: (f64, f64, f64, f64),
     forecast: Option<(f64, u64)>,
+    context: mrc_prediction::MrcPredictionContext,
 ) -> Observation {
     state.current_entry = None;
     let mut observation = Observation::default();
@@ -861,8 +991,14 @@ fn observe_events(
             let performance = &mut state.pattern_performance[prediction.pattern_kind.index()];
             performance.observe();
             observation.samples = observation.samples.max(prediction.samples);
-            let analysis =
-                mrc_cross_analysis::build(event, Some(&prediction), lines, crossing, volume);
+            let analysis = mrc_cross_analysis::build_with_context(
+                event,
+                Some(&prediction),
+                lines,
+                crossing,
+                volume,
+                context,
+            );
             let entry = analysis
                 .tradeable()
                 .then(|| {
@@ -902,17 +1038,19 @@ fn observe_events(
     if events.is_empty() {
         if let Some((current_price, now_ms)) = forecast {
             if let Some(event) = forecast_event(state, lines, current_price, now_ms) {
-                for prediction in predict_all(state) {
+                let predictions = predict_all(state);
+                for prediction in predictions {
                     let performance =
                         &mut state.pattern_performance[prediction.pattern_kind.index()];
                     performance.observe();
                     observation.samples = observation.samples.max(prediction.samples);
-                    let analysis = mrc_cross_analysis::build(
+                    let analysis = mrc_cross_analysis::build_with_context(
                         &event,
                         Some(&prediction),
                         lines,
                         crossing,
                         volume,
+                        context,
                     );
                     let forecast_allowed = (forecast_can_reach(&analysis)
                         || matches!(

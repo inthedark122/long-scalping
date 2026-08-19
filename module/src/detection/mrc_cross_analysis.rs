@@ -1,7 +1,8 @@
 use crate::detection::mrc_crossing::MrcPrediction;
 use crate::detection::mrc_pattern_classification::MrcPatternKind;
+use crate::detection::mrc_prediction::{self, MrcLinePlan, MrcPredictionContext};
 use crate::detection::vlines::MrcCrossEvent;
-use crate::state::{MrcCrossingState, MrcMovementSnapshot};
+use crate::state::{MrcCrossingState, MrcForecastStats, MrcMovementSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarrierState {
@@ -34,6 +35,8 @@ pub struct MrcCrossAnalysis {
     pub barrier_line: Option<u8>,
     pub barrier_price: Option<f64>,
     pub barrier_state: BarrierState,
+    /// Compact execution information for every MRC destination line.
+    pub line_plans: [MrcLinePlan; mrc_prediction::MRC_LINE_COUNT],
     pub target_line: Option<u8>,
     pub predicted_line_price: Option<f64>,
     pub trade_target_line: Option<u8>,
@@ -60,6 +63,7 @@ pub struct MrcCrossAnalysis {
     pub effective_entry_price: Option<f64>,
     pub predicted_end_price: Option<f64>,
     pub realized_duration_ms: Option<u64>,
+    pub realized_movement_direction: Option<i8>,
     pub realized_favorable_move_pct: Option<f64>,
     pub realized_adverse_move_pct: Option<f64>,
     pub realized_price_high: Option<f64>,
@@ -148,6 +152,21 @@ pub fn movement_percentages(movement: MrcMovementSnapshot) -> (f64, f64) {
     }
 }
 
+/// Classify a completed price trace using the same rule used by route
+/// statistics: a movement is profitable when its favorable excursion is
+/// larger than its absolute adverse excursion. The returned percentage is
+/// the excursion that determined the classification.
+pub fn movement_outcome(favorable_pct: f64, adverse_pct: f64) -> Option<(&'static str, f64)> {
+    if !favorable_pct.is_finite() || !adverse_pct.is_finite() {
+        return None;
+    }
+    if favorable_pct > adverse_pct.abs() {
+        Some(("profitable", favorable_pct))
+    } else {
+        Some(("negative", adverse_pct))
+    }
+}
+
 fn line_direction(from: u8, to: u8) -> i8 {
     match to.cmp(&from) {
         std::cmp::Ordering::Greater => 1,
@@ -233,13 +252,41 @@ pub fn build(
     crossing: &MrcCrossingState,
     volume: (f64, f64, f64, f64),
 ) -> MrcCrossAnalysis {
-    let (realized_duration_ms, realized_favorable_move_pct, realized_adverse_move_pct) = event
+    build_with_context(
+        event,
+        prediction,
+        lines,
+        crossing,
+        volume,
+        MrcPredictionContext::default(),
+    )
+}
+
+pub fn build_with_context(
+    event: &MrcCrossEvent,
+    prediction: Option<&MrcPrediction>,
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    context: MrcPredictionContext,
+) -> MrcCrossAnalysis {
+    let (
+        realized_duration_ms,
+        realized_movement_direction,
+        realized_favorable_move_pct,
+        realized_adverse_move_pct,
+    ) = event
         .completed_movement
         .map(|movement| {
             let (favorable, adverse) = movement_percentages(movement);
-            (Some(movement.duration_ms), Some(favorable), Some(adverse))
+            (
+                Some(movement.duration_ms),
+                Some(movement.direction),
+                Some(favorable),
+                Some(adverse),
+            )
         })
-        .unwrap_or((None, None, None));
+        .unwrap_or((None, None, None, None));
     let (
         realized_price_high,
         realized_price_low,
@@ -282,6 +329,7 @@ pub fn build(
         barrier_line,
         barrier_price: barrier_line.and_then(|line| lines.get(line as usize).copied()),
         barrier_state,
+        line_plans: [MrcLinePlan::default(); mrc_prediction::MRC_LINE_COUNT],
         target_line: None,
         predicted_line_price: None,
         trade_target_line: None,
@@ -305,6 +353,7 @@ pub fn build(
         effective_entry_price: None,
         predicted_end_price: None,
         realized_duration_ms,
+        realized_movement_direction,
         realized_favorable_move_pct,
         realized_adverse_move_pct,
         realized_price_high,
@@ -335,6 +384,18 @@ pub fn build(
         buy_sell_gain,
     };
 
+    let fallback_stop = mrc_stop_line(lines, event.line_idx, event.line, event.direction)
+        .and_then(|line| lines.get(line as usize).copied());
+    analysis.line_plans = mrc_prediction::build_line_plans(
+        lines,
+        event.line_idx,
+        event.line,
+        event.direction,
+        fallback_stop,
+        None,
+        [MrcForecastStats::default(); mrc_prediction::MRC_LINE_COUNT],
+        context,
+    );
     let Some(prediction) = prediction else {
         return analysis;
     };
@@ -364,9 +425,22 @@ pub fn build(
     let favorable_move_pct = prediction.stats.average_favorable_pct();
     let adverse_move_pct = prediction.stats.average_adverse_pct();
     let effective_move_pct = favorable_move_pct.filter(|value| value.is_finite() && *value > 0.0);
+    // A staircase entry is anchored to the line that produced the
+    // prediction. Do not shift it to the next inner line: that changes the
+    // setup's entry identity (for example, down_outer becomes down_small)
+    // and can make the stop/target pair describe a different movement than
+    // the one being traded. Other patterns continue to use the live market
+    // price as their entry reference.
+    let entry_price = if matches!(
+        prediction.pattern_kind,
+        MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
+    ) {
+        event.line
+    } else {
+        event.price
+    };
     let predicted_end_price = effective_move_pct
-        .map(|move_pct| event.line * (1.0 + trade_direction as f64 * move_pct / 100.0));
-    let entry_price = event.price;
+        .map(|move_pct| entry_price * (1.0 + trade_direction as f64 * move_pct / 100.0));
     // The learned movement is the trigger distance from the crossed line. If
     // that distance already reaches the predicted line, that line is the
     // entry barrier, not a profitable exit. Continue to the next line for
@@ -391,7 +465,7 @@ pub fn build(
         trade_target_line = trade_target_line.and_then(|line| adjacent_line(line, trade_direction));
     }
     let (expected_price_low, expected_price_high) = projected_price_range(
-        event.price,
+        entry_price,
         trade_direction,
         favorable_move_pct.unwrap_or(0.0),
         adverse_move_pct.unwrap_or(0.0),
@@ -422,6 +496,16 @@ pub fn build(
     analysis.effective_move_pct = effective_move_pct;
     analysis.effective_entry_price = Some(entry_price);
     analysis.predicted_end_price = predicted_end_price;
+    analysis.line_plans = mrc_prediction::build_line_plans(
+        lines,
+        event.line_idx,
+        entry_price,
+        trade_direction,
+        predicted_stop_price,
+        trade_target_line,
+        prediction.line_stats,
+        context,
+    );
     analysis.pattern = prediction.pattern.clone();
     analysis.pattern_samples = prediction.samples;
     analysis.context_samples = prediction.context_samples;

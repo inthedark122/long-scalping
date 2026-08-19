@@ -1,12 +1,27 @@
-use long_scalping::detection::mrc_cross_analysis::BarrierState;
-use long_scalping::detection::mrc_crossing::{self, MrcWaitReason};
+use long_scalping::detection::mrc_cross_analysis::{self, BarrierState};
+use long_scalping::detection::mrc_crossing::{self, MrcPrediction, MrcWaitReason};
 use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
 use long_scalping::detection::vlines::MrcCrossEvent;
 use long_scalping::model::EntryReason;
-use long_scalping::state::{MrcCrossingModel, MrcHistoryEvent, MrcMovementSnapshot};
+use long_scalping::state::{
+    MrcCrossingModel, MrcCrossingState, MrcForecastStats, MrcHistoryEvent, MrcMovementSnapshot,
+};
 
 fn lines() -> [f64; 9] {
     [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0]
+}
+
+#[test]
+fn movement_outcome_matches_route_statistics_rule() {
+    assert_eq!(
+        mrc_cross_analysis::movement_outcome(2.0, -1.0),
+        Some(("profitable", 2.0))
+    );
+    assert_eq!(
+        mrc_cross_analysis::movement_outcome(1.0, -2.0),
+        Some(("negative", -2.0))
+    );
+    assert_eq!(mrc_cross_analysis::movement_outcome(f64::NAN, 0.0), None);
 }
 
 fn event(line_idx: u8, now_ms: u64) -> MrcCrossEvent {
@@ -195,7 +210,7 @@ fn prediction_uses_observed_adjacent_transition_without_a_sample_gate() {
 }
 
 #[test]
-fn long_stop_stays_behind_source_when_fill_is_above_source() {
+fn stair_entry_stays_on_the_crossed_line_and_stop_stays_behind_entry() {
     let mut model = learned_model(3);
     let mut crossing = event(5, 40_000);
     crossing.price = 104.5;
@@ -209,7 +224,7 @@ fn long_stop_stays_behind_source_when_fill_is_above_source() {
         price, stop_price, ..
     } = entry;
 
-    assert_eq!(price, 104.5);
+    assert_eq!(price, 104.0);
     assert_eq!(stop_price, 100.0);
     assert_eq!(observation.events[0].stop_loss_line, Some(4));
     assert_ne!(observation.events[0].stop_loss_line, Some(5));
@@ -294,6 +309,89 @@ fn crossing_observation_keeps_market_price_and_mrc_range() {
     assert_eq!(mrc_min, 89.5);
     assert_eq!(mrc_max, 111.0);
     assert!(expected_price_low < expected_price_high);
+}
+
+fn stair_prediction(kind: MrcPatternKind, direction: i8, target_line: u8) -> MrcPrediction {
+    MrcPrediction {
+        pattern_kind: kind,
+        pattern_direction: direction,
+        pattern_steps: 3,
+        pattern_elapsed_ms: 7 * 60_000,
+        stair_sequence: if direction > 0 {
+            vec![5, 4, 5, 6, 5]
+        } else {
+            vec![5, 4, 5, 6, 5, 4, 3]
+        },
+        stair_price_move_pct: direction as f64,
+        stair_favorable_move_pct: 2.0,
+        stair_adverse_move_pct: 1.0,
+        pattern: vec![target_line],
+        elapsed_ms: vec![7 * 60_000],
+        target_line,
+        samples: 1,
+        stats: MrcForecastStats {
+            count: 1,
+            movement_samples: 1,
+            duration_sum_ms: 7 * 60_000,
+            favorable_pct_sum: 2.0,
+            adverse_pct_sum: 1.0,
+            outcome_pct_sum: 1.0,
+            success_count: 1,
+            ..Default::default()
+        },
+        line_stats: {
+            let mut stats = [MrcForecastStats::default(); 9];
+            stats[target_line as usize] = MrcForecastStats {
+                count: 1,
+                movement_samples: 1,
+                duration_sum_ms: 7 * 60_000,
+                favorable_pct_sum: 2.0,
+                adverse_pct_sum: 1.0,
+                outcome_pct_sum: 1.0,
+                success_count: 1,
+                ..Default::default()
+            };
+            stats
+        },
+        next_line_crosses: 1,
+        support_resistance_moves: 0,
+        price_only_moves: 0,
+        context_samples: 1,
+        failed_break_line: None,
+        failed_break_direction: 0,
+    }
+}
+
+#[test]
+fn staircase_entry_stays_at_the_crossed_line() {
+    let mut short_event = event(3, 40_000);
+    short_event.direction = -1;
+    let short = mrc_cross_analysis::build(
+        &short_event,
+        Some(&stair_prediction(MrcPatternKind::StairsDown, -1, 2)),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+    assert_eq!(short.market_price, 96.0);
+    assert_eq!(short.effective_entry_price, Some(96.0));
+    assert_eq!(short.target_price, Some(94.0));
+    assert_eq!(short.stop_price, Some(100.0));
+    assert!(short.tradeable());
+
+    let long_event = event(5, 50_000);
+    let long = mrc_cross_analysis::build(
+        &long_event,
+        Some(&stair_prediction(MrcPatternKind::StairsUp, 1, 6)),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+    assert_eq!(long.market_price, 104.0);
+    assert_eq!(long.effective_entry_price, Some(104.0));
+    assert_eq!(long.target_price, Some(106.0));
+    assert_eq!(long.stop_price, Some(100.0));
+    assert!(long.tradeable());
 }
 
 #[test]
@@ -793,9 +891,9 @@ fn forecast_enters_when_predicted_crossing_is_reached() {
         panic!("the learned route should be tradable before the next crossing");
     };
 
-    assert_eq!(price, 107.0);
+    assert_eq!(price, 105.0);
     assert_eq!((source_line, target_line), (5, 6));
-    assert_eq!(target_price, 112.0);
+    assert_eq!(target_price, 107.0);
     assert_eq!(stop_price, 104.0);
     assert!(observation.forecast.is_some());
     assert!(observation.events.is_empty());

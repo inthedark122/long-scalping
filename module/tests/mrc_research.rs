@@ -22,6 +22,7 @@ fn row(time_ms: i64, close: f64, high: f64, low: f64) -> CandleRow {
         close,
         gain: 0.0,
         buy_sell_gain: 1.0,
+        ntps: 0,
         mrc: MrcBands {
             down_big: 90.0,
             down_outer: 92.0,
@@ -55,6 +56,10 @@ fn research_retains_variable_length_event_history() {
         .all(|event| event.mrc_trace.contains("no_pullback=")
             && event.mrc_trace.contains("revert=")
             && event.mrc_trace.contains("move=")));
+    assert!(report
+        .events
+        .iter()
+        .any(|event| event.trace_outcome.is_some()));
     assert_eq!(report.pattern_performance.len(), 7);
     assert_eq!(report.parallel_pattern_trades.len(), 7);
 }

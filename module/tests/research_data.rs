@@ -3,7 +3,7 @@
 #[path = "../src/bin/research/data.rs"]
 mod data;
 
-use data::{cache_file_path, merge_rows, trim_rows_to_window, CandleRow};
+use data::{cache_file_path, f64_or, merge_rows, trim_rows_to_window, CandleRow};
 use long_scalping::model::MrcBands;
 use std::path::Path;
 
@@ -19,6 +19,7 @@ fn candle(time_ms: i64, close: f64) -> CandleRow {
         close,
         gain: 0.0,
         buy_sell_gain: 0.0,
+        ntps: 0,
         mrc: MrcBands::default(),
     }
 }
@@ -80,4 +81,13 @@ fn candle_rows_round_trip_through_cache_json() {
     let decoded: CandleRow = serde_json::from_str(&encoded).expect("deserialize candle");
 
     assert_eq!(decoded, original);
+}
+
+#[test]
+fn nested_ntps_value_is_parsed_instead_of_defaulting_to_zero() {
+    let indicators = serde_json::json!({
+        "ntps": { "Max": 34.0, "Min": 32.0, "Value": 33.1666666667 }
+    });
+
+    assert_eq!(f64_or(&indicators, "ntps", "NTPS"), 33.1666666667);
 }
