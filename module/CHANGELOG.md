@@ -1,5 +1,14 @@
 # Changelog
 
+# 1.0.101
+
+Cascade limit-entry execution fix and stale default cleanup.
+
+- Keep `cap_init` default at 50% in the module, strategy metadata, and tracked bot-group configuration.
+- Emit the first cascade entry as a real limit position open so staged orders can be attached after the first fill.
+- Keep additional cascade entry legs as standing orders and preserve the one-budget, up-to-three-leg design.
+- Remote long-only stairs/limit backtest on the common 10k window: 197 positions, 109 wins, 88 losses, gross -15.3439, fees 10.5769, self-calculated net -25.9208; not profitable yet.
+
 # 1.0.100
 
 Cascade-driven stairs execution release.

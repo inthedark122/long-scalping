@@ -66,7 +66,7 @@ run_bot_group_backtest(29,
   action_config={
     signal_action_code:"start", margin:10, leverage:100,
     trigger:{type:"Infinity"},
-    action_params:{cap_init:2, trading_amount:50, min_tp_percent:0,
+    action_params:{cap_init:50, trading_amount:50, min_tp_percent:0,
       min_sl_percent:0, risk_target_percent:0, required_samples:3,
       entry_type:1}
   })

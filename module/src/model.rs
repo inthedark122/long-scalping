@@ -91,7 +91,7 @@ pub struct Config {
 }
 
 fn default_cap_init() -> f64 {
-    2.0
+    50.0
 }
 
 fn default_trading_amount() -> f64 {

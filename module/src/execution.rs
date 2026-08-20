@@ -34,7 +34,8 @@ fn cascade_entry_orders(
     total_amount: f64,
     entry_price: f64,
     stop_price: f64,
-) -> Option<(Vec<ModulePlaceOrder>, Vec<String>)> {
+    first_note: &str,
+) -> Option<(ModuleOpenPosition, Vec<ModulePlaceOrder>, Vec<String>)> {
     if state.cfg.entry_type != EntryType::Limit
         || !state.cascade_signal.multi_order_ready()
         || !matches!(side, PositionState::Long | PositionState::Short)
@@ -115,8 +116,14 @@ fn cascade_entry_orders(
             .unwrap_or(1),
     );
     let prices = &distinct_prices[..count];
-    let mut orders = Vec::with_capacity(count);
-    let mut marks = Vec::with_capacity(count);
+    // The first leg must be a real open position. `place_orders` are buffered
+    // by the host until a position exists, so emitting all three legs there
+    // would leave a brand-new strategy with only buffered orders and no way
+    // to create the initial position. The remaining legs are flushed to that
+    // position after the first limit order fills.
+    let mut first_open = None;
+    let mut orders = Vec::with_capacity(count.saturating_sub(1));
+    let mut marks = Vec::with_capacity(count.saturating_sub(1));
     let mut remaining = total_amount;
     for (index, price) in prices.iter().copied().enumerate() {
         let amount = if index + 1 == count {
@@ -128,6 +135,10 @@ fn cascade_entry_orders(
             continue;
         }
         remaining = (remaining - amount).max(0.0);
+        if index == 0 {
+            first_open = Some(limit_open(direction, amount, price, first_note));
+            continue;
+        }
         let mark = format!(
             "cascade-entry-{}-{}",
             if direction == Direction::Long {
@@ -146,7 +157,7 @@ fn cascade_entry_orders(
             Some(&format!("cascade-entry stage={}/{}", index + 1, count)),
         ));
     }
-    (!orders.is_empty()).then_some((orders, marks))
+    first_open.map(|first_open| (first_open, orders, marks))
 }
 
 fn open_note(
@@ -722,7 +733,21 @@ pub fn evaluate_with_mrc(
             });
         }
     }
-    if let Some((entry_orders, entry_marks)) = cascade_entry_orders(
+    let cascade_note = open_note(
+        match entry_side {
+            PositionState::Long => Direction::Long,
+            PositionState::Short => Direction::Short,
+            PositionState::Flat => Direction::Both,
+        },
+        amount,
+        order_price,
+        input.price,
+        tick_size(input),
+        decision,
+        state,
+        sizing,
+    );
+    if let Some((first_open, entry_orders, entry_marks)) = cascade_entry_orders(
         input,
         state,
         entry_side,
@@ -733,10 +758,12 @@ pub fn evaluate_with_mrc(
                 .map(|plan| plan.stop_loss.price())
                 .unwrap_or(0.0)
         }),
+        &cascade_note,
     ) {
         let previous_marks = std::mem::replace(&mut state.cascade_entry_marks, entry_marks);
         state.pending_entry_bar = Some(state.bar_1m);
         return finish(ExecutionResult {
+            open_positions: vec![first_open],
             entry_orders,
             cancel_orders: previous_marks,
             ..Default::default()
