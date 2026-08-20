@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use long_scalping::{
+    detection::cascade::{CascadeSignal, MovementPhase},
     engine::run,
     model::{EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState},
     state::{EngineState, PositionRuntime},
@@ -207,6 +208,53 @@ fn new_position_uses_mrc_entry_reason_exits() {
     assert_eq!(state.position.take_profit, 106.0);
     assert_eq!(state.position.stop_loss, 97.0);
     assert_eq!(state.position.exit_mode, ExitMode::Fixed);
+}
+
+#[test]
+fn cascade_position_uses_up_to_three_reduce_only_take_profits() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.cascade_signal = CascadeSignal {
+        dir: 1,
+        phase: MovementPhase::Building,
+        speed_pct_per_min: Some(0.8),
+        potential_move_pct: Some(5.0),
+        ..Default::default()
+    };
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
+
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 10.0,
+                pnl: 0.0,
+                qty: 0.1,
+            }),
+            short: None,
+        },
+    );
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 0.1,
+    };
+
+    let output = run(&new_position, &mut state);
+
+    assert_eq!(output.place_orders.len(), 3);
+    assert_eq!(
+        output
+            .place_orders
+            .iter()
+            .map(|order| order.mark.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tp-long-1", "tp-long-2", "tp-long-3"]
+    );
+    assert!(output.place_orders.iter().all(|order| order.reduce_only));
+    assert_eq!(output.cancel_orders, vec!["tp-long"]);
+    assert!(state.cascade_exit_orders);
 }
 
 #[test]

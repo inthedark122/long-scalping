@@ -7,7 +7,6 @@ use crate::exit;
 use crate::market_data;
 use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
 use crate::order_manager;
-use crate::orders::{tp_limit_order, tp_mark};
 use crate::risk;
 use crate::state::{
     dir_to_position, direction_sign, sync_position_state, EngineState, PositionRuntime,
@@ -199,6 +198,8 @@ fn handle_signal(
         state.mrc_crossing = crate::state::MrcCrossingState::default();
         state.cascade = crate::detection::cascade::CascadeState::default();
         state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
+        state.cascade_entry_marks.clear();
+        state.cascade_exit_orders = false;
         if let Some(now_ms) = input
             .sug_info
             .as_ref()
@@ -409,7 +410,7 @@ fn handle_new_position(
     };
     let plan = exit::entry_exit_plan(state, &snapshot, entry_price, side);
     let mut tp_orders = Vec::new();
-    let order_mark = tp_mark(direction);
+    let mut cancel_orders = Vec::new();
     if let Some(plan) = plan {
         state.position.exit_mode = ExitMode::Fixed;
         state.position.take_profit = plan.take_profit.price();
@@ -422,19 +423,23 @@ fn handle_new_position(
             .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
             .unwrap_or(0.0);
         if qty > 0.0 {
-            let note = Some(plan.take_profit.order_note());
-            tp_orders.push(tp_limit_order(
-                direction,
+            let note = plan.take_profit.order_note();
+            (tp_orders, cancel_orders) = exit::take_profit_orders(
+                input,
+                state,
+                side,
                 qty,
+                entry_price,
                 plan.take_profit.price(),
-                &order_mark,
-                note.as_deref(),
-            ));
+                Some(&note),
+                state.cascade_signal.multi_order_ready(),
+            );
         }
     }
 
     ModuleOutput {
         place_orders: tp_orders,
+        cancel_orders,
         debug: format!(
             "new-position {:?} {}",
             direction,
@@ -462,7 +467,11 @@ fn handle_finish_position(
         state.pending_entry_bar = None;
         state.mrc_crossing_model.last_plan_key = None;
     }
+    let mut cancel_orders = exit::all_tp_marks(direction);
+    cancel_orders.extend(std::mem::take(&mut state.cascade_entry_marks));
+    state.cascade_exit_orders = false;
     ModuleOutput {
+        cancel_orders,
         debug: format!("finish {:?} pnl={:.4}", direction, pnl),
         ..Default::default()
     }
@@ -674,12 +683,16 @@ fn process_realtime(
         .observe(&snapshot, input.price, sug_info.time as u64);
 
     let prediction_context = mrc_prediction::MrcPredictionContext {
+        cascade_enabled: true,
         ntps: sug_info.indicator.ntps,
         ntps_fast_time_ms: sug_info.indicator.ntps_fast_time,
         cascade_direction: state.cascade_signal.dir,
         cascade_speed_pct_per_min: state.cascade_signal.speed_pct_per_min,
         cascade_strength: state.cascade_signal.strength,
         cascade_stretched: state.cascade_signal.stretched,
+        cascade_phase: state.cascade_signal.phase,
+        cascade_potential_move_pct: state.cascade_signal.potential_move_pct,
+        cascade_adverse_move_pct: state.cascade_signal.adverse_move_pct,
     };
     let mrc_observation = mrc_crossing::observe_with_forecast_context(
         &mut state.mrc_crossing_model,
@@ -734,7 +747,7 @@ fn process_realtime(
         .unwrap_or_else(|| mrc_crossing::market_state(state.mrc_crossing_model.last_direction));
     let entry_gate = {
         let mut gate = mrc_crossing::entry_gate(&state.mrc_crossing_model);
-        if let Some(reason) = mrc_observation.entry {
+        if let Some(reason) = mrc_observation.entry.clone() {
             let direction = match entry_direction {
                 crate::model::MarketState::Long => 1,
                 crate::model::MarketState::Short => -1,
@@ -756,13 +769,9 @@ fn process_realtime(
                 mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
             );
             if valid {
-                let analysis_note = mrc_observation
-                        .forecast
-                        .as_ref()
-                        .or_else(|| mrc_observation.events.last())
-                        .map(|event| {
+                let analysis_note = selected_analysis.map(|event| {
                             format!(
-                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
+                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
                                 mrc_observation.forecast.is_some(),
                                 event
                                     .pattern_kind
@@ -784,6 +793,40 @@ fn process_realtime(
                                 event.stair_price_move_pct,
                                 event.stair_favorable_move_pct,
                                 event.stair_adverse_move_pct,
+                                event
+                                    .staircase_lifecycle
+                                    .map(|value| value.as_str())
+                                    .unwrap_or("na"),
+                                event
+                                    .staircase_transition
+                                    .map(|value| value.as_str())
+                                    .unwrap_or("na"),
+                                event
+                                    .staircase_protected_line
+                                    .and_then(|line| mrc_crossing::LINE_LABELS.get(line as usize))
+                                    .copied()
+                                    .unwrap_or("na"),
+                                event
+                                    .staircase_extreme_line
+                                    .and_then(|line| mrc_crossing::LINE_LABELS.get(line as usize))
+                                    .copied()
+                                    .unwrap_or("na"),
+                                event.cascade_enabled,
+                                event.cascade_direction,
+                                event
+                                    .cascade_speed_pct_per_min
+                                    .map(|value| format!("{value:.4}"))
+                                    .unwrap_or_else(|| "na".to_string()),
+                                event.cascade_phase.as_str(),
+                                event
+                                    .cascade_potential_move_pct
+                                    .map(|value| format!("{value:.4}"))
+                                    .unwrap_or_else(|| "na".to_string()),
+                                event
+                                    .cascade_adverse_move_pct
+                                    .map(|value| format!("{value:.4}"))
+                                    .unwrap_or_else(|| "na".to_string()),
+                                event.cascade_trade_state.as_str(),
                                 event.barrier_state.as_str(),
                                 event
                                     .barrier_line
@@ -879,11 +922,13 @@ fn process_realtime(
     );
     let execution = execution.unwrap_or_default();
 
+    let mut place_orders = execution.entry_orders;
+    place_orders.extend(execution.tp_orders);
     ModuleOutput {
         open_positions: execution.open_positions,
         close_positions: execution.close_positions,
         update_positions: execution.update_positions,
-        place_orders: execution.tp_orders,
+        place_orders,
         cancel_orders: execution.cancel_orders,
         debug,
         ..Default::default()

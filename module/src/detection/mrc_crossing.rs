@@ -1,6 +1,8 @@
 use crate::detection::decision::CandidateView;
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
-use crate::detection::mrc_pattern_classification::{self, MrcPatternKind};
+use crate::detection::mrc_pattern_classification::{
+    self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+};
 use crate::detection::mrc_prediction;
 use crate::detection::vlines::MrcCrossEvent;
 use crate::format::fmt_duration_f64;
@@ -141,6 +143,10 @@ pub struct MrcPrediction {
     pub stair_price_move_pct: f64,
     pub stair_favorable_move_pct: f64,
     pub stair_adverse_move_pct: f64,
+    pub staircase_lifecycle: Option<StaircaseLifecycle>,
+    pub staircase_transition: Option<StaircaseTransition>,
+    pub staircase_protected_line: Option<u8>,
+    pub staircase_extreme_line: Option<u8>,
     pub pattern: Vec<u8>,
     pub elapsed_ms: Vec<u64>,
     pub target_line: u8,
@@ -550,6 +556,8 @@ fn select_candidate(
             realized_favorable_pct: candidate.analysis.realized_favorable_move_pct,
             realized_adverse_pct: candidate.analysis.realized_adverse_move_pct,
             market_price: candidate.analysis.market_price,
+            staircase_lifecycle: candidate.analysis.staircase_lifecycle,
+            staircase_transition: candidate.analysis.staircase_transition,
         })
         .collect::<Vec<_>>();
     let result = state.decision_state.choose_with_direction_lock(
@@ -703,6 +711,10 @@ fn predict_for_pattern(
         stair_price_move_pct: pattern.price_move_pct,
         stair_favorable_move_pct: pattern.favorable_move_pct,
         stair_adverse_move_pct: pattern.adverse_move_pct,
+        staircase_lifecycle: pattern.staircase_lifecycle,
+        staircase_transition: pattern.staircase_transition,
+        staircase_protected_line: pattern.staircase_protected_line,
+        staircase_extreme_line: pattern.staircase_extreme_line,
         pattern: cycle,
         elapsed_ms: cycle_elapsed_ms,
         target_line: target,
@@ -808,7 +820,7 @@ pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
         .map(|plan| plan.ntps.to_string())
         .unwrap_or_else(|| "unavailable".to_string());
     format!(
-        "line_plans=[{}] ntps={} ntps_fast={} cascade_dir={} cascade_speed_pct_min={:.3}",
+        "line_plans=[{}] ntps={} ntps_fast={} cascade_dir={} cascade_speed_pct_min={:.3} cascade_phase={} cascade_potential={} cascade_adverse={} cascade_state={}",
         plans,
         ntps,
         analysis
@@ -819,13 +831,23 @@ pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
             .line_plans
             .iter()
             .find(|plan| plan.cascade_direction != 0)
-            .map(|plan| plan.direction)
+            .map(|plan| plan.cascade_direction)
             .unwrap_or(0),
         analysis
             .line_plans
             .iter()
             .find_map(|plan| plan.cascade_speed_pct_per_min)
             .unwrap_or(0.0),
+        analysis.cascade_phase.as_str(),
+        analysis
+            .cascade_potential_move_pct
+            .map(|value| format!("{value:.3}%"))
+            .unwrap_or_else(|| "na".to_string()),
+        analysis
+            .cascade_adverse_move_pct
+            .map(|value| format!("{value:.3}%"))
+            .unwrap_or_else(|| "na".to_string()),
+        analysis.cascade_trade_state.as_str(),
     )
 }
 

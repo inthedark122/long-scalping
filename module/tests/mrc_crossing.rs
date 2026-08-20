@@ -1,6 +1,8 @@
+use long_scalping::detection::cascade::{CascadeTradeState, MovementPhase};
 use long_scalping::detection::mrc_cross_analysis::{self, BarrierState};
 use long_scalping::detection::mrc_crossing::{self, MrcPrediction, MrcWaitReason};
-use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
+use long_scalping::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle};
+use long_scalping::detection::mrc_prediction::MrcPredictionContext;
 use long_scalping::detection::vlines::MrcCrossEvent;
 use long_scalping::model::EntryReason;
 use long_scalping::state::{
@@ -325,6 +327,10 @@ fn stair_prediction(kind: MrcPatternKind, direction: i8, target_line: u8) -> Mrc
         stair_price_move_pct: direction as f64,
         stair_favorable_move_pct: 2.0,
         stair_adverse_move_pct: 1.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
         pattern: vec![target_line],
         elapsed_ms: vec![7 * 60_000],
         target_line,
@@ -392,6 +398,61 @@ fn staircase_entry_stays_at_the_crossed_line() {
     assert_eq!(long.target_price, Some(106.0));
     assert_eq!(long.stop_price, Some(100.0));
     assert!(long.tradeable());
+}
+
+#[test]
+fn invalidated_or_stalled_staircases_do_not_create_entries() {
+    let mut invalidated = stair_prediction(MrcPatternKind::StairsUp, 1, 6);
+    invalidated.staircase_lifecycle = Some(StaircaseLifecycle::Invalidated);
+    let invalidated_analysis = mrc_cross_analysis::build(
+        &event(5, 60_000),
+        Some(&invalidated),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+    assert!(!invalidated_analysis.tradeable());
+    assert!(!invalidated_analysis.forecast_tradeable());
+
+    let mut stalled = stair_prediction(MrcPatternKind::StairsUp, 1, 6);
+    stalled.staircase_lifecycle = Some(StaircaseLifecycle::Stalled);
+    let stalled_analysis = mrc_cross_analysis::build(
+        &event(5, 70_000),
+        Some(&stalled),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+    assert!(!stalled_analysis.tradeable());
+    assert!(!stalled_analysis.forecast_tradeable());
+}
+
+#[test]
+fn cascade_must_confirm_stair_direction_before_entry() {
+    let prediction = stair_prediction(MrcPatternKind::StairsUp, 1, 6);
+    let context = MrcPredictionContext {
+        cascade_enabled: true,
+        cascade_direction: -1,
+        cascade_speed_pct_per_min: Some(1.0),
+        cascade_phase: MovementPhase::Building,
+        cascade_potential_move_pct: Some(5.0),
+        cascade_adverse_move_pct: Some(0.2),
+        ..Default::default()
+    };
+    let analysis = mrc_cross_analysis::build_with_context(
+        &event(5, 80_000),
+        Some(&prediction),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+        context,
+    );
+    assert_eq!(
+        analysis.cascade_trade_state,
+        CascadeTradeState::DirectionMismatch
+    );
+    assert!(!analysis.tradeable());
+    assert!(!analysis.forecast_tradeable());
 }
 
 #[test]

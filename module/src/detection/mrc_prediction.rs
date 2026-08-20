@@ -6,23 +6,53 @@
 //! history sample is still useful: its time is scaled from a nearby observed
 //! route or estimated from the current cascade speed.
 
+use crate::detection::cascade::{CascadeTradeState, MovementPhase};
 use crate::state::MrcForecastStats;
 
 pub const MRC_LINE_COUNT: usize = 9;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MrcPredictionContext {
+    /// Live execution explicitly enables the cascade gate. Keeping this
+    /// separate lets pure pattern/research callers request line plans without
+    /// pretending they have a live cascade signal.
+    pub cascade_enabled: bool,
     pub ntps: i64,
     pub ntps_fast_time_ms: Option<i64>,
     pub cascade_direction: i8,
     pub cascade_speed_pct_per_min: Option<f64>,
     pub cascade_strength: f64,
     pub cascade_stretched: bool,
+    pub cascade_phase: MovementPhase,
+    pub cascade_potential_move_pct: Option<f64>,
+    pub cascade_adverse_move_pct: Option<f64>,
 }
 
 impl MrcPredictionContext {
     pub fn fast(self) -> bool {
         self.ntps_fast_time_ms.is_some()
+    }
+
+    pub fn trade_state(
+        self,
+        direction: i8,
+        target_move_pct: f64,
+        stop_move_pct: f64,
+    ) -> CascadeTradeState {
+        crate::detection::cascade::CascadeSignal {
+            dir: self.cascade_direction,
+            speed_pct_per_min: self.cascade_speed_pct_per_min,
+            phase: self.cascade_phase,
+            potential_move_pct: self.cascade_potential_move_pct,
+            adverse_move_pct: self.cascade_adverse_move_pct,
+            ..Default::default()
+        }
+        .trade_state(
+            self.cascade_enabled,
+            direction,
+            target_move_pct,
+            stop_move_pct,
+        )
     }
 }
 
@@ -112,6 +142,9 @@ pub struct MrcLinePlan {
     pub ntps_fast_time_ms: Option<i64>,
     pub cascade_direction: i8,
     pub cascade_speed_pct_per_min: Option<f64>,
+    pub cascade_phase: MovementPhase,
+    pub cascade_potential_move_pct: Option<f64>,
+    pub cascade_adverse_move_pct: Option<f64>,
 }
 
 fn valid_price(value: f64) -> bool {
@@ -271,6 +304,9 @@ pub fn build_line_plans(
             ntps_fast_time_ms: context.ntps_fast_time_ms,
             cascade_direction: context.cascade_direction,
             cascade_speed_pct_per_min: context.cascade_speed_pct_per_min,
+            cascade_phase: context.cascade_phase,
+            cascade_potential_move_pct: context.cascade_potential_move_pct,
+            cascade_adverse_move_pct: context.cascade_adverse_move_pct,
         }
     })
 }

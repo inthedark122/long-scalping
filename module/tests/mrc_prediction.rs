@@ -22,12 +22,16 @@ fn line_plan_reports_movement_stop_time_and_route_role() {
         Some(6),
         stats,
         MrcPredictionContext {
+            cascade_enabled: true,
             ntps: 42,
             ntps_fast_time_ms: Some(12_000),
             cascade_direction: 1,
             cascade_speed_pct_per_min: Some(1.0),
             cascade_strength: 1.2,
             cascade_stretched: false,
+            cascade_phase: long_scalping::detection::cascade::MovementPhase::Building,
+            cascade_potential_move_pct: Some(3.0),
+            cascade_adverse_move_pct: Some(0.25),
         },
     );
 

@@ -1,4 +1,4 @@
-use super::mrc_pattern_classification::MrcPatternKind;
+use super::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle, StaircaseTransition};
 
 pub const PRIMARY_STAIRS: &str = "primary-stairs";
 pub const PRIMARY_OUTWARD: &str = "primary-outward";
@@ -226,7 +226,10 @@ pub struct PrimaryRuleTrace {
     pub selected_direction: i8,
     pub ended_by_fbr: bool,
     pub ended_by_extreme: bool,
+    pub ended_by_protected_swing: bool,
     pub ended_by_volume: bool,
+    pub staircase_lifecycle: Option<StaircaseLifecycle>,
+    pub staircase_transition: Option<StaircaseTransition>,
     pub direction_lock_reset_primary: bool,
     pub reason: String,
 }
@@ -242,6 +245,8 @@ pub struct CandidateView {
     pub realized_favorable_pct: Option<f64>,
     pub realized_adverse_pct: Option<f64>,
     pub market_price: f64,
+    pub staircase_lifecycle: Option<StaircaseLifecycle>,
+    pub staircase_transition: Option<StaircaseTransition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -321,14 +326,24 @@ impl DecisionState {
         let ended_by_extreme = current.is_some_and(|current| {
             current.kind == PrimaryKind::Stairs && support.favorable_extreme_failed
         });
+        let ended_by_protected_swing = current.is_some_and(|current| {
+            current.kind == PrimaryKind::Stairs
+                && candidates.iter().any(|candidate| {
+                    primary_kind(candidate.pattern_kind) == Some(PrimaryKind::Stairs)
+                        && candidate.direction == current.direction
+                        && candidate.staircase_lifecycle == Some(StaircaseLifecycle::Invalidated)
+                })
+        });
         let ended = current.is_some_and(|current| {
             !components.primary_enabled(current.kind)
                 || ended_by_fbr
                 || ended_by_volume
                 || ended_by_extreme
+                || ended_by_protected_swing
         });
         trace.ended_by_fbr = ended_by_fbr;
         trace.ended_by_extreme = ended_by_extreme;
+        trace.ended_by_protected_swing = ended_by_protected_swing;
         trace.ended_by_volume = ended_by_volume;
 
         if ended {
@@ -381,6 +396,14 @@ impl DecisionState {
                 })
                 .max_by(candidate_order)
         };
+
+        if let Some(candidate) = candidates.iter().find(|candidate| {
+            primary_kind(candidate.pattern_kind) == Some(PrimaryKind::Stairs)
+                && candidate.staircase_lifecycle.is_some()
+        }) {
+            trace.staircase_lifecycle = candidate.staircase_lifecycle;
+            trace.staircase_transition = candidate.staircase_transition;
+        }
 
         let Some(candidate) = candidate else {
             self.support = support;
@@ -451,6 +474,8 @@ impl DecisionState {
         trace.primary_after = Some(kind);
         trace.selected_index = Some(candidate.index);
         trace.selected_direction = direction;
+        trace.staircase_lifecycle = candidate.staircase_lifecycle;
+        trace.staircase_transition = candidate.staircase_transition;
         trace.reason = "selected-primary-route".to_string();
         self.trace = trace;
         DecisionResult {
@@ -546,6 +571,10 @@ fn candidate_allowed(
     direction_lock: Option<i8>,
 ) -> bool {
     candidate.entry
+        && !matches!(
+            candidate.staircase_lifecycle,
+            Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
+        )
         && primary_kind(candidate.pattern_kind).is_some_and(|kind| components.primary_enabled(kind))
         && direction_lock.is_none_or(|direction| candidate.direction == direction)
 }

@@ -85,6 +85,53 @@ impl MrcPatternKind {
     }
 }
 
+/// Lifecycle of a confirmed directional staircase.
+///
+/// A staircase can remain directionally valid while its current leg is
+/// consolidating or pulling back. It is only invalidated when the opposing
+/// leg breaks the protected swing that supported the latest confirmed
+/// expansion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaircaseLifecycle {
+    Progressing,
+    Pullback,
+    Stalled,
+    Invalidated,
+}
+
+impl StaircaseLifecycle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Progressing => "progressing",
+            Self::Pullback => "pullback",
+            Self::Stalled => "stalled",
+            Self::Invalidated => "invalidated",
+        }
+    }
+}
+
+/// Structural transition that produced the current staircase lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaircaseTransition {
+    HigherExtreme,
+    PullbackWithinStructure,
+    AttemptingExtreme,
+    ProtectedSwingBroken,
+}
+
+impl StaircaseTransition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HigherExtreme => "higher_extreme",
+            Self::PullbackWithinStructure => "pullback_within_structure",
+            Self::AttemptingExtreme => "attempting_extreme",
+            Self::ProtectedSwingBroken => "protected_swing_broken",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MrcPatternDefinition {
     pub kind: MrcPatternKind,
@@ -117,6 +164,15 @@ pub struct MrcPatternSignal {
     pub favorable_move_pct: f64,
     /// Maximum adverse price excursion from the staircase start, in percent.
     pub adverse_move_pct: f64,
+    /// Current lifecycle for staircase patterns. Other patterns leave this
+    /// unset.
+    pub staircase_lifecycle: Option<StaircaseLifecycle>,
+    /// Structural transition that produced the current staircase lifecycle.
+    pub staircase_transition: Option<StaircaseTransition>,
+    /// The last pullback line protected by the confirmed staircase direction.
+    pub staircase_protected_line: Option<u8>,
+    /// The furthest line reached by the latest confirmed directional leg.
+    pub staircase_extreme_line: Option<u8>,
 }
 
 const MEAN_LINE: u8 = 4;
@@ -256,6 +312,10 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
     })
 }
 
@@ -287,6 +347,10 @@ fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
     })
 }
 
@@ -294,7 +358,63 @@ fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
 struct ZigzagLeg {
     direction: i8,
     start_index: usize,
+    start_line: u8,
     end_line: u8,
+}
+
+#[derive(Debug, Clone)]
+struct StaircaseSegment {
+    start_index: usize,
+    trend_indices: Vec<usize>,
+    first_span: u8,
+    best_end_line: u8,
+    protected_line: u8,
+    last_progress_index: usize,
+    expanded_after_first: bool,
+}
+
+impl StaircaseSegment {
+    fn new(index: usize, leg: ZigzagLeg) -> Self {
+        Self {
+            start_index: leg.start_index,
+            trend_indices: vec![index],
+            first_span: leg.start_line.abs_diff(leg.end_line),
+            best_end_line: leg.end_line,
+            protected_line: leg.start_line,
+            last_progress_index: index,
+            expanded_after_first: false,
+        }
+    }
+
+    fn observe(&mut self, index: usize, leg: ZigzagLeg, direction: i8) {
+        if is_deeper(leg.end_line, self.best_end_line, direction) {
+            self.best_end_line = leg.end_line;
+            self.protected_line = leg.start_line;
+            self.last_progress_index = index;
+            self.expanded_after_first = true;
+        }
+        self.trend_indices.push(index);
+    }
+
+    fn confirmed(&self) -> bool {
+        self.trend_indices.len() >= 2 && (self.first_span > 1 || self.expanded_after_first)
+    }
+}
+
+fn is_deeper(line: u8, best: u8, direction: i8) -> bool {
+    if direction > 0 {
+        line > best
+    } else {
+        line < best
+    }
+}
+
+fn breaks_protected(line: u8, protected: u8, direction: i8) -> bool {
+    if direction > 0 {
+        line < protected
+    } else {
+        line > protected
+    }
 }
 
 /// Compress adjacent line crossings into directional legs.
@@ -328,84 +448,96 @@ fn zigzag_legs(history: &[MrcHistoryEvent]) -> Vec<ZigzagLeg> {
         legs.push(ZigzagLeg {
             direction,
             start_index: index - 1,
+            start_line: previous.line,
             end_line: current.line,
         });
     }
     legs
 }
 
-/// Detect a staircase as an alternating zigzag with progressively deeper
-/// legs in one direction.
+/// Detect one directional staircase as a lifecycle of zigzag structure.
 ///
-/// For an upward staircase, the upward legs must be separated by pullbacks
-/// and at least one leg must expand beyond the previous directional extreme.
-/// The detector remains active during an opposite-direction pullback, so the
-/// decision layer can use the pullback as a possible entry. If a new leg in
-/// the same direction fails to exceed the confirmed extreme, that is the
-/// exhaustion transition. Direction is therefore based on confirmed legs,
-/// not on the last line crossed.
-fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
-    let legs = zigzag_legs(history);
+/// A failed attempt to make a new extreme is a stall, not a reversal. The
+/// staircase remains valid while the opposing leg holds above the protected
+/// swing (below it for a down staircase). Breaking that swing invalidates the
+/// current segment. A new segment must then build two directional legs before
+/// the pattern can become active again.
+fn staircase_for_direction(
+    history: &[MrcHistoryEvent],
+    legs: &[ZigzagLeg],
+    trend_direction: i8,
+) -> Option<MrcPatternSignal> {
     if legs.len() < 3 {
         return None;
     }
 
     let current = history.last()?;
     let current_leg = legs.last()?;
-    let mut selected: Option<(i8, Vec<usize>, usize, (usize, u8, usize))> = None;
-    for trend_direction in [1_i8, -1_i8] {
-        let trend_indices = legs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, leg)| (leg.direction == trend_direction).then_some(index))
-            .collect::<Vec<_>>();
-        if trend_indices.len() < 2 {
-            continue;
-        }
+    let trend_indices = legs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, leg)| (leg.direction == trend_direction).then_some(index))
+        .collect::<Vec<_>>();
+    let first_index = *trend_indices.first()?;
+    let mut segment = StaircaseSegment::new(first_index, legs[first_index]);
+    let mut invalidated_segment = None;
+    let mut fresh_segment: Option<StaircaseSegment> = None;
 
-        let first_index = *trend_indices.first()?;
-        let first = legs[first_index];
-        let first_span = history[first.start_index].line.abs_diff(first.end_line);
-        let mut best_end_line = first.end_line;
-        let mut last_progress_index = first_index;
-        let mut expanded_after_first = false;
-        for index in trend_indices.iter().copied().skip(1) {
-            let leg = legs[index];
-            let penetrated_deeper = if trend_direction > 0 {
-                leg.end_line > best_end_line
+    for (index, leg) in legs.iter().enumerate().skip(first_index + 1) {
+        if leg.direction == trend_direction {
+            if invalidated_segment.is_some() {
+                if let Some(fresh) = fresh_segment.as_mut() {
+                    fresh.observe(index, *leg, trend_direction);
+                } else {
+                    fresh_segment = Some(StaircaseSegment::new(index, *leg));
+                }
+                if fresh_segment
+                    .as_ref()
+                    .is_some_and(StaircaseSegment::confirmed)
+                {
+                    segment = fresh_segment.take()?;
+                    invalidated_segment = None;
+                }
             } else {
-                leg.end_line < best_end_line
-            };
-            if penetrated_deeper {
-                best_end_line = leg.end_line;
-                last_progress_index = index;
-                expanded_after_first = true;
+                segment.observe(index, *leg, trend_direction);
             }
-        }
-
-        // Repeated one-line oscillations are a range, not a staircase. A
-        // staircase needs either an initial multi-line impulse or a later
-        // directional expansion.
-        if first_span <= 1 && !expanded_after_first {
-            continue;
-        }
-
-        // A same-direction leg that failed to beat the confirmed extreme is
-        // exhaustion. An opposite final leg is only a pullback.
-        if current_leg.direction == trend_direction && last_progress_index != legs.len() - 1 {
-            continue;
-        }
-
-        let rank = (last_progress_index, first.end_line, trend_indices.len());
-        if selected
-            .as_ref()
-            .is_none_or(|(_, _, _, selected_rank)| rank > *selected_rank)
+        } else if invalidated_segment.is_none()
+            && segment.confirmed()
+            && breaks_protected(leg.end_line, segment.protected_line, trend_direction)
         {
-            selected = Some((trend_direction, trend_indices, first.start_index, rank));
+            invalidated_segment = Some(segment.clone());
+            fresh_segment = None;
         }
     }
 
-    let (trend_direction, trend_indices, start_index, _) = selected?;
+    let (lifecycle, transition, reported_segment) = if let Some(segment) = invalidated_segment {
+        (
+            StaircaseLifecycle::Invalidated,
+            StaircaseTransition::ProtectedSwingBroken,
+            segment,
+        )
+    } else if !segment.confirmed() {
+        return None;
+    } else {
+        let transition = if current_leg.direction == trend_direction {
+            if segment.last_progress_index == legs.len() - 1 {
+                StaircaseTransition::HigherExtreme
+            } else {
+                StaircaseTransition::AttemptingExtreme
+            }
+        } else {
+            StaircaseTransition::PullbackWithinStructure
+        };
+        let lifecycle = match transition {
+            StaircaseTransition::HigherExtreme => StaircaseLifecycle::Progressing,
+            StaircaseTransition::AttemptingExtreme => StaircaseLifecycle::Stalled,
+            StaircaseTransition::PullbackWithinStructure => StaircaseLifecycle::Pullback,
+            StaircaseTransition::ProtectedSwingBroken => StaircaseLifecycle::Invalidated,
+        };
+        (lifecycle, transition, segment)
+    };
+    let start_index = reported_segment.start_index;
+    let trend_indices = reported_segment.trend_indices;
     let (sequence, price_move_pct, favorable_move_pct, adverse_move_pct) =
         stair_price_metrics(history, start_index, trend_direction);
     let kind = if trend_direction > 0 {
@@ -426,7 +558,22 @@ fn staircase(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct,
         favorable_move_pct,
         adverse_move_pct,
+        staircase_lifecycle: Some(lifecycle),
+        staircase_transition: Some(transition),
+        staircase_protected_line: Some(reported_segment.protected_line),
+        staircase_extreme_line: Some(reported_segment.best_end_line),
     })
+}
+
+fn staircases(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
+    let legs = zigzag_legs(history);
+    if legs.len() < 3 {
+        return Vec::new();
+    }
+    [1_i8, -1_i8]
+        .into_iter()
+        .filter_map(|direction| staircase_for_direction(history, &legs, direction))
+        .collect()
 }
 
 fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
@@ -500,6 +647,10 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
     })
 }
 
@@ -534,6 +685,10 @@ fn outward_continuation(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal>
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
     })
 }
 
@@ -544,16 +699,13 @@ pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     if history.len() < 2 {
         return Vec::new();
     }
-    [
-        fast_break_return(history),
-        pullback_to_inner(history),
-        staircase(history),
-        cycle(history),
-        outward_continuation(history),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    let mut matches = Vec::new();
+    matches.extend(fast_break_return(history));
+    matches.extend(pullback_to_inner(history));
+    matches.extend(staircases(history));
+    matches.extend(cycle(history));
+    matches.extend(outward_continuation(history));
+    matches
 }
 
 /// The complete, stable catalogue. Keep this list small and behavior based;
@@ -564,15 +716,15 @@ pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 7] = [
         kind: MrcPatternKind::StairsUp,
         title: "MRC upward staircase",
         summary: "Price zigzags upward while successive upward legs penetrate deeper.",
-        detection: "At least two upward line legs separated by pullbacks, with the newest upward leg reaching above the previous upward leg.",
-        prediction: "Follow the upward direction during the pullback or next upward leg until an attempted new high fails.",
+        detection: "At least two upward line legs separated by pullbacks. A missed higher high is a stall; the structure ends only when the protected swing low breaks.",
+        prediction: "Follow the upward direction while pullbacks hold the protected swing low; wait through stalled attempts and invalidate only after a structural break.",
     },
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsDown,
         title: "MRC downward staircase",
         summary: "Price zigzags downward while successive downward legs penetrate deeper.",
-        detection: "At least two downward line legs separated by pullbacks, with the newest downward leg reaching below the previous downward leg.",
-        prediction: "Follow the downward direction during the pullback or next downward leg until an attempted new low fails.",
+        detection: "At least two downward line legs separated by pullbacks. A missed lower low is a stall; the structure ends only when the protected swing high breaks.",
+        prediction: "Follow the downward direction while pullbacks hold the protected swing high; wait through stalled attempts and invalidate only after a structural break.",
     },
     MrcPatternDefinition {
         kind: MrcPatternKind::FastBreakReturn,

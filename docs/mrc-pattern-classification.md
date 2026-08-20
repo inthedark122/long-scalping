@@ -79,12 +79,14 @@ each new upward leg reaches farther than the previous one. A typical path is:
 - the newest upward leg reaches above the previous upward leg;
 - a pullback after a successful leg keeps the staircase active for a possible
   support-assisted entry;
-- an attempted upward leg that fails to exceed the previous peak ends the
-  staircase as exhaustion.
+- an attempted upward leg that fails to exceed the previous peak stalls the
+  current staircase lifecycle but does not finish the structure;
+- a downward leg that breaks the protected swing low invalidates the
+  staircase and requires two new upward legs before it can trade again.
 
 There is no fixed full-path length. The pattern becomes stronger as additional
-local steps are observed and ends when the sequence reverses, stalls, or
-reaches the available outer line.
+local steps are observed. A missed extreme is informational; the protected
+swing is the structural finish condition.
 
 ### Prediction
 
@@ -108,13 +110,32 @@ deeper downward legs:
 - at least two downward legs exist;
 - downward legs are separated by upward pullbacks;
 - the newest downward leg reaches below the previous downward leg;
-- an attempted downward leg that fails to exceed the previous trough ends the
-  staircase as exhaustion.
+- an attempted downward leg that fails to exceed the previous trough stalls
+  the current staircase lifecycle but does not finish the structure;
+- an upward leg that breaks the protected swing high invalidates the staircase
+  and requires two new downward legs before it can trade again.
 
 ### Prediction
 
 Predict the next unbroken lower MRC line and update the expected movement after
 each new step.
+
+### Staircase lifecycle
+
+The staircase detector reports a lifecycle transition with every staircase
+candidate:
+
+- `progressing`: a directional leg reached a new extreme;
+- `pullback`: the opposing leg remains above the protected swing low for
+  `STAIRS_UP`, or below the protected swing high for `STAIRS_DOWN`;
+- `stalled`: a continuation attempt did not update the extreme. This remains
+  directional information but is not a fresh trade entry;
+- `invalidated`: the opposing leg broke the protected swing. The candidate is
+  retained for diagnostics, but it is non-tradeable until two new directional
+  legs rebuild a staircase segment.
+
+A missed higher high or lower low is therefore not, by itself, a reversal.
+The protected swing is the structural finish condition.
 
 ## 3. `FAST_BREAK_RETURN`
 

@@ -1,5 +1,6 @@
 use long_scalping::detection::mrc_pattern_classification::{
-    classify, classify_all, definition, MrcPatternKind, MRC_PATTERN_DEFINITIONS,
+    classify, classify_all, definition, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+    MRC_PATTERN_DEFINITIONS,
 };
 use long_scalping::state::{MrcHistoryEvent, MrcMovementSnapshot};
 
@@ -120,6 +121,14 @@ fn classification_stays_active_during_pullback_and_ends_on_failed_new_extreme() 
     ]))
     .expect("pullback remains part of the upward staircase");
     assert_eq!(active.kind, MrcPatternKind::StairsUp);
+    assert_eq!(
+        active.staircase_lifecycle,
+        Some(StaircaseLifecycle::Pullback)
+    );
+    assert_eq!(
+        active.staircase_transition,
+        Some(StaircaseTransition::PullbackWithinStructure)
+    );
     assert_eq!(active.source_line, 3);
     assert_eq!(active.target_line, 4);
     assert_eq!(active.sequence, vec![2, 3, 2, 3, 2, 3, 4, 3]);
@@ -136,10 +145,53 @@ fn classification_stays_active_during_pullback_and_ends_on_failed_new_extreme() 
         (3, 101.0),
         (4, 102.0),
     ]));
-    assert_ne!(
-        exhausted.map(|signal| signal.kind),
-        Some(MrcPatternKind::StairsUp)
+    let exhausted = exhausted.expect("a stalled upward staircase remains directional");
+    assert_eq!(exhausted.kind, MrcPatternKind::StairsUp);
+    assert_eq!(
+        exhausted.staircase_lifecycle,
+        Some(StaircaseLifecycle::Stalled)
     );
+    assert_eq!(
+        exhausted.staircase_transition,
+        Some(StaircaseTransition::AttemptingExtreme)
+    );
+}
+
+#[test]
+fn staircase_invalidates_only_after_the_protected_swing_breaks() {
+    let signal = classify(&history(&[
+        (2, 100.0),
+        (1, 99.0),
+        (0, 98.0),
+        (1, 99.0),
+        (2, 100.0),
+        (3, 101.0),
+        (4, 102.0),
+        (5, 103.0),
+        (6, 104.0),
+        (5, 103.0),
+        (6, 104.0),
+        (7, 105.0),
+        (6, 104.0),
+        (5, 103.0),
+        (4, 102.0),
+        (3, 101.0),
+        (2, 100.0),
+    ]))
+    .expect("the broken upward staircase remains visible as an invalidated transition");
+
+    assert_eq!(signal.kind, MrcPatternKind::StairsUp);
+    assert_eq!(signal.direction, 1);
+    assert_eq!(
+        signal.staircase_lifecycle,
+        Some(StaircaseLifecycle::Invalidated)
+    );
+    assert_eq!(
+        signal.staircase_transition,
+        Some(StaircaseTransition::ProtectedSwingBroken)
+    );
+    assert_eq!(signal.staircase_protected_line, Some(5));
+    assert_eq!(signal.staircase_extreme_line, Some(7));
 }
 
 #[test]

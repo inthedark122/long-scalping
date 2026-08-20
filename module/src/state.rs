@@ -268,6 +268,12 @@ pub struct EngineState {
     pub mrc_crossing_model: MrcCrossingModel,
     pub cascade: CascadeState,
     pub cascade_signal: CascadeSignal,
+    /// Stable marks for up to three cascade-staged entry orders. The orders
+    /// remain alive after the first leg fills until the position finishes or a
+    /// new entry plan replaces them.
+    pub cascade_entry_marks: Vec<String>,
+    /// Whether the active exit plan currently uses cascade partial TP orders.
+    pub cascade_exit_orders: bool,
     pub pending_entry_bar: Option<u64>,
     pub volume_gain: VolumeGainTracker,
     pub direction_source: String,
@@ -296,6 +302,8 @@ impl Default for EngineState {
             mrc_crossing_model: MrcCrossingModel::default(),
             cascade: CascadeState::default(),
             cascade_signal: CascadeSignal::default(),
+            cascade_entry_marks: Vec::new(),
+            cascade_exit_orders: false,
             pending_entry_bar: None,
             volume_gain: VolumeGainTracker::default(),
             direction_source: "pattern-selector".to_string(),

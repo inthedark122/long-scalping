@@ -6,11 +6,12 @@ movement, and one selector chooses the best currently tradable candidate.
 
 ## Trading model
 
-- Input timeframes: `1m` and `5m` MRC lines plus volume; candle OHLC and live price provide market context
+- Input timeframes: `1m` and `5m` MRC lines plus volume/NTPS; candle OHLC, live price, and cascade speed provide market context
 - Position policy: one open position at a time
 - Pattern policy: classify all matches, preserve overlaps, and score them independently
 - Selection policy: stay with the active pattern until a challenger beats it by the configured switch margin
 - Continuation policy: advance through successive MRC lines while a staircase or outward continuation remains valid
+- Execution policy: use stairs for structural context and cascade for direction, speed, continuation potential, adverse excursion, and staged entry/exit decisions
 
 ## Pattern pipeline
 
@@ -20,6 +21,21 @@ movement, and one selector chooses the best currently tradable candidate.
 4. `state.rs` updates the observation ledger and the realized net-PnL ledger for each pattern.
 5. The selector picks the best candidate, with hysteresis to avoid noisy pattern flapping.
 6. `engine.rs` executes only the selected candidate and attributes the completed trade to its opening pattern.
+
+## Line execution plan
+
+`detection/mrc_prediction.rs` builds one small plan for each of the nine MRC
+lines. A plan reports signed movement from the entry, absolute distance, stop
+distance, the selected ETA and its source, historical sample count, and a route
+role. Route roles explain whether a line is the current line, the planned
+target, covered on the way to another target, beyond the target, or on the
+opposite side. NTPS and its fast-trade timestamp are carried with every plan
+as market-speed context; they do not pretend to be a probability.
+
+The selector has an explicit one-direction lock after a directional `start`
+signal. Candidates in the opposite direction remain observable but cannot be
+selected or executed. The cascade measures active movement speed and supplies
+fast-trading context; it does not independently open a position.
 
 ## Pattern learning
 

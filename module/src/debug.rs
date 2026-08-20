@@ -71,7 +71,7 @@ pub fn render(
             state.mrc_crossing_model.decision_components.names().join(",")
         ),
         format!(
-            "primary-trace=stairs_up={}/{} stairs_down={}/{} outward={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} end=[fbr={},extreme={},volume={}] reset={} reason={}",
+            "primary-trace=stairs_up={}/{} stairs_down={}/{} outward={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} stair_lifecycle={} stair_transition={} end=[fbr={},extreme={},protected_swing={},volume={}] reset={} reason={}",
             primary_trace.stairs_up_candidates,
             primary_trace.stairs_up_tradeable,
             primary_trace.stairs_down_candidates,
@@ -84,8 +84,17 @@ pub fn render(
             primary_trace.primary_after,
             primary_trace.selected_index,
             primary_trace.selected_direction,
+            primary_trace
+                .staircase_lifecycle
+                .map(|value| value.as_str())
+                .unwrap_or("na"),
+            primary_trace
+                .staircase_transition
+                .map(|value| value.as_str())
+                .unwrap_or("na"),
             primary_trace.ended_by_fbr,
             primary_trace.ended_by_extreme,
+            primary_trace.ended_by_protected_swing,
             primary_trace.ended_by_volume,
             primary_trace.direction_lock_reset_primary,
             primary_trace.reason
@@ -93,6 +102,28 @@ pub fn render(
         format!(
             "dir={:?}:src={}:why={}",
             decision.market_state, state.direction_source, state.direction_reason
+        ),
+        format!(
+            "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} multi={} staged={}",
+            state.cascade_signal.dir,
+            state.cascade_signal.phase.as_str(),
+            state
+                .cascade_signal
+                .speed_pct_per_min
+                .map(|value| format!("{value:.3}%/min"))
+                .unwrap_or_else(|| "na".to_string()),
+            state
+                .cascade_signal
+                .potential_move_pct
+                .map(|value| format!("{value:.3}%"))
+                .unwrap_or_else(|| "na".to_string()),
+            state
+                .cascade_signal
+                .adverse_move_pct
+                .map(|value| format!("{value:.3}%"))
+                .unwrap_or_else(|| "na".to_string()),
+            state.cascade_signal.multi_order_ready(),
+            state.cascade_entry_marks.len(),
         ),
         format!("volume=[{}]", state.volume_gain.summary()),
         format!("mrc_risk=[{mrc_risk}]"),

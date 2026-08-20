@@ -2,7 +2,7 @@ use long_scalping::detection::cascade::{
     movement_history, recent_average_size, recent_average_size_percent, recent_movement_distance,
     recent_movement_distance_percent, recent_signed_total_size, recent_signed_total_size_percent,
     recent_total_size, recent_total_size_percent, update_from_candle, update_from_candle_at,
-    CascadeMovement, CascadeState, MovementPhase,
+    CascadeMovement, CascadeSignal, CascadeState, CascadeTradeState, MovementPhase,
 };
 use long_scalping::model::Candle;
 
@@ -37,6 +37,47 @@ fn timestamped_cascade_reports_movement_speed() {
 
     assert_eq!(signal.elapsed_ms, 60_000);
     assert_eq!(signal.speed_pct_per_min, Some(3.5 / 102.5 * 100.0));
+    assert!(signal.potential_move_pct.is_some());
+}
+
+#[test]
+fn cascade_reports_directional_adverse_range_and_trade_gate() {
+    let signal = CascadeSignal {
+        dir: 1,
+        phase: MovementPhase::Building,
+        speed_pct_per_min: Some(1.0),
+        potential_move_pct: Some(2.0),
+        adverse_move_pct: Some(0.5),
+        ..Default::default()
+    };
+    assert_eq!(
+        signal.trade_state(true, 1, 1.0, 1.0),
+        CascadeTradeState::Ready
+    );
+    assert_eq!(
+        signal.trade_state(true, -1, 1.0, 1.0),
+        CascadeTradeState::DirectionMismatch
+    );
+    assert_eq!(
+        signal.trade_state(true, 1, 3.0, 1.0),
+        CascadeTradeState::PotentialTooSmall
+    );
+    assert_eq!(
+        signal.trade_state(true, 1, 1.0, 0.25),
+        CascadeTradeState::AdverseMoveTooLarge
+    );
+    assert_eq!(
+        signal.trade_state(true, 1, 1.0, 1.0),
+        CascadeTradeState::Ready
+    );
+    assert_eq!(
+        CascadeSignal {
+            phase: MovementPhase::Reversal,
+            ..signal
+        }
+        .trade_state(true, 1, 1.0, 1.0),
+        CascadeTradeState::Reversal
+    );
 }
 
 #[test]

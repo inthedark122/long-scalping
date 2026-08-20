@@ -41,7 +41,7 @@ pub struct CascadeState {
     pub last_time_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MovementPhase {
     Starting,
     Building,
@@ -54,6 +54,55 @@ pub enum MovementPhase {
 impl Default for MovementPhase {
     fn default() -> Self {
         Self::Unknown
+    }
+}
+
+impl MovementPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Building => "building",
+            Self::Mature => "mature",
+            Self::CounterMove => "counter_move",
+            Self::Reversal => "reversal",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Why the cascade did or did not authorize a directional entry.
+///
+/// `NotConfigured` is retained for research/unit-test callers that do not
+/// provide live cascade context. Live execution enables the gate explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CascadeTradeState {
+    NotConfigured,
+    Ready,
+    DirectionMismatch,
+    CounterMove,
+    Reversal,
+    SpeedUnavailable,
+    PotentialTooSmall,
+    AdverseMoveTooLarge,
+}
+
+impl CascadeTradeState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::Ready => "ready",
+            Self::DirectionMismatch => "direction_mismatch",
+            Self::CounterMove => "counter_move",
+            Self::Reversal => "reversal",
+            Self::SpeedUnavailable => "speed_unavailable",
+            Self::PotentialTooSmall => "potential_too_small",
+            Self::AdverseMoveTooLarge => "adverse_move_too_large",
+        }
+    }
+
+    pub const fn allows_entry(self) -> bool {
+        matches!(self, Self::NotConfigured | Self::Ready)
     }
 }
 
@@ -73,6 +122,70 @@ pub struct CascadeSignal {
     pub break_price: f64,
     pub elapsed_ms: u64,
     pub speed_pct_per_min: Option<f64>,
+    /// Maximum continuation range available from the active movement or the
+    /// recent same-direction movement envelope, expressed as a percentage of
+    /// the current price.
+    pub potential_move_pct: Option<f64>,
+    /// Largest recent completed movement in the opposite direction, expressed
+    /// as a positive percentage. This is the expected adverse excursion used
+    /// to validate a stop and place staged entries.
+    pub adverse_move_pct: Option<f64>,
+}
+
+impl CascadeSignal {
+    pub fn trade_state(
+        self,
+        enabled: bool,
+        direction: i8,
+        target_move_pct: f64,
+        stop_move_pct: f64,
+    ) -> CascadeTradeState {
+        if !enabled {
+            return CascadeTradeState::NotConfigured;
+        }
+        if !matches!(direction, 1 | -1) || self.dir != direction {
+            return CascadeTradeState::DirectionMismatch;
+        }
+        match self.phase {
+            MovementPhase::CounterMove => return CascadeTradeState::CounterMove,
+            MovementPhase::Reversal => return CascadeTradeState::Reversal,
+            MovementPhase::Unknown => return CascadeTradeState::DirectionMismatch,
+            MovementPhase::Starting | MovementPhase::Building | MovementPhase::Mature => {}
+        }
+        if !self
+            .speed_pct_per_min
+            .is_some_and(|speed| speed.is_finite() && speed > 0.0)
+        {
+            return CascadeTradeState::SpeedUnavailable;
+        }
+        if target_move_pct.is_finite()
+            && target_move_pct > 0.0
+            && !self
+                .potential_move_pct
+                .is_some_and(|potential| potential + f64::EPSILON >= target_move_pct)
+        {
+            return CascadeTradeState::PotentialTooSmall;
+        }
+        if stop_move_pct.is_finite()
+            && stop_move_pct > 0.0
+            && self
+                .adverse_move_pct
+                .is_some_and(|adverse| adverse > stop_move_pct + f64::EPSILON)
+        {
+            return CascadeTradeState::AdverseMoveTooLarge;
+        }
+        CascadeTradeState::Ready
+    }
+
+    pub fn multi_order_ready(self) -> bool {
+        self.dir != 0
+            && self
+                .speed_pct_per_min
+                .is_some_and(|speed| speed.is_finite() && speed > 0.0)
+            && self
+                .potential_move_pct
+                .is_some_and(|value| value.is_finite() && value > 0.0)
+    }
 }
 
 pub fn average_size_percent(average_size: f64, price: f64) -> Option<f64> {
@@ -319,6 +432,18 @@ pub fn update_from_candle_at(
     };
     let speed_pct_per_min = (elapsed_ms > 0 && close > 0.0 && active_size > 0.0)
         .then(|| active_size / close * 100.0 / (elapsed_ms as f64 / 60_000.0));
+    let potential_move_pct = if close > 0.0 && active_size > 0.0 {
+        let recent_same_direction =
+            recent_directional_max_size(memory, 5, memory.dir).unwrap_or(0.0);
+        Some(active_size.max(recent_same_direction) / close * 100.0)
+    } else {
+        None
+    };
+    let adverse_move_pct = if close > 0.0 && matches!(memory.dir, 1 | -1) {
+        recent_directional_max_size(memory, 5, -memory.dir).map(|size| size / close * 100.0)
+    } else {
+        None
+    };
 
     CascadeSignal {
         dir: memory.dir,
@@ -336,6 +461,8 @@ pub fn update_from_candle_at(
             .min(memory.breaks.len() - 1)],
         elapsed_ms,
         speed_pct_per_min,
+        potential_move_pct,
+        adverse_move_pct,
     }
 }
 
@@ -354,6 +481,38 @@ pub fn movement_history(memory: &CascadeState) -> Vec<CascadeMovement> {
     (0..len)
         .map(|offset| memory.movement_history[(start + offset) % memory.movement_history.len()])
         .collect()
+}
+
+/// Largest completed movement in `direction` among the latest `count`
+/// completed movements. Directional filtering is intentional: the same
+/// cascade supplies continuation potential and adverse excursion separately.
+pub fn recent_directional_max_size(
+    memory: &CascadeState,
+    count: usize,
+    direction: i8,
+) -> Option<f64> {
+    if count == 0 || !matches!(direction, 1 | -1) {
+        return None;
+    }
+    let history = movement_history(memory);
+    history
+        .iter()
+        .rev()
+        .filter(|movement| movement.dir == direction)
+        .take(count)
+        .map(|movement| (movement.high - movement.low).abs())
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+pub fn recent_directional_max_size_percent(
+    memory: &CascadeState,
+    count: usize,
+    direction: i8,
+    price: f64,
+) -> Option<f64> {
+    (price.is_finite() && price > 0.0)
+        .then_some(recent_directional_max_size(memory, count, direction)? / price * 100.0)
 }
 
 /// Price envelope covered by the latest completed movements.

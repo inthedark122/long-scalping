@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
+use long_scalping::detection::cascade::{CascadeTradeState, MovementPhase};
+use long_scalping::detection::mrc_pattern_classification::{
+    MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+};
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
     cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction, vlines,
@@ -218,6 +221,15 @@ pub(crate) struct CrossingEvent {
     pub(crate) stair_price_move_pct: f64,
     pub(crate) stair_favorable_move_pct: f64,
     pub(crate) stair_adverse_move_pct: f64,
+    pub(crate) staircase_lifecycle: Option<StaircaseLifecycle>,
+    pub(crate) staircase_transition: Option<StaircaseTransition>,
+    pub(crate) staircase_protected_line: Option<usize>,
+    pub(crate) staircase_extreme_line: Option<usize>,
+    pub(crate) cascade_enabled: bool,
+    pub(crate) cascade_phase: MovementPhase,
+    pub(crate) cascade_potential_move_pct: Option<f64>,
+    pub(crate) cascade_adverse_move_pct: Option<f64>,
+    pub(crate) cascade_trade_state: CascadeTradeState,
     pub(crate) predicted_direction: i8,
     pub(crate) trade_direction: i8,
     pub(crate) predicted_line_price: Option<f64>,
@@ -339,6 +351,15 @@ fn crossing_event_from_analysis(
         stair_price_move_pct: event.stair_price_move_pct,
         stair_favorable_move_pct: event.stair_favorable_move_pct,
         stair_adverse_move_pct: event.stair_adverse_move_pct,
+        staircase_lifecycle: event.staircase_lifecycle,
+        staircase_transition: event.staircase_transition,
+        staircase_protected_line: event.staircase_protected_line.map(|line| line as usize),
+        staircase_extreme_line: event.staircase_extreme_line.map(|line| line as usize),
+        cascade_enabled: event.cascade_enabled,
+        cascade_phase: event.cascade_phase,
+        cascade_potential_move_pct: event.cascade_potential_move_pct,
+        cascade_adverse_move_pct: event.cascade_adverse_move_pct,
+        cascade_trade_state: event.cascade_trade_state,
         predicted_direction: event.predicted_direction,
         trade_direction: event.trade_direction,
         predicted_line_price: event.predicted_line_price,
@@ -916,12 +937,16 @@ impl Analyzer {
         }
         let prediction_started = Instant::now();
         let prediction_context = mrc_prediction::MrcPredictionContext {
+            cascade_enabled: true,
             ntps: row.ntps,
             ntps_fast_time_ms: None,
             cascade_direction: self.cascade_signal.dir,
             cascade_speed_pct_per_min: self.cascade_signal.speed_pct_per_min,
             cascade_strength: self.cascade_signal.strength,
             cascade_stretched: self.cascade_signal.stretched,
+            cascade_phase: self.cascade_signal.phase,
+            cascade_potential_move_pct: self.cascade_signal.potential_move_pct,
+            cascade_adverse_move_pct: self.cascade_signal.adverse_move_pct,
         };
         let observation = mrc_crossing::observe_with_forecast_context(
             &mut self.model,
@@ -1071,7 +1096,7 @@ impl Analyzer {
             return None;
         }
         let reason = format!(
-            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
+            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
             event.pattern_key,
             event.pattern_steps,
             duration_token(fmt_duration_ms(event.pattern_elapsed_ms)),
@@ -1079,6 +1104,38 @@ impl Analyzer {
             event.stair_price_move_pct,
             event.stair_favorable_move_pct,
             event.stair_adverse_move_pct,
+            prediction
+                .staircase_lifecycle
+                .map(|value| value.as_str())
+                .unwrap_or("na"),
+            prediction
+                .staircase_transition
+                .map(|value| value.as_str())
+                .unwrap_or("na"),
+            prediction
+                .staircase_protected_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            prediction
+                .staircase_extreme_line
+                .map(|line| LABELS[line as usize])
+                .unwrap_or("na"),
+            prediction.cascade_enabled,
+            prediction.cascade_direction,
+            prediction
+                .cascade_speed_pct_per_min
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "na".to_string()),
+            prediction.cascade_phase.as_str(),
+            prediction
+                .cascade_potential_move_pct
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "na".to_string()),
+            prediction
+                .cascade_adverse_move_pct
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "na".to_string()),
+            prediction.cascade_trade_state.as_str(),
             event.line_name,
             event.target_name.unwrap_or("na"),
             prediction.predicted_line_price.unwrap_or(0.0),

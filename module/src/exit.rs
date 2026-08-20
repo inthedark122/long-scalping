@@ -189,6 +189,102 @@ type ActiveExitResult = (
     Vec<String>,
 );
 
+const CASCADE_TP_WEIGHTS: [f64; 3] = [0.40, 0.30, 0.30];
+
+pub(crate) fn all_tp_marks(direction: Direction) -> Vec<String> {
+    let base = tp_mark(direction);
+    std::iter::once(base.clone())
+        .chain((1..=3).map(move |index| format!("{base}-{index}")))
+        .collect()
+}
+
+pub(crate) fn take_profit_orders(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    side: PositionState,
+    qty: f64,
+    entry_price: f64,
+    target_price: f64,
+    note: Option<&str>,
+    multi: bool,
+) -> (Vec<ModulePlaceOrder>, Vec<String>) {
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return (Vec::new(), Vec::new()),
+    };
+    if qty <= 0.0 || entry_price <= 0.0 || target_price <= 0.0 {
+        return (Vec::new(), Vec::new());
+    }
+    let base_mark = tp_mark(direction);
+    if !multi {
+        let cancel_orders = if state.cascade_exit_orders {
+            (1..=3)
+                .map(|index| format!("{base_mark}-{index}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        state.cascade_exit_orders = false;
+        return (
+            vec![tp_limit_order(
+                direction,
+                qty,
+                target_price,
+                &base_mark,
+                note,
+            )],
+            cancel_orders,
+        );
+    }
+
+    let tick = tick_size(input).max(f64::EPSILON);
+    let mut prices = Vec::with_capacity(3);
+    for fraction in [0.40, 0.70, 1.00] {
+        let price = entry_price + (target_price - entry_price) * fraction;
+        if price.is_finite()
+            && price > 0.0
+            && prices
+                .last()
+                .is_none_or(|last: &f64| (price - *last).abs() > tick * 0.5)
+        {
+            prices.push(price);
+        }
+    }
+    if prices.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let min_qty = input.symbol_info.min_order_qty.filter(|value| *value > 0.0);
+    let count = prices.len().min(CASCADE_TP_WEIGHTS.len()).min(
+        (1..=CASCADE_TP_WEIGHTS.len())
+            .rev()
+            .find(|count| {
+                min_qty.is_none_or(|minimum| qty * CASCADE_TP_WEIGHTS[*count - 1] >= minimum)
+            })
+            .unwrap_or(1),
+    );
+    let mut orders = Vec::with_capacity(count);
+    let mut remaining = qty;
+    for (index, price) in prices.into_iter().take(count).enumerate() {
+        let order_qty = if index + 1 == count {
+            remaining
+        } else {
+            qty * CASCADE_TP_WEIGHTS[index]
+        };
+        if order_qty <= 0.0 || min_qty.is_some_and(|minimum| order_qty < minimum) {
+            continue;
+        }
+        remaining = (remaining - order_qty).max(0.0);
+        let mark = format!("{base_mark}-{}", index + 1);
+        orders.push(tp_limit_order(direction, order_qty, price, &mark, note));
+    }
+    if orders.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    state.cascade_exit_orders = true;
+    (orders, vec![base_mark])
+}
+
 pub(crate) fn entry_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
@@ -240,17 +336,17 @@ fn ensure_trailing_exit_order(
         state.position.take_profit = plan.take_profit.price();
         set_stop_loss(state, plan.stop_loss);
         state.position.exit_tp_reliable = plan.tp_reliable;
-        return (
-            vec![tp_limit_order(
-                direction,
-                qty,
-                plan.take_profit.price(),
-                &mark,
-                Some(&plan.take_profit.order_note()),
-            )],
-            Vec::new(),
-            Vec::new(),
+        let (tp_orders, cancel_orders) = take_profit_orders(
+            input,
+            state,
+            side,
+            qty,
+            reference_price,
+            plan.take_profit.price(),
+            Some(&plan.take_profit.order_note()),
+            state.cascade_signal.multi_order_ready(),
         );
+        return (tp_orders, Vec::new(), cancel_orders);
     }
 
     if state.position.exit_mode == ExitMode::TrailAfterVirtualSl {
@@ -293,17 +389,17 @@ fn ensure_trailing_exit_order(
             ),
         );
         let note = tp_reprice_order_note(state, tick, "tp:trail-reprice");
-        return (
-            vec![tp_limit_order(
-                direction,
-                qty,
-                recovery_tp,
-                &mark,
-                Some(&note),
-            )],
-            Vec::new(),
-            Vec::new(),
+        let (tp_orders, cancel_orders) = take_profit_orders(
+            input,
+            state,
+            side,
+            qty,
+            input.price,
+            recovery_tp,
+            Some(&note),
+            false,
         );
+        return (tp_orders, Vec::new(), cancel_orders);
     }
 
     let previous_stop_loss = state.position.stop_loss;
@@ -340,20 +436,35 @@ fn ensure_trailing_exit_order(
             ),
         );
         let note = tp_reprice_order_note(state, tick, "tp:virtual-sl-cross");
-        return (
-            vec![tp_limit_order(
-                direction,
-                qty,
-                recovery_tp,
-                &mark,
-                Some(&note),
-            )],
-            Vec::new(),
-            vec![mark],
+        let (tp_orders, mut cancel_orders) = take_profit_orders(
+            input,
+            state,
+            side,
+            qty,
+            input.price,
+            recovery_tp,
+            Some(&note),
+            false,
         );
+        cancel_orders.push(mark);
+        return (tp_orders, Vec::new(), cancel_orders);
     }
 
     if state.position.exit_mode == ExitMode::Fixed {
+        let multi = state.cascade_signal.multi_order_ready();
+        if state.cascade_exit_orders != multi {
+            let (tp_orders, cancel_orders) = take_profit_orders(
+                input,
+                state,
+                side,
+                qty,
+                state.position.entry_price,
+                state.position.take_profit,
+                Some("tp:fixed"),
+                multi,
+            );
+            return (tp_orders, Vec::new(), cancel_orders);
+        }
         return (Vec::new(), Vec::new(), Vec::new());
     }
 
@@ -426,17 +537,17 @@ fn ensure_trailing_exit_order(
                 tick,
                 &format!("{}|reprice", plan.take_profit.order_note()),
             );
-            return (
-                vec![tp_limit_order(
-                    direction,
-                    qty,
-                    plan.take_profit.price(),
-                    &mark,
-                    Some(&note),
-                )],
-                Vec::new(),
-                Vec::new(),
+            let (tp_orders, cancel_orders) = take_profit_orders(
+                input,
+                state,
+                side,
+                qty,
+                state.position.entry_price,
+                plan.take_profit.price(),
+                Some(&note),
+                state.cascade_signal.multi_order_ready(),
             );
+            return (tp_orders, Vec::new(), cancel_orders);
         }
     }
     (Vec::new(), Vec::new(), Vec::new())

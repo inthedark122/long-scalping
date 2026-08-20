@@ -3,7 +3,7 @@ use crate::exit;
 use crate::format::{fmt_duration_f64, fmt_duration_ms, fmt_price_tick, tick_size};
 use crate::model::IndicatorSnapshot;
 use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
-use crate::orders::{close, limit_open, market_open, tp_mark, update_position};
+use crate::orders::{close, limit_open, limit_order, market_open, update_position};
 use crate::risk::{entry_budget, EntrySizing};
 use crate::state::{sync_position_state, EngineState};
 use lte_strategy_bridge::abi::{
@@ -17,11 +17,136 @@ use lte_strategy_bridge::abi::{
 #[derive(Debug, Default)]
 pub struct ExecutionResult {
     pub open_positions: Vec<ModuleOpenPosition>,
+    pub entry_orders: Vec<ModulePlaceOrder>,
     pub close_positions: Vec<ModuleClosePosition>,
     pub update_positions: Vec<ModuleUpdatePosition>,
     pub tp_orders: Vec<ModulePlaceOrder>,
     pub cancel_orders: Vec<String>,
     pub constraint: Option<String>,
+}
+
+const CASCADE_ENTRY_WEIGHTS: [f64; 3] = [0.50, 0.30, 0.20];
+
+fn cascade_entry_orders(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+    total_amount: f64,
+    entry_price: f64,
+    stop_price: f64,
+) -> Option<(Vec<ModulePlaceOrder>, Vec<String>)> {
+    if state.cfg.entry_type != EntryType::Limit
+        || !state.cascade_signal.multi_order_ready()
+        || !matches!(side, PositionState::Long | PositionState::Short)
+        || !entry_price.is_finite()
+        || entry_price <= 0.0
+        || !stop_price.is_finite()
+        || stop_price <= 0.0
+    {
+        return None;
+    }
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => return None,
+    };
+    let tick = tick_size(input).max(f64::EPSILON);
+    let stop_distance_pct = (stop_price - entry_price).abs() / entry_price * 100.0;
+    if !stop_distance_pct.is_finite() || stop_distance_pct <= 0.0 {
+        return None;
+    }
+    let cascade_adverse_pct = state
+        .cascade_signal
+        .adverse_move_pct
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(stop_distance_pct * 0.5);
+    // Keep every staged price above the structural stop. The last leg uses
+    // the largest safe part of the observed adverse envelope.
+    let max_drop_pct = cascade_adverse_pct
+        .min(stop_distance_pct * 0.75)
+        .max(stop_distance_pct * 0.25);
+    let raw_prices = [
+        entry_price,
+        match side {
+            PositionState::Long => entry_price * (1.0 - max_drop_pct * 0.5 / 100.0),
+            PositionState::Short => entry_price * (1.0 + max_drop_pct * 0.5 / 100.0),
+            PositionState::Flat => return None,
+        },
+        match side {
+            PositionState::Long => entry_price * (1.0 - max_drop_pct / 100.0),
+            PositionState::Short => entry_price * (1.0 + max_drop_pct / 100.0),
+            PositionState::Flat => return None,
+        },
+    ];
+    let prices = raw_prices.map(|price| match side {
+        PositionState::Long => price.max(stop_price + tick),
+        PositionState::Short => price.min(stop_price - tick).max(tick),
+        PositionState::Flat => price,
+    });
+    let mut distinct_prices = Vec::with_capacity(3);
+    for price in prices {
+        if price.is_finite()
+            && price > 0.0
+            && distinct_prices
+                .last()
+                .is_none_or(|previous: &f64| (price - *previous).abs() > tick * 0.5)
+        {
+            distinct_prices.push(price);
+        }
+    }
+    if distinct_prices.is_empty() {
+        return None;
+    }
+
+    let leverage = (input.leverage as f64).max(1.0);
+    let min_amount = input
+        .symbol_info
+        .min_notional
+        .filter(|value| *value > 0.0)
+        .map(|value| value / leverage);
+    let count = distinct_prices.len().min(CASCADE_ENTRY_WEIGHTS.len()).min(
+        (1..=CASCADE_ENTRY_WEIGHTS.len())
+            .rev()
+            .find(|count| {
+                min_amount.is_none_or(|minimum| {
+                    total_amount * CASCADE_ENTRY_WEIGHTS[*count - 1] >= minimum
+                })
+            })
+            .unwrap_or(1),
+    );
+    let prices = &distinct_prices[..count];
+    let mut orders = Vec::with_capacity(count);
+    let mut marks = Vec::with_capacity(count);
+    let mut remaining = total_amount;
+    for (index, price) in prices.iter().copied().enumerate() {
+        let amount = if index + 1 == count {
+            remaining
+        } else {
+            total_amount * CASCADE_ENTRY_WEIGHTS[index]
+        };
+        if amount <= 0.0 || min_amount.is_some_and(|minimum| amount < minimum) {
+            continue;
+        }
+        remaining = (remaining - amount).max(0.0);
+        let mark = format!(
+            "cascade-entry-{}-{}",
+            if direction == Direction::Long {
+                "long"
+            } else {
+                "short"
+            },
+            index + 1
+        );
+        marks.push(mark.clone());
+        orders.push(limit_order(
+            direction,
+            amount,
+            price,
+            &mark,
+            Some(&format!("cascade-entry stage={}/{}", index + 1, count)),
+        ));
+    }
+    (!orders.is_empty()).then_some((orders, marks))
 }
 
 fn open_note(
@@ -132,7 +257,7 @@ fn open_note(
         .map(EntryReason::price)
         .unwrap_or(market_price);
     format!(
-        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4} {}",
+        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4} cascade_dir={} cascade_phase={} cascade_speed={} cascade_potential={} cascade_adverse={} multi_orders={} {}",
         side,
         entry_note,
         state.cfg.entry_type.as_str(),
@@ -144,6 +269,24 @@ fn open_note(
         state.cfg.cap_init,
         state.cfg.trading_amount,
         state.trade_budget,
+        state.cascade_signal.dir,
+        state.cascade_signal.phase.as_str(),
+        state
+            .cascade_signal
+            .speed_pct_per_min
+            .map(|value| format!("{value:.4}%/min"))
+            .unwrap_or_else(|| "na".to_string()),
+        state
+            .cascade_signal
+            .potential_move_pct
+            .map(|value| format!("{value:.4}%"))
+            .unwrap_or_else(|| "na".to_string()),
+        state
+            .cascade_signal
+            .adverse_move_pct
+            .map(|value| format!("{value:.4}%"))
+            .unwrap_or_else(|| "na".to_string()),
+        state.cascade_signal.multi_order_ready(),
         sizing.diagnostics()
     )
 }
@@ -267,6 +410,10 @@ pub fn evaluate_with_mrc(
     sync_position_state(state, long, short, input.price);
 
     if input.positions.long.is_some() && input.positions.short.is_some() {
+        let mut cancel_orders = exit::all_tp_marks(Direction::Long);
+        cancel_orders.extend(exit::all_tp_marks(Direction::Short));
+        cancel_orders.extend(std::mem::take(&mut state.cascade_entry_marks));
+        state.cascade_exit_orders = false;
         return Some(ExecutionResult {
             close_positions: vec![
                 close(
@@ -288,7 +435,7 @@ pub fn evaluate_with_mrc(
                     ),
                 ),
             ],
-            cancel_orders: vec![tp_mark(Direction::Long), tp_mark(Direction::Short)],
+            cancel_orders,
             ..Default::default()
         });
     }
@@ -317,6 +464,7 @@ pub fn evaluate_with_mrc(
         state.position.entry_reason = None;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
+        let cancel_orders = std::mem::take(&mut state.cascade_entry_marks);
 
         // Cancel the expired order first. The host still reports the old
         // pending order in this evaluation, so opening a replacement in the
@@ -325,6 +473,7 @@ pub fn evaluate_with_mrc(
         // after the cancellation has been applied.
         return Some(ExecutionResult {
             close_positions: vec![close(direction, &reason)],
+            cancel_orders,
             ..Default::default()
         });
     }
@@ -573,6 +722,27 @@ pub fn evaluate_with_mrc(
             });
         }
     }
+    if let Some((entry_orders, entry_marks)) = cascade_entry_orders(
+        input,
+        state,
+        entry_side,
+        amount,
+        order_price,
+        projected_stop_loss.unwrap_or_else(|| {
+            pre_entry_exit_plan(state, snapshot, sizing_reference_price, entry_side)
+                .map(|plan| plan.stop_loss.price())
+                .unwrap_or(0.0)
+        }),
+    ) {
+        let previous_marks = std::mem::replace(&mut state.cascade_entry_marks, entry_marks);
+        state.pending_entry_bar = Some(state.bar_1m);
+        return finish(ExecutionResult {
+            entry_orders,
+            cancel_orders: previous_marks,
+            ..Default::default()
+        });
+    }
+    let stale_entry_orders = std::mem::take(&mut state.cascade_entry_marks);
     match decision.market_state {
         MarketState::Long => finish(ExecutionResult {
             open_positions: vec![match state.cfg.entry_type {
@@ -607,6 +777,7 @@ pub fn evaluate_with_mrc(
                     ),
                 ),
             }],
+            cancel_orders: stale_entry_orders.clone(),
             ..Default::default()
         }),
         MarketState::Short => finish(ExecutionResult {
@@ -642,6 +813,7 @@ pub fn evaluate_with_mrc(
                     ),
                 ),
             }],
+            cancel_orders: stale_entry_orders.clone(),
             ..Default::default()
         }),
         _ => None,

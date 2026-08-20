@@ -1,5 +1,8 @@
+use crate::detection::cascade::{CascadeTradeState, MovementPhase};
 use crate::detection::mrc_crossing::MrcPrediction;
-use crate::detection::mrc_pattern_classification::MrcPatternKind;
+use crate::detection::mrc_pattern_classification::{
+    MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+};
 use crate::detection::mrc_prediction::{self, MrcLinePlan, MrcPredictionContext};
 use crate::detection::vlines::MrcCrossEvent;
 use crate::state::{MrcCrossingState, MrcForecastStats, MrcMovementSnapshot};
@@ -56,6 +59,17 @@ pub struct MrcCrossAnalysis {
     pub stair_price_move_pct: f64,
     pub stair_favorable_move_pct: f64,
     pub stair_adverse_move_pct: f64,
+    pub staircase_lifecycle: Option<StaircaseLifecycle>,
+    pub staircase_transition: Option<StaircaseTransition>,
+    pub staircase_protected_line: Option<u8>,
+    pub staircase_extreme_line: Option<u8>,
+    pub cascade_enabled: bool,
+    pub cascade_direction: i8,
+    pub cascade_speed_pct_per_min: Option<f64>,
+    pub cascade_phase: MovementPhase,
+    pub cascade_potential_move_pct: Option<f64>,
+    pub cascade_adverse_move_pct: Option<f64>,
+    pub cascade_trade_state: CascadeTradeState,
     pub estimated_time_ms: Option<f64>,
     pub favorable_move_pct: Option<f64>,
     pub adverse_move_pct: Option<f64>,
@@ -114,6 +128,15 @@ impl MrcCrossAnalysis {
     }
 
     pub fn tradeable(&self) -> bool {
+        if matches!(
+            self.staircase_lifecycle,
+            Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
+        ) {
+            return false;
+        }
+        if !self.cascade_trade_state.allows_entry() {
+            return false;
+        }
         let barrier_allows_trade = match self.barrier_state {
             BarrierState::Approaching => false,
             BarrierState::Rejected => true,
@@ -126,6 +149,15 @@ impl MrcCrossAnalysis {
     /// anticipatory entry before the next line is crossed. Its entry is still
     /// validated against the current MRC target and stop levels.
     pub fn forecast_tradeable(&self) -> bool {
+        if matches!(
+            self.staircase_lifecycle,
+            Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
+        ) {
+            return false;
+        }
+        if !self.cascade_trade_state.allows_entry() {
+            return false;
+        }
         self.levels_tradeable()
     }
 }
@@ -346,6 +378,17 @@ pub fn build_with_context(
         stair_price_move_pct: 0.0,
         stair_favorable_move_pct: 0.0,
         stair_adverse_move_pct: 0.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
+        staircase_protected_line: None,
+        staircase_extreme_line: None,
+        cascade_enabled: context.cascade_enabled,
+        cascade_direction: context.cascade_direction,
+        cascade_speed_pct_per_min: context.cascade_speed_pct_per_min,
+        cascade_phase: context.cascade_phase,
+        cascade_potential_move_pct: context.cascade_potential_move_pct,
+        cascade_adverse_move_pct: context.cascade_adverse_move_pct,
+        cascade_trade_state: CascadeTradeState::NotConfigured,
         estimated_time_ms: None,
         favorable_move_pct: None,
         adverse_move_pct: None,
@@ -474,6 +517,22 @@ pub fn build_with_context(
         trade_target_line.and_then(|line| lines.get(line as usize).copied());
     let stop_loss_line = mrc_stop_line(lines, event.line_idx, entry_price, trade_direction);
     let predicted_stop_price = stop_loss_line.and_then(|line| lines.get(line as usize).copied());
+    let target_move_pct = predicted_target_price
+        .filter(|price| price.is_finite() && *price > 0.0 && entry_price > 0.0)
+        .map(|price| (price - entry_price).abs() / entry_price * 100.0)
+        .unwrap_or(0.0);
+    let stop_move_pct = predicted_stop_price
+        .filter(|price| price.is_finite() && *price > 0.0 && entry_price > 0.0)
+        .map(|price| (price - entry_price).abs() / entry_price * 100.0)
+        .unwrap_or(0.0);
+    let cascade_trade_state = if matches!(
+        prediction.pattern_kind,
+        MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
+    ) {
+        context.trade_state(trade_direction, target_move_pct, stop_move_pct)
+    } else {
+        CascadeTradeState::NotConfigured
+    };
     analysis.target_line = Some(prediction.target_line);
     analysis.predicted_line_price = Some(learned_line_price);
     analysis.trade_target_line = trade_target_line;
@@ -490,6 +549,11 @@ pub fn build_with_context(
     analysis.stair_price_move_pct = prediction.stair_price_move_pct;
     analysis.stair_favorable_move_pct = prediction.stair_favorable_move_pct;
     analysis.stair_adverse_move_pct = prediction.stair_adverse_move_pct;
+    analysis.staircase_lifecycle = prediction.staircase_lifecycle;
+    analysis.staircase_transition = prediction.staircase_transition;
+    analysis.staircase_protected_line = prediction.staircase_protected_line;
+    analysis.staircase_extreme_line = prediction.staircase_extreme_line;
+    analysis.cascade_trade_state = cascade_trade_state;
     analysis.estimated_time_ms = prediction.stats.average_duration_ms();
     analysis.favorable_move_pct = favorable_move_pct;
     analysis.adverse_move_pct = adverse_move_pct;

@@ -39,6 +39,14 @@ pub(crate) fn write_report(
             "stair_price_move_pct": "Direction-adjusted net price movement from the beginning of the stair to the current event.",
             "stair_favorable_move_pct": "Maximum favorable price excursion from the beginning of the stair.",
             "stair_adverse_move_pct": "Maximum adverse price excursion from the beginning of the stair.",
+            "staircase_lifecycle": "Current staircase state: progressing, pullback, stalled, or invalidated.",
+            "staircase_transition": "Structural transition that produced the current staircase state.",
+            "staircase_protected_line": "Protected swing line. Breaking it invalidates the staircase.",
+            "staircase_extreme_line": "Furthest line reached by the latest confirmed directional leg.",
+            "cascade_phase": "Current candle-cascade phase: starting, building, mature, counter_move, or reversal.",
+            "cascade_potential_move_pct": "Continuation range estimated from the active and recent same-direction cascade movements.",
+            "cascade_adverse_move_pct": "Largest recent opposite-direction cascade movement, used as adverse-excursion risk.",
+            "cascade_trade_state": "Cascade execution gate explaining whether direction, speed, potential, and adverse risk permit entry.",
             "outcome_counts": "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
             "resistance": "The opposite reverted MRC line and its barrier state at the signal.",
             "tp_sl": "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
@@ -583,6 +591,11 @@ const TEMPLATE: &str = r###"<!doctype html>
           '<span><strong>Prediction movement:</strong> ' + esc(currentPredictionMove(event)) + '</span>' +
           '<span><strong>Long position:</strong> ' + positionSummary(event) + '</span>' +
           '<span><strong>Possible move before SL:</strong> ' + esc(possibleMoveBeforeSl) + '</span>' +
+          '<span><strong>Cascade:</strong> ' + esc((event.cascade_phase || "unknown") +
+            " · state=" + (event.cascade_trade_state || "not_configured") +
+            " · direction=" + (event.cascade_direction > 0 ? "LONG" : event.cascade_direction < 0 ? "SHORT" : "na") +
+            " · potential=" + (event.cascade_potential_move_pct == null ? "na" : Number(event.cascade_potential_move_pct).toFixed(3) + "%") +
+            " · adverse=" + (event.cascade_adverse_move_pct == null ? "na" : Number(event.cascade_adverse_move_pct).toFixed(3) + "%")) + '</span>' +
           '<span><strong>Historical evidence:</strong> ' + esc(evidenceText) + '</span>' +
         '</div>' +
         '<div class="table-wrap"><table class="line-plan-table"><thead><tr>' +
@@ -591,6 +604,10 @@ const TEMPLATE: &str = r###"<!doctype html>
         '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
         '<div class="line-plan-note">Cascade speed: ' +
           esc(event.cascade_speed_pct_per_min == null ? "unavailable" : Number(event.cascade_speed_pct_per_min).toFixed(3) + "%/min") +
+          ' · phase: ' + esc(event.cascade_phase || "unknown") +
+          ' · potential: ' + esc(event.cascade_potential_move_pct == null ? "unavailable" : Number(event.cascade_potential_move_pct).toFixed(3) + "%") +
+          ' · adverse: ' + esc(event.cascade_adverse_move_pct == null ? "unavailable" : Number(event.cascade_adverse_move_pct).toFixed(3) + "%") +
+          ' · gate: ' + esc(event.cascade_trade_state || "not_configured") +
           ' · NTPS: ' + esc(ntpsText) + '</div>' +
       '</div>';
     };
@@ -641,6 +658,10 @@ const TEMPLATE: &str = r###"<!doctype html>
           ["Stair net price move", "stair_price_move_pct"],
           ["Stair favorable move", "stair_favorable_move_pct"],
           ["Stair adverse move", "stair_adverse_move_pct"],
+          ["Stair lifecycle", "stair_lifecycle"],
+          ["Stair transition", "stair_transition"],
+          ["Protected swing line", "stair_protected_line"],
+          ["Latest extreme line", "stair_extreme_line"],
           ["Crossed line", "source_line"],
           ["Learned destination", "learned_line"],
           ["Predicted movement", "predicted_direction"],
@@ -797,7 +818,15 @@ const TEMPLATE: &str = r###"<!doctype html>
         ? "stair=" + event.stair_sequence.join(">") +
           " net=" + Number(event.stair_price_move_pct || 0).toFixed(3) + "%" +
           " favorable=" + Number(event.stair_favorable_move_pct || 0).toFixed(3) + "%" +
-          " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%"
+          " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%" +
+          " lifecycle=" + (event.staircase_lifecycle || "na") +
+          " transition=" + (event.staircase_transition || "na") +
+          " protected=" + (event.staircase_protected_line != null ? lineLabels[event.staircase_protected_line] : "na") +
+          " extreme=" + (event.staircase_extreme_line != null ? lineLabels[event.staircase_extreme_line] : "na") +
+          " cascade_state=" + (event.cascade_trade_state || "not_configured") +
+          " cascade_dir=" + (event.cascade_direction > 0 ? "long" : event.cascade_direction < 0 ? "short" : "na") +
+          " cascade_potential=" + (event.cascade_potential_move_pct == null ? "na" : Number(event.cascade_potential_move_pct).toFixed(3) + "%") +
+          " cascade_adverse=" + (event.cascade_adverse_move_pct == null ? "na" : Number(event.cascade_adverse_move_pct).toFixed(3) + "%")
         : "";
       const compactResult = predictionSummary(event) +
         (event.position_outcome ? '<br><span class="subtle">LONG ' + positionSummary(event) + '</span>' : '');

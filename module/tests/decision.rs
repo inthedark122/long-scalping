@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use long_scalping::detection::decision::{
     CandidateView, DecisionComponents, DecisionState, PrimaryKind, PrimaryPhase,
 };
-use long_scalping::detection::mrc_pattern_classification::MrcPatternKind;
+use long_scalping::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle};
 use long_scalping::engine::run;
 use long_scalping::state::EngineState;
 use lte_strategy_bridge::abi::{ModuleEvent, ModuleInput, ModulePositions, ModuleSymbolInfo};
@@ -24,6 +24,8 @@ fn candidate(
         realized_favorable_pct: None,
         realized_adverse_pct: None,
         market_price: 100.0,
+        staircase_lifecycle: None,
+        staircase_transition: None,
     }
 }
 
@@ -105,6 +107,24 @@ fn stairs_end_after_the_favorable_extreme_stops_updating() {
     assert_eq!(result.selected_index, None);
     assert_eq!(result.primary_kind, None);
     assert!(result.support.favorable_extreme_failed);
+}
+
+#[test]
+fn protected_swing_break_ends_stairs_and_blocks_rearming() {
+    let mut state = DecisionState::default();
+    let mut stairs = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    assert_eq!(
+        state
+            .choose(DecisionComponents::default(), &[stairs], 1_000)
+            .selected_index,
+        Some(0)
+    );
+
+    stairs.staircase_lifecycle = Some(StaircaseLifecycle::Invalidated);
+    let result = state.choose(DecisionComponents::default(), &[stairs], 2_000);
+    assert_eq!(result.selected_index, None);
+    assert!(state.trace.ended_by_protected_swing);
+    assert_eq!(state.trace.reason, "primary-ended-awaiting-rearm");
 }
 
 #[test]

@@ -1,5 +1,24 @@
 # Changelog
 
+# 1.0.100
+
+Cascade-driven stairs execution release.
+
+- Use cascade direction, speed, continuation potential, adverse movement, and phase to gate stairs entries.
+- Preserve the one-direction lock and reject stair/cascade direction mismatches.
+- Support up to three staged limit entries and three reduce-only partial take-profit orders.
+- Reconcile staged orders when cascade readiness changes.
+
+# 1.0.99
+
+Selected-candidate entry-note fix.
+
+- Use the selected candidate for the actual opening note, not only the direction summary.
+- Remove unrelated outward and short prediction fields from stairs entry diagnostics.
+- Add staircase lifecycle transitions with protected-swing invalidation; stalled and invalidated staircases no longer create entries.
+- Use cascade as the execution gate for stairs: confirm direction and speed, compare continuation potential with TP distance, and reject adverse movement larger than the planned SL.
+- Support up to three marked cascade entry orders and three reduce-only partial TP orders while preserving one aggregate risk budget.
+
 # 1.0.98
 
 Selected-candidate direction diagnostics release.
