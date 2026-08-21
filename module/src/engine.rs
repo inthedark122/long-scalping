@@ -1,6 +1,7 @@
 use crate::debug;
 use crate::detection::{
-    cascade, decision, mrc_crossing, mrc_pattern_classification, mrc_prediction, vlines,
+    cascade, decision, mrc_crossing, mrc_direction_prediction, mrc_pattern_classification,
+    mrc_prediction, vlines,
 };
 use crate::execution;
 use crate::exit;
@@ -703,6 +704,18 @@ fn process_realtime(
         input.price,
         sug_info.time.max(0) as u64,
     );
+    state.mrc_direction_prediction = mrc_direction_prediction::predict(
+        state.mrc_touch.signal,
+        mrc_direction_prediction::MrcDirectionContext {
+            mean_distance_pct: state
+                .mrc_touch
+                .signal
+                .line(4)
+                .map(|line| line.distance_ema_pct)
+                .unwrap_or(0.0),
+            ..Default::default()
+        },
+    );
     state
         .mrc_risk
         .observe(&snapshot, input.price, sug_info.time as u64);
@@ -735,6 +748,11 @@ fn process_realtime(
         prediction_context,
         state.mrc_touch.signal,
     );
+    if let Some(index) = mrc_observation.selected_candidate_index {
+        if let Some(candidate) = mrc_observation.candidates.get(index) {
+            state.mrc_direction_prediction = candidate.direction_prediction;
+        }
+    }
 
     state.direction_source = "pattern-selector".to_string();
     let selected_analysis = mrc_observation.selected_analysis();

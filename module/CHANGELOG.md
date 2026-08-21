@@ -2,6 +2,15 @@
 
 # Unreleased
 
+# 1.0.105
+
+Incremental MRC-touch direction prediction release.
+
+- Use price position, touch/debounce, EMA speed, angle, and MRC band-width movement as a continuous up/down/sideways prediction signal.
+- Combine current MRC-touch prediction with learned route outcomes through expected-value entry scoring.
+- Keep cascade as movement context instead of using it as the primary direction authority.
+- Expose the prediction state, probabilities, confidence, and candidate edge in debug output.
+
 # 1.0.104
 
 Incremental MRC touch analysis and pattern cleanup.

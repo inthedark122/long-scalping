@@ -123,6 +123,10 @@ pub fn render(
         format!("mrc_risk=[{mrc_risk}]"),
         format!("mrc_cross=[{}]", format_mrc_crossing(state)),
         format!("mrc_touch=[{}]", state.mrc_touch.signal.summary()),
+        format!(
+            "mrc_predict=[{}]",
+            state.mrc_direction_prediction.summary()
+        ),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(

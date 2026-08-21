@@ -1,5 +1,8 @@
 use crate::detection::decision::CandidateView;
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
+use crate::detection::mrc_direction_prediction::{
+    self, MrcDirectionContext, MrcDirectionPrediction,
+};
 use crate::detection::mrc_pattern_classification::{
     self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
@@ -178,6 +181,7 @@ pub struct PatternCandidate {
     pub pattern_kind: MrcPatternKind,
     pub score: f64,
     pub analysis: MrcCrossAnalysis,
+    pub direction_prediction: MrcDirectionPrediction,
     pub entry: Option<EntryReason>,
     pub forecast: bool,
 }
@@ -500,11 +504,7 @@ fn pattern_prior(prediction: &MrcPrediction) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn pattern_score(
-    performance: PatternPerformance,
-    prediction: &MrcPrediction,
-    touch: Option<MrcTouchSignal>,
-) -> f64 {
+fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) -> f64 {
     // A pattern's global ledger is only relevant when the current target has
     // some supporting route evidence. Keep this continuous: one observation
     // contributes, but it cannot carry the same weight as a repeatedly
@@ -529,32 +529,49 @@ fn pattern_score(
         let realized = (performance.average_pnl_pct() + performance.ema_pnl_pct) / 2.0;
         (realized * confidence + prior * (1.0 - confidence)) * evidence_confidence
     };
-    let touch_adjustment = if matches!(
-        prediction.pattern_kind,
-        MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
-    ) {
-        touch
-            .map(|signal| {
-                signal.stairs_pressure
-                    * signal.interest
-                    * direction_sign(prediction.pattern_direction)
-                    * 0.25
-            })
-            .unwrap_or(0.0)
-    } else {
-        0.0
-    };
-    base + touch_adjustment
+    base
 }
 
-fn direction_sign(direction: i8) -> f64 {
-    if direction > 0 {
-        1.0
-    } else if direction < 0 {
-        -1.0
-    } else {
-        0.0
-    }
+fn direction_prediction(
+    touch: Option<MrcTouchSignal>,
+    analysis: &MrcCrossAnalysis,
+) -> MrcDirectionPrediction {
+    let Some(touch) = touch else {
+        return MrcDirectionPrediction::default();
+    };
+    let entry = analysis.effective_entry_price.unwrap_or(0.0);
+    let target_distance_pct = analysis
+        .target_price
+        .filter(|price| price.is_finite() && *price > 0.0 && entry > 0.0)
+        .map(|price| (price - entry).abs() / entry * 100.0)
+        .unwrap_or(0.0);
+    let stop_distance_pct = analysis
+        .stop_price
+        .filter(|price| price.is_finite() && *price > 0.0 && entry > 0.0)
+        .map(|price| (price - entry).abs() / entry * 100.0)
+        .unwrap_or(0.0);
+    let mean_distance_pct = touch
+        .line(4)
+        .map(|line| line.distance_ema_pct)
+        .unwrap_or(0.0);
+    mrc_direction_prediction::predict(
+        touch,
+        MrcDirectionContext {
+            structural_direction: analysis.trade_direction,
+            candidate_direction: analysis.trade_direction,
+            mean_distance_pct,
+            historical_expected_pct: analysis.expected_value_pct,
+            historical_success_rate: analysis.movement_success_rate,
+            pattern_samples: analysis.pattern_samples,
+            target_samples: analysis.target_samples,
+            target_distance_pct,
+            stop_distance_pct,
+        },
+    )
+}
+
+fn prediction_allows_entry(prediction: MrcDirectionPrediction) -> bool {
+    !prediction.has_evidence() || prediction.candidate_edge_pct > 0.0
 }
 
 fn candidate_key(candidate: &PatternCandidate) -> Option<(u8, u8, u8)> {
@@ -1034,8 +1051,8 @@ fn observe_events(
                 volume,
                 context,
             );
-            let entry = analysis
-                .tradeable()
+            let direction_prediction = direction_prediction(touch, &analysis);
+            let entry = (analysis.tradeable() && prediction_allows_entry(direction_prediction))
                 .then(|| {
                     analysis
                         .effective_entry_price
@@ -1062,8 +1079,10 @@ fn observe_events(
             observation.events.push(analysis.clone());
             observation.candidates.push(PatternCandidate {
                 pattern_kind: prediction.pattern_kind,
-                score: pattern_score(*performance, &prediction, touch),
+                score: pattern_score(*performance, &prediction)
+                    + direction_prediction.candidate_edge_pct,
                 analysis,
+                direction_prediction,
                 entry,
                 forecast: false,
             });
@@ -1087,12 +1106,14 @@ fn observe_events(
                         volume,
                         context,
                     );
+                    let direction_prediction = direction_prediction(touch, &analysis);
                     let forecast_allowed = (forecast_can_reach(&analysis)
                         || matches!(
                             prediction.pattern_kind,
                             MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
                         ))
-                        && analysis.forecast_tradeable();
+                        && analysis.forecast_tradeable()
+                        && prediction_allows_entry(direction_prediction);
                     let entry = if forecast_allowed {
                         analysis
                             .effective_entry_price
@@ -1113,8 +1134,10 @@ fn observe_events(
                     };
                     observation.candidates.push(PatternCandidate {
                         pattern_kind: prediction.pattern_kind,
-                        score: pattern_score(*performance, &prediction, touch),
+                        score: pattern_score(*performance, &prediction)
+                            + direction_prediction.candidate_edge_pct,
                         analysis,
+                        direction_prediction,
                         entry,
                         forecast: true,
                     });
