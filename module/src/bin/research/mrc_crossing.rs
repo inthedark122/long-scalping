@@ -8,7 +8,7 @@ use long_scalping::detection::mrc_pattern_classification::{
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
     cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction,
-    mrc_touch, mrc_touch_learning, vlines,
+    mrc_stair_entry::StairEntryState, mrc_touch, mrc_touch_learning, vlines,
 };
 use long_scalping::model::Candle;
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
@@ -226,6 +226,10 @@ pub(crate) struct CrossingEvent {
     pub(crate) staircase_transition: Option<StaircaseTransition>,
     pub(crate) staircase_protected_line: Option<usize>,
     pub(crate) staircase_extreme_line: Option<usize>,
+    pub(crate) stair_entry_state: Option<StairEntryState>,
+    pub(crate) stair_entry_reason: Option<String>,
+    pub(crate) stair_entry_line: Option<usize>,
+    pub(crate) stair_entry_approved: bool,
     pub(crate) cascade_enabled: bool,
     pub(crate) cascade_phase: MovementPhase,
     pub(crate) cascade_potential_move_pct: Option<f64>,
@@ -356,6 +360,10 @@ fn crossing_event_from_analysis(
         staircase_transition: event.staircase_transition,
         staircase_protected_line: event.staircase_protected_line.map(|line| line as usize),
         staircase_extreme_line: event.staircase_extreme_line.map(|line| line as usize),
+        stair_entry_state: event.stair_entry_state,
+        stair_entry_reason: event.stair_entry_reason.clone(),
+        stair_entry_line: event.stair_entry_line.map(|line| line as usize),
+        stair_entry_approved: event.stair_entry_approved,
         cascade_enabled: event.cascade_enabled,
         cascade_phase: event.cascade_phase,
         cascade_potential_move_pct: event.cascade_potential_move_pct,
@@ -1017,6 +1025,7 @@ impl Analyzer {
             cascade_phase: self.cascade_signal.phase,
             cascade_potential_move_pct: self.cascade_signal.potential_move_pct,
             cascade_adverse_move_pct: self.cascade_signal.adverse_move_pct,
+            ..Default::default()
         };
         let observation = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
             &mut self.model,

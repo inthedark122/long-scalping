@@ -4,6 +4,7 @@ use crate::detection::mrc_pattern_classification::{
     MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
 use crate::detection::mrc_prediction::{self, MrcLinePlan, MrcPredictionContext};
+use crate::detection::mrc_stair_entry::StairEntryState;
 use crate::detection::vlines::MrcCrossEvent;
 use crate::state::{MrcCrossingState, MrcForecastStats, MrcMovementSnapshot};
 
@@ -40,6 +41,9 @@ pub struct MrcCrossAnalysis {
     pub barrier_state: BarrierState,
     /// Compact execution information for every MRC destination line.
     pub line_plans: [MrcLinePlan; mrc_prediction::MRC_LINE_COUNT],
+    /// Route history retained when the entry price is moved to a pullback or
+    /// retest line.
+    pub line_stats: [MrcForecastStats; mrc_prediction::MRC_LINE_COUNT],
     pub target_line: Option<u8>,
     pub predicted_line_price: Option<f64>,
     pub trade_target_line: Option<u8>,
@@ -67,6 +71,12 @@ pub struct MrcCrossAnalysis {
     pub staircase_transition: Option<StaircaseTransition>,
     pub staircase_protected_line: Option<u8>,
     pub staircase_extreme_line: Option<u8>,
+    /// Current entry location classification for staircase execution. The
+    /// structural pattern remains separate from this timing decision.
+    pub stair_entry_state: Option<StairEntryState>,
+    pub stair_entry_reason: Option<String>,
+    pub stair_entry_line: Option<u8>,
+    pub stair_entry_approved: bool,
     pub cascade_enabled: bool,
     pub cascade_direction: i8,
     pub cascade_speed_pct_per_min: Option<f64>,
@@ -142,7 +152,9 @@ impl MrcCrossAnalysis {
             return !matches!(
                 self.staircase_lifecycle,
                 Some(StaircaseLifecycle::Invalidated)
-            ) && self.levels_tradeable();
+            ) && self.stair_entry_state.is_none_or(|state| state.opens())
+                && self.stair_entry_approved_or_legacy()
+                && self.levels_tradeable();
         }
         if matches!(
             self.staircase_lifecycle,
@@ -172,7 +184,9 @@ impl MrcCrossAnalysis {
             return !matches!(
                 self.staircase_lifecycle,
                 Some(StaircaseLifecycle::Invalidated)
-            ) && self.levels_tradeable();
+            ) && self.stair_entry_state.is_none_or(|state| state.opens())
+                && self.stair_entry_approved_or_legacy()
+                && self.levels_tradeable();
         }
         if matches!(
             self.staircase_lifecycle,
@@ -184,6 +198,10 @@ impl MrcCrossAnalysis {
             return false;
         }
         self.levels_tradeable()
+    }
+
+    fn stair_entry_approved_or_legacy(&self) -> bool {
+        self.stair_entry_state.is_none() || self.stair_entry_approved
     }
 }
 
@@ -387,6 +405,7 @@ pub fn build_with_context(
         barrier_price: barrier_line.and_then(|line| lines.get(line as usize).copied()),
         barrier_state,
         line_plans: [MrcLinePlan::default(); mrc_prediction::MRC_LINE_COUNT],
+        line_stats: [MrcForecastStats::default(); mrc_prediction::MRC_LINE_COUNT],
         target_line: None,
         predicted_line_price: None,
         trade_target_line: None,
@@ -411,6 +430,10 @@ pub fn build_with_context(
         staircase_transition: None,
         staircase_protected_line: None,
         staircase_extreme_line: None,
+        stair_entry_state: None,
+        stair_entry_reason: None,
+        stair_entry_line: None,
+        stair_entry_approved: false,
         cascade_enabled: context.cascade_enabled,
         cascade_direction: context.cascade_direction,
         cascade_speed_pct_per_min: context.cascade_speed_pct_per_min,
@@ -471,6 +494,7 @@ pub fn build_with_context(
     let Some(prediction) = prediction else {
         return analysis;
     };
+    analysis.line_stats = prediction.line_stats;
     let predicted_direction = prediction.pattern_direction;
     let trade_direction = predicted_direction;
 

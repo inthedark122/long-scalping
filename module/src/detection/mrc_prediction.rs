@@ -26,6 +26,11 @@ pub struct MrcPredictionContext {
     pub cascade_phase: MovementPhase,
     pub cascade_potential_move_pct: Option<f64>,
     pub cascade_adverse_move_pct: Option<f64>,
+    /// Higher-timeframe MRC structure used only as confirmation for the
+    /// current staircase entry location. It never selects the direction.
+    pub higher_timeframe_slope: i8,
+    pub higher_timeframe_bullish: bool,
+    pub higher_timeframe_bearish: bool,
 }
 
 impl MrcPredictionContext {

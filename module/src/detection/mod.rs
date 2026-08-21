@@ -6,6 +6,7 @@ pub mod mrc_crossing;
 pub mod mrc_direction_prediction;
 pub mod mrc_pattern_classification;
 pub mod mrc_prediction;
+pub mod mrc_stair_entry;
 pub mod mrc_touch;
 pub mod mrc_touch_learning;
 pub mod vlines;

@@ -7,6 +7,7 @@ use crate::detection::mrc_pattern_classification::{
     self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
 use crate::detection::mrc_prediction;
+use crate::detection::mrc_stair_entry;
 use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
 use crate::detection::mrc_touch_learning::MrcTouchLearningSignal;
 use crate::detection::vlines::MrcCrossEvent;
@@ -68,6 +69,14 @@ pub fn wait_entry_gate(wait_reason: MrcWaitReason) -> EntryGate {
             "pattern-wait-mrc-touch".to_string(),
             vec![EntryWaitSolution::MrcCrossing],
             vec!["waiting for a current touch or crossing of the selected MRC line".to_string()],
+        ),
+        MrcWaitReason::StairEntry => (
+            "pattern-wait-stair-entry".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec![
+                "STAIRS direction is valid, but the current price is not a safe entry location"
+                    .to_string(),
+            ],
         ),
     };
     EntryGate::Wait(EntryWait {
@@ -185,6 +194,7 @@ pub enum MrcWaitReason {
     NoDirectionalTarget,
     NoReliablePrediction,
     Touch,
+    StairEntry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -850,7 +860,7 @@ pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
     };
     format!(
         "line_plans[e:{} tp:{}{} sl={}{}]",
-        line_label(Some(analysis.line_idx)),
+        line_label(analysis.stair_entry_line.or(Some(analysis.line_idx))),
         line_label(target_line),
         compact_plan_move(analysis, target_line),
         line_label(analysis.stop_loss_line),
@@ -1076,6 +1086,7 @@ fn observe_events(
     let mut saw_untradeable_prediction = false;
     let mut saw_unreliable_prediction = false;
     let mut saw_missing_touch = false;
+    let mut saw_stair_entry_wait = false;
     if touch_learning.is_some_and(|learning| !learning.exact_touch) {
         saw_missing_touch = true;
     }
@@ -1097,7 +1108,7 @@ fn observe_events(
             let performance = &mut state.pattern_performance[prediction.pattern_kind.index()];
             performance.observe();
             observation.samples = observation.samples.max(prediction.samples);
-            let analysis = mrc_cross_analysis::build_with_context(
+            let mut analysis = mrc_cross_analysis::build_with_context(
                 event,
                 Some(&prediction),
                 lines,
@@ -1105,6 +1116,7 @@ fn observe_events(
                 volume,
                 context,
             );
+            mrc_stair_entry::apply(&mut analysis, lines, touch.unwrap_or_default(), context);
             let direction_prediction =
                 direction_prediction(touch, touch_learning.unwrap_or_default(), &analysis);
             let touch_ready = touch_learning
@@ -1133,6 +1145,9 @@ fn observe_events(
             if entry.is_none() {
                 saw_untradeable_prediction = true;
                 saw_missing_touch |= !touch_ready;
+                saw_stair_entry_wait |= analysis
+                    .stair_entry_state
+                    .is_some_and(|state| !state.opens());
                 if analysis.barrier_state == mrc_cross_analysis::BarrierState::Approaching {
                     saw_crossing_barrier = true;
                 }
@@ -1158,12 +1173,18 @@ fn observe_events(
                         &mut state.pattern_performance[prediction.pattern_kind.index()];
                     performance.observe();
                     observation.samples = observation.samples.max(prediction.samples);
-                    let analysis = mrc_cross_analysis::build_with_context(
+                    let mut analysis = mrc_cross_analysis::build_with_context(
                         &event,
                         Some(&prediction),
                         lines,
                         crossing,
                         volume,
+                        context,
+                    );
+                    mrc_stair_entry::apply(
+                        &mut analysis,
+                        lines,
+                        touch.unwrap_or_default(),
                         context,
                     );
                     let direction_prediction =
@@ -1198,6 +1219,9 @@ fn observe_events(
                     } else {
                         None
                     };
+                    saw_stair_entry_wait |= analysis
+                        .stair_entry_state
+                        .is_some_and(|state| !state.opens());
                     observation.candidates.push(PatternCandidate {
                         pattern_kind: prediction.pattern_kind,
                         score: pattern_score(*performance, &prediction),
@@ -1240,7 +1264,9 @@ fn observe_events(
         }
     }
     if observation.entry.is_none() {
-        observation.wait_reason = if saw_missing_touch {
+        observation.wait_reason = if saw_stair_entry_wait {
+            Some(MrcWaitReason::StairEntry)
+        } else if saw_missing_touch {
             Some(MrcWaitReason::Touch)
         } else if saw_crossing_barrier {
             Some(MrcWaitReason::Crossing)
@@ -1270,8 +1296,11 @@ fn entry_reason(
         mrc_max: event.mrc_high,
         target_price,
         stop_price,
-        source_line: event.line_idx,
-        target_line: prediction.target_line,
+        source_line: analysis.stair_entry_line.unwrap_or(event.line_idx),
+        target_line: analysis
+            .take_profit_line
+            .or(analysis.trade_target_line)
+            .unwrap_or(prediction.target_line),
         pattern_kind: prediction.pattern_kind.as_str().to_string(),
         pattern: prediction.pattern.clone(),
         pattern_elapsed_ms: prediction.elapsed_ms.clone(),

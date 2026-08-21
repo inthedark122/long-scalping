@@ -32,6 +32,7 @@ fn line_plan_reports_movement_stop_time_and_route_role() {
             cascade_phase: long_scalping::detection::cascade::MovementPhase::Building,
             cascade_potential_move_pct: Some(3.0),
             cascade_adverse_move_pct: Some(0.25),
+            ..Default::default()
         },
     );
 

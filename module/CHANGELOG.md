@@ -2,6 +2,16 @@
 
 # Unreleased
 
+# 1.0.108
+
+Stair entry-quality release.
+
+- Add a dedicated staircase entry-state layer for pullback, retest, continuation, top, and risk-rejected states.
+- Keep STAIRS_UP/STAIRS_DOWN as the structural direction authority while using current MRC touches, debounce, movement state, 5m context, and fresh-extreme timing to select safer limit entries.
+- Prevent top-of-spike entries and reject stalled, adverse, or reversal states instead of chasing an extreme.
+- Expose the selected stair entry state, reason, and line in analysis and runtime debug output.
+- Local 10,000-sample replay: CAP 128 positions, BEAT 138, ETH 137; all three replay nets improved versus the previous local reports.
+
 # 1.0.107
 
 Structural continuation exit release.
