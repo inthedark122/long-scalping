@@ -18,11 +18,14 @@ pub(super) fn record_exit_memory(
                 Direction::Short => "tp-short-",
                 Direction::Both => "",
             };
-            if let Some(index) = mark
-                .strip_prefix(prefix)
-                .and_then(|value| value.parse::<usize>().ok())
-                .and_then(|value| (1..=3).contains(&value).then_some(value - 1))
-            {
+            let index = if mark == format!("{prefix}far") {
+                Some(1)
+            } else {
+                mark.strip_prefix(prefix)
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .and_then(|value| (1..=3).contains(&value).then_some(value - 1))
+            };
+            if let Some(index) = index {
                 state.take_profit_allocation.record_fill(
                     dir_to_position(direction),
                     index,

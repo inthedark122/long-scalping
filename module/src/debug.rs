@@ -1,5 +1,5 @@
 use crate::detection::mrc_pattern_classification;
-use crate::format::fmt_price_tick;
+use crate::format::{fmt_duration_ms, fmt_price_tick};
 use crate::model::{EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, TradeDecision};
 use crate::state::EngineState;
 
@@ -98,7 +98,7 @@ pub fn render(
             decision.market_state, state.direction_source, state.direction_reason
         ),
         format!(
-            "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} multi={} staged={}",
+            "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} avg_time={}",
             state.cascade_signal.dir,
             state.cascade_signal.phase.as_str(),
             state
@@ -116,8 +116,11 @@ pub fn render(
                 .adverse_move_pct
                 .map(|value| format!("{value:.3}%"))
                 .unwrap_or_else(|| "na".to_string()),
-            state.cascade_signal.multi_order_ready(),
-            state.cascade_entry_marks.len(),
+            state
+                .cascade_signal
+                .average_duration_ms
+                .map(|value| fmt_duration_ms(value as u64))
+                .unwrap_or_else(|| "na".to_string()),
         ),
         format!("volume=[{}]", state.volume_gain.summary()),
         format!("mrc_risk=[{mrc_risk}]"),

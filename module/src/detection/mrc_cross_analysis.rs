@@ -59,6 +59,10 @@ pub struct MrcCrossAnalysis {
     pub stair_price_move_pct: f64,
     pub stair_favorable_move_pct: f64,
     pub stair_adverse_move_pct: f64,
+    pub stair_favorable_extreme_price: f64,
+    pub stair_favorable_extreme_time_ms: u64,
+    pub stair_adverse_extreme_price: f64,
+    pub stair_adverse_extreme_time_ms: u64,
     pub staircase_lifecycle: Option<StaircaseLifecycle>,
     pub staircase_transition: Option<StaircaseTransition>,
     pub staircase_protected_line: Option<u8>,
@@ -399,6 +403,10 @@ pub fn build_with_context(
         stair_price_move_pct: 0.0,
         stair_favorable_move_pct: 0.0,
         stair_adverse_move_pct: 0.0,
+        stair_favorable_extreme_price: 0.0,
+        stair_favorable_extreme_time_ms: 0,
+        stair_adverse_extreme_price: 0.0,
+        stair_adverse_extreme_time_ms: 0,
         staircase_lifecycle: None,
         staircase_transition: None,
         staircase_protected_line: None,
@@ -570,6 +578,10 @@ pub fn build_with_context(
     analysis.stair_price_move_pct = prediction.stair_price_move_pct;
     analysis.stair_favorable_move_pct = prediction.stair_favorable_move_pct;
     analysis.stair_adverse_move_pct = prediction.stair_adverse_move_pct;
+    analysis.stair_favorable_extreme_price = prediction.favorable_extreme_price;
+    analysis.stair_favorable_extreme_time_ms = prediction.favorable_extreme_time_ms;
+    analysis.stair_adverse_extreme_price = prediction.adverse_extreme_price;
+    analysis.stair_adverse_extreme_time_ms = prediction.adverse_extreme_time_ms;
     analysis.staircase_lifecycle = prediction.staircase_lifecycle;
     analysis.staircase_transition = prediction.staircase_transition;
     analysis.staircase_protected_line = prediction.staircase_protected_line;

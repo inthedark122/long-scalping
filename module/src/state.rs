@@ -1,7 +1,9 @@
 use crate::detection::cascade::{CascadeSignal, CascadeState, CascadeTradeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::detection::mrc_direction_prediction::MrcDirectionPrediction;
-use crate::detection::mrc_pattern_classification::{MrcPatternKind, MRC_PATTERN_COUNT};
+use crate::detection::mrc_pattern_classification::{
+    MrcPatternKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
+};
 use crate::detection::mrc_touch::MrcTouchState;
 use crate::detection::mrc_touch_learning::MrcTouchLearningState;
 use crate::model::{
@@ -26,6 +28,123 @@ pub struct PositionRuntime {
     pub exit_mode: ExitMode,
     pub exit_type: ExitType,
     pub entry_reason: Option<EntryReason>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExitProgressMode {
+    #[default]
+    Primary,
+    Continuation,
+    Stalled,
+}
+
+impl ExitProgressMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Continuation => "continuation",
+            Self::Stalled => "stalled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StaircaseProgress {
+    pub direction: i8,
+    pub lifecycle: Option<StaircaseLifecycle>,
+    pub transition: Option<StaircaseTransition>,
+    pub protected_line: Option<u8>,
+    pub extreme_line: Option<u8>,
+    pub favorable_extreme_price: f64,
+    pub favorable_extreme_time_ms: u64,
+    pub adverse_extreme_price: f64,
+    pub adverse_extreme_time_ms: u64,
+    pub pattern_elapsed_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExitProgress {
+    pub side: PositionState,
+    pub mode: ExitProgressMode,
+    pub entry_time_ms: u64,
+    pub last_extreme_price: f64,
+    pub last_extreme_update_ms: u64,
+    pub far_target_price: f64,
+    pub orders_initialized: bool,
+    pub last_ntps: i64,
+    pub ntps_rising_count: u32,
+    pub last_volume_gain: f64,
+    pub volume_rising_count: u32,
+}
+
+impl ExitProgress {
+    pub fn begin(&mut self, side: PositionState, entry_time_ms: u64, entry_price: f64) {
+        *self = Self {
+            side,
+            mode: ExitProgressMode::Primary,
+            entry_time_ms,
+            last_extreme_price: entry_price,
+            last_extreme_update_ms: entry_time_ms,
+            ..Self::default()
+        };
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn observe_activity(&mut self, ntps: i64, volume_gain: f64) {
+        if self.side == PositionState::Flat {
+            return;
+        }
+        if ntps > self.last_ntps && self.last_ntps > 0 {
+            self.ntps_rising_count = self.ntps_rising_count.saturating_add(1);
+        } else if ntps < self.last_ntps {
+            self.ntps_rising_count = 0;
+        }
+        if volume_gain.is_finite() {
+            if self.last_volume_gain.is_finite() && volume_gain > self.last_volume_gain {
+                self.volume_rising_count = self.volume_rising_count.saturating_add(1);
+            } else if volume_gain < self.last_volume_gain {
+                self.volume_rising_count = 0;
+            }
+            self.last_volume_gain = volume_gain;
+        }
+        self.last_ntps = ntps;
+    }
+
+    pub fn observe_extreme(&mut self, direction: i8, price: f64, time_ms: u64) {
+        if self.side == PositionState::Flat
+            || direction != position_direction(self.side)
+            || !price.is_finite()
+            || price <= 0.0
+            || time_ms < self.entry_time_ms
+        {
+            return;
+        }
+        let improved = match self.side {
+            PositionState::Long => price > self.last_extreme_price,
+            PositionState::Short => price < self.last_extreme_price,
+            PositionState::Flat => false,
+        };
+        if improved {
+            self.last_extreme_price = price;
+            self.last_extreme_update_ms = time_ms;
+        }
+    }
+
+    pub fn activity_supports_continuation(self, no_pullback_count: u32) -> bool {
+        no_pullback_count > 0 && self.ntps_rising_count > 0 && self.volume_rising_count > 0
+    }
+}
+
+fn position_direction(side: PositionState) -> i8 {
+    match side {
+        PositionState::Long => 1,
+        PositionState::Short => -1,
+        PositionState::Flat => 0,
+    }
 }
 
 /// Fixed quantity allocation for the partial take-profit legs of one
@@ -350,12 +469,10 @@ pub struct EngineState {
     pub cascade: CascadeState,
     pub cascade_signal: CascadeSignal,
     pub selected_cascade_trade_state: CascadeTradeState,
-    /// Stable marks for up to three cascade-staged entry orders. The orders
-    /// remain alive after the first leg fills until the position finishes or a
-    /// new entry plan replaces them.
-    pub cascade_entry_marks: Vec<String>,
-    /// Whether the active exit plan currently uses cascade partial TP orders.
-    pub cascade_exit_orders: bool,
+    /// Latest staircase extreme/protected-swing information used by exits.
+    pub staircase_progress: StaircaseProgress,
+    /// One-way exit state. Cascade contributes timing/activity context only.
+    pub exit_progress: ExitProgress,
     pub pending_entry_bar: Option<u64>,
     pub volume_gain: VolumeGainTracker,
     pub direction_source: String,
@@ -389,8 +506,8 @@ impl Default for EngineState {
             cascade: CascadeState::default(),
             cascade_signal: CascadeSignal::default(),
             selected_cascade_trade_state: CascadeTradeState::NotConfigured,
-            cascade_entry_marks: Vec::new(),
-            cascade_exit_orders: false,
+            staircase_progress: StaircaseProgress::default(),
+            exit_progress: ExitProgress::default(),
             pending_entry_bar: None,
             volume_gain: VolumeGainTracker::default(),
             direction_source: "pattern-selector".to_string(),
@@ -434,6 +551,8 @@ struct PersistedState {
     trade_direction_lock: Option<i8>,
     #[serde(default)]
     mrc_touch_learning: MrcTouchLearningState,
+    #[serde(default)]
+    exit_progress: ExitProgress,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -452,6 +571,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         decision_state: state.mrc_crossing_model.decision_state.clone(),
         trade_direction_lock: state.mrc_crossing_model.trade_direction_lock,
         mrc_touch_learning: state.mrc_touch_learning.clone(),
+        exit_progress: state.exit_progress,
     })
     .ok()
 }
@@ -485,6 +605,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.mrc_crossing_model.decision_state = persisted.decision_state;
     state.mrc_crossing_model.trade_direction_lock = persisted.trade_direction_lock;
     state.mrc_touch_learning = persisted.mrc_touch_learning;
+    state.exit_progress = persisted.exit_progress;
     state
         .mrc_crossing_model
         .decision_state
@@ -506,6 +627,7 @@ pub fn sync_position_state(
             state.mrc_crossing_model.last_plan_key = None;
         }
         state.take_profit_allocation.reset();
+        state.exit_progress.reset();
         state.tp_reprice_history.reset();
         state.pending_entry_bar = None;
     }

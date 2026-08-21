@@ -6,7 +6,7 @@
 use crate::model::{Candle, TimeframeSnapshot};
 
 const CASCADE_SAMPLE_WINDOW: usize = 30;
-const CASCADE_TP_PERCENTILE: f64 = 0.90;
+const CASCADE_MOVE_PERCENTILE: f64 = 0.90;
 const MIN_SAMPLES_FOR_ABSORPTION: u32 = 10;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -39,6 +39,10 @@ pub struct CascadeState {
     pub movement_history_len: usize,
     pub movement_start_ms: u64,
     pub last_time_ms: u64,
+    pub movement_durations_ms: [u64; CASCADE_SAMPLE_WINDOW],
+    pub movement_durations_pos: usize,
+    pub movement_durations_len: usize,
+    pub average_duration_ms: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -128,9 +132,12 @@ pub struct CascadeSignal {
     /// the current price.
     pub potential_move_pct: Option<f64>,
     /// Largest recent completed movement in the opposite direction, expressed
-    /// as a positive percentage. This is the expected adverse excursion used
-    /// to validate a stop and place staged entries.
+    /// as a positive percentage. This is movement-risk context for the MRC
+    /// analysis; it does not create orders.
     pub adverse_move_pct: Option<f64>,
+    /// Average duration of completed movement blocks. Cascade supplies this
+    /// as timing context only; it does not select TP direction.
+    pub average_duration_ms: Option<f64>,
 }
 
 impl CascadeSignal {
@@ -176,16 +183,6 @@ impl CascadeSignal {
             return CascadeTradeState::AdverseMoveTooLarge;
         }
         CascadeTradeState::Ready
-    }
-
-    pub fn multi_order_ready(self) -> bool {
-        self.dir != 0
-            && self
-                .speed_pct_per_min
-                .is_some_and(|speed| speed.is_finite() && speed > 0.0)
-            && self
-                .potential_move_pct
-                .is_some_and(|value| value.is_finite() && value > 0.0)
     }
 }
 
@@ -255,6 +252,18 @@ fn update_block(
         false
     } else {
         let cas_size = (memory.cas_high - memory.cas_low).abs();
+        if now_ms > memory.movement_start_ms && memory.movement_start_ms > 0 {
+            let duration_ms = now_ms.saturating_sub(memory.movement_start_ms);
+            memory.movement_durations_ms[memory.movement_durations_pos] = duration_ms;
+            memory.movement_durations_pos =
+                (memory.movement_durations_pos + 1) % memory.movement_durations_ms.len();
+            memory.movement_durations_len =
+                (memory.movement_durations_len + 1).min(memory.movement_durations_ms.len());
+            let total: u64 = memory.movement_durations_ms[..memory.movement_durations_len]
+                .iter()
+                .sum();
+            memory.average_duration_ms = total as f64 / memory.movement_durations_len as f64;
+        }
         if cas_size > 0.0 {
             memory.movement_history[memory.movement_history_pos] = CascadeMovement {
                 high: memory.cas_high,
@@ -335,7 +344,7 @@ pub fn percentile_window(memory: &CascadeState, percentile: f64) -> Option<f64> 
 }
 
 pub fn cascade_take_profit_distance(memory: &CascadeState) -> Option<f64> {
-    percentile_window(memory, CASCADE_TP_PERCENTILE)
+    percentile_window(memory, CASCADE_MOVE_PERCENTILE)
 }
 
 pub fn update_from_candle(memory: &mut CascadeState, candle: &Candle) -> CascadeSignal {
@@ -464,6 +473,9 @@ pub fn update_from_candle_at(
         speed_pct_per_min,
         potential_move_pct,
         adverse_move_pct,
+        average_duration_ms: (memory.average_duration_ms.is_finite()
+            && memory.average_duration_ms > 0.0)
+            .then_some(memory.average_duration_ms),
     }
 }
 

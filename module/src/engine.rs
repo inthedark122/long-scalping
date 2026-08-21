@@ -200,8 +200,8 @@ fn handle_signal(
         state.mrc_touch.reset();
         state.cascade = crate::detection::cascade::CascadeState::default();
         state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
-        state.cascade_entry_marks.clear();
-        state.cascade_exit_orders = false;
+        state.staircase_progress = crate::state::StaircaseProgress::default();
+        state.exit_progress.reset();
         if let Some(now_ms) = input
             .sug_info
             .as_ref()
@@ -393,6 +393,12 @@ fn handle_new_position(
             .unwrap_or(0.0),
     );
     state.take_profit_allocation.begin(side, allocation_qty);
+    let entry_time_ms = input
+        .sug_info
+        .as_ref()
+        .map(|info| info.time.max(0) as u64)
+        .unwrap_or_default();
+    state.exit_progress.begin(side, entry_time_ms, entry_price);
     state.position = PositionRuntime {
         side,
         entry_price,
@@ -451,7 +457,12 @@ fn handle_new_position(
                 entry_price,
                 plan.take_profit.price(),
                 Some(&note),
-                state.cascade_signal.multi_order_ready(),
+                exit::far_target_for_position(
+                    state,
+                    &snapshot,
+                    entry_price,
+                    plan.take_profit.price(),
+                ),
             );
         }
     }
@@ -487,9 +498,8 @@ fn handle_finish_position(
         state.pending_entry_bar = None;
         state.mrc_crossing_model.last_plan_key = None;
     }
-    let mut cancel_orders = exit::all_tp_marks(direction);
-    cancel_orders.extend(std::mem::take(&mut state.cascade_entry_marks));
-    state.cascade_exit_orders = false;
+    let cancel_orders = exit::all_tp_marks(direction);
+    state.exit_progress.reset();
     ModuleOutput {
         cancel_orders,
         debug: format!("finish {:?} pnl={:.4}", direction, pnl),
@@ -666,6 +676,15 @@ fn process_realtime(
         input.price,
     );
 
+    let now_ms = sug_info.time.max(0) as u64;
+    if state.position.side != crate::model::PositionState::Flat
+        && state.exit_progress.side != state.position.side
+    {
+        state
+            .exit_progress
+            .begin(state.position.side, now_ms, state.position.entry_price);
+    }
+
     let Some(snapshot) = state.last_snapshot.clone() else {
         let error = format!(
             "event=SugInfo time={} symbol={} missing-cached-snapshot {}",
@@ -732,6 +751,9 @@ fn process_realtime(
     state
         .mrc_risk
         .observe(&snapshot, input.price, sug_info.time as u64);
+    state
+        .exit_progress
+        .observe_activity(sug_info.indicator.ntps, snapshot.tf1m.volume_gain);
 
     let prediction_context = mrc_prediction::MrcPredictionContext {
         cascade_enabled: true,
@@ -770,6 +792,37 @@ fn process_realtime(
 
     state.direction_source = "pattern-selector".to_string();
     let selected_analysis = mrc_observation.selected_analysis();
+    if let Some(analysis) = selected_analysis.filter(|analysis| {
+        matches!(
+            analysis.pattern_kind,
+            Some(
+                mrc_pattern_classification::MrcPatternKind::StairsUp
+                    | mrc_pattern_classification::MrcPatternKind::StairsDown
+            )
+        )
+    }) {
+        let staircase = &mut state.staircase_progress;
+        staircase.direction = analysis.trade_direction;
+        staircase.lifecycle = analysis.staircase_lifecycle;
+        staircase.transition = analysis.staircase_transition;
+        staircase.protected_line = analysis.staircase_protected_line;
+        staircase.extreme_line = analysis.staircase_extreme_line;
+        if analysis.stair_favorable_extreme_time_ms >= staircase.favorable_extreme_time_ms {
+            staircase.favorable_extreme_price = analysis.stair_favorable_extreme_price;
+            staircase.favorable_extreme_time_ms = analysis.stair_favorable_extreme_time_ms;
+        }
+        if analysis.stair_adverse_extreme_time_ms >= staircase.adverse_extreme_time_ms {
+            staircase.adverse_extreme_price = analysis.stair_adverse_extreme_price;
+            staircase.adverse_extreme_time_ms = analysis.stair_adverse_extreme_time_ms;
+        }
+        state.exit_progress.observe_extreme(
+            analysis.trade_direction,
+            analysis.stair_favorable_extreme_price,
+            analysis.stair_favorable_extreme_time_ms,
+        );
+        staircase.pattern_elapsed_ms = analysis.pattern_elapsed_ms;
+        staircase.updated_at_ms = analysis.now_ms;
+    }
     let selected_pattern_reason = mrc_observation
         .selected_pattern
         .map(|pattern| pattern.as_str().to_string())

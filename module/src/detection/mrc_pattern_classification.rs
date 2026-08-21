@@ -152,6 +152,12 @@ pub struct MrcPatternSignal {
     pub favorable_move_pct: f64,
     /// Maximum adverse price excursion from the staircase start, in percent.
     pub adverse_move_pct: f64,
+    /// Price and timestamp of the latest favorable staircase extreme.
+    pub favorable_extreme_price: f64,
+    pub favorable_extreme_time_ms: u64,
+    /// Price and timestamp of the latest adverse staircase extreme.
+    pub adverse_extreme_price: f64,
+    pub adverse_extreme_time_ms: u64,
     /// Current lifecycle for staircase patterns. Other patterns leave this
     /// unset.
     pub staircase_lifecycle: Option<StaircaseLifecycle>,
@@ -192,17 +198,17 @@ fn stair_price_metrics(
     history: &[MrcHistoryEvent],
     start_index: usize,
     direction: i8,
-) -> (Vec<u8>, f64, f64, f64) {
+) -> (Vec<u8>, f64, f64, f64, f64, u64, f64, u64) {
     let sequence = history[start_index..]
         .iter()
         .map(|event| event.line)
         .collect::<Vec<_>>();
     let Some(start) = history.get(start_index) else {
-        return (sequence, 0.0, 0.0, 0.0);
+        return (sequence, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0);
     };
     let start_price = start.market_price;
     let Some(current) = history.last() else {
-        return (sequence, 0.0, 0.0, 0.0);
+        return (sequence, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0);
     };
     if !matches!(direction, 1 | -1)
         || !start_price.is_finite()
@@ -210,15 +216,38 @@ fn stair_price_metrics(
         || !current.market_price.is_finite()
         || current.market_price <= 0.0
     {
-        return (sequence, 0.0, 0.0, 0.0);
+        return (sequence, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0);
     }
     let prices = history[start_index..]
         .iter()
-        .map(|event| event.market_price)
-        .filter(|price| price.is_finite() && *price > 0.0)
+        .filter(|event| event.market_price.is_finite() && event.market_price > 0.0)
         .collect::<Vec<_>>();
-    let high = prices.iter().copied().fold(start_price, f64::max);
-    let low = prices.iter().copied().fold(start_price, f64::min);
+    let high = prices
+        .iter()
+        .map(|event| event.market_price)
+        .fold(start_price, f64::max);
+    let low = prices
+        .iter()
+        .map(|event| event.market_price)
+        .fold(start_price, f64::min);
+    let high_event = prices
+        .iter()
+        .max_by(|left, right| {
+            left.market_price
+                .partial_cmp(&right.market_price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(start);
+    let low_event = prices
+        .iter()
+        .min_by(|left, right| {
+            left.market_price
+                .partial_cmp(&right.market_price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(start);
     let net = (current.market_price - start_price) / start_price * 100.0 * direction as f64;
     let favorable = if direction > 0 {
         (high - start_price) / start_price * 100.0
@@ -230,7 +259,31 @@ fn stair_price_metrics(
     } else {
         (high - start_price) / start_price * 100.0
     };
-    (sequence, net, favorable, adverse)
+    let (favorable_price, favorable_time_ms, adverse_price, adverse_time_ms) = if direction > 0 {
+        (
+            high_event.market_price,
+            high_event.now_ms,
+            low_event.market_price,
+            low_event.now_ms,
+        )
+    } else {
+        (
+            low_event.market_price,
+            low_event.now_ms,
+            high_event.market_price,
+            high_event.now_ms,
+        )
+    };
+    (
+        sequence,
+        net,
+        favorable,
+        adverse,
+        favorable_price,
+        favorable_time_ms,
+        adverse_price,
+        adverse_time_ms,
+    )
 }
 
 fn zone(line: u8) -> Option<bool> {
@@ -269,6 +322,10 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        favorable_extreme_price: 0.0,
+        favorable_extreme_time_ms: 0,
+        adverse_extreme_price: 0.0,
+        adverse_extreme_time_ms: 0,
         staircase_lifecycle: None,
         staircase_transition: None,
         staircase_protected_line: None,
@@ -460,8 +517,16 @@ fn staircase_for_direction(
     };
     let start_index = reported_segment.start_index;
     let trend_indices = reported_segment.trend_indices;
-    let (sequence, price_move_pct, favorable_move_pct, adverse_move_pct) =
-        stair_price_metrics(history, start_index, trend_direction);
+    let (
+        sequence,
+        price_move_pct,
+        favorable_move_pct,
+        adverse_move_pct,
+        favorable_extreme_price,
+        favorable_extreme_time_ms,
+        adverse_extreme_price,
+        adverse_extreme_time_ms,
+    ) = stair_price_metrics(history, start_index, trend_direction);
     let kind = if trend_direction > 0 {
         MrcPatternKind::StairsUp
     } else {
@@ -480,6 +545,10 @@ fn staircase_for_direction(
         price_move_pct,
         favorable_move_pct,
         adverse_move_pct,
+        favorable_extreme_price,
+        favorable_extreme_time_ms,
+        adverse_extreme_price,
+        adverse_extreme_time_ms,
         staircase_lifecycle: Some(lifecycle),
         staircase_transition: Some(transition),
         staircase_protected_line: Some(reported_segment.protected_line),
@@ -569,6 +638,10 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
+        favorable_extreme_price: 0.0,
+        favorable_extreme_time_ms: 0,
+        adverse_extreme_price: 0.0,
+        adverse_extreme_time_ms: 0,
         staircase_lifecycle: None,
         staircase_transition: None,
         staircase_protected_line: None,

@@ -41,6 +41,18 @@ fn timestamped_cascade_reports_movement_speed() {
 }
 
 #[test]
+fn timestamped_cascade_averages_completed_movement_durations() {
+    let mut state = CascadeState::default();
+    let _ = update_from_candle_at(&mut state, &candle(100.0, 101.0, 99.5, 100.8), 1_000);
+    let _ = update_from_candle_at(&mut state, &candle(100.8, 103.0, 100.4, 102.5), 31_000);
+    let signal = update_from_candle_at(&mut state, &candle(102.5, 102.8, 99.2, 99.8), 61_000);
+
+    assert_eq!(signal.average_duration_ms, Some(60_000.0));
+    assert_eq!(state.movement_durations_len, 1);
+    assert_eq!(state.movement_durations_ms[0], 60_000);
+}
+
+#[test]
 fn cascade_reports_directional_adverse_range_and_trade_gate() {
     let signal = CascadeSignal {
         dir: 1,

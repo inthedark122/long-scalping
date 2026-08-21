@@ -1,3 +1,4 @@
+use crate::detection::{mrc_cross_analysis, mrc_crossing};
 use crate::format::tick_size;
 use crate::guard;
 use crate::model::{EntryReason, ExitMode, ExitType, IndicatorSnapshot, PositionState};
@@ -189,7 +190,7 @@ type ActiveExitResult = (
     Vec<String>,
 );
 
-const CASCADE_TP_WEIGHTS: [f64; 3] = [0.40, 0.30, 0.30];
+const FAR_TP_SHARE: f64 = 0.30;
 
 fn round_qty(qty: f64, step: f64) -> f64 {
     if !qty.is_finite() || qty <= 0.0 {
@@ -202,41 +203,22 @@ fn round_qty(qty: f64, step: f64) -> f64 {
     }
 }
 
-fn tp_plan_qty(input: &ModuleInput, total_qty: f64) -> [f64; 3] {
+fn tp_plan_qty(input: &ModuleInput, total_qty: f64, far: bool) -> [f64; 3] {
     let total_qty = total_qty.max(0.0);
-    let step = input.symbol_info.qty_step_size;
-    let first = round_qty(total_qty * CASCADE_TP_WEIGHTS[0], step).min(total_qty);
-    let second = round_qty(
-        (total_qty - first).max(0.0) * CASCADE_TP_WEIGHTS[1]
-            / (CASCADE_TP_WEIGHTS[1] + CASCADE_TP_WEIGHTS[2]),
-        step,
-    )
-    .min((total_qty - first).max(0.0));
-    let last = (total_qty - first - second).max(0.0);
-    let mut plan = [first, second, last];
-
-    // A leg below the exchange minimum cannot be placed. Merge it into the
-    // next leg so the position is still fully allocated whenever possible.
-    if let Some(minimum) = input.symbol_info.min_order_qty.filter(|value| *value > 0.0) {
-        if plan[0] > 0.0 && plan[0] < minimum {
-            plan[1] += plan[0];
-            plan[0] = 0.0;
-        }
-        if plan[1] > 0.0 && plan[1] < minimum {
-            plan[2] += plan[1];
-            plan[1] = 0.0;
-        }
-        if plan[2] > 0.0 && plan[2] < minimum {
-            if plan[1] >= minimum {
-                plan[1] += plan[2];
-                plan[2] = 0.0;
-            } else if plan[0] >= minimum {
-                plan[0] += plan[2];
-                plan[2] = 0.0;
-            }
-        }
+    if !far {
+        return [total_qty, 0.0, 0.0];
     }
-    plan
+    let step = input.symbol_info.qty_step_size;
+    let far_qty = round_qty(total_qty * FAR_TP_SHARE, step).min(total_qty);
+    let primary_qty = (total_qty - far_qty).max(0.0);
+    let minimum = input.symbol_info.min_order_qty.filter(|value| *value > 0.0);
+    if far_qty <= 0.0
+        || primary_qty <= 0.0
+        || minimum.is_some_and(|minimum| primary_qty < minimum || far_qty < minimum)
+    {
+        return [total_qty, 0.0, 0.0];
+    }
+    [primary_qty, far_qty, 0.0]
 }
 
 fn live_tp_quantities(
@@ -244,11 +226,12 @@ fn live_tp_quantities(
     state: &mut EngineState,
     side: PositionState,
     live_qty: f64,
+    far: bool,
 ) -> Vec<(usize, f64)> {
     state.take_profit_allocation.begin(side, live_qty);
     if !state.take_profit_allocation.has_plan(side) {
         let total_qty = state.take_profit_allocation.total_qty.max(live_qty);
-        state.take_profit_allocation.planned_qty = tp_plan_qty(input, total_qty);
+        state.take_profit_allocation.planned_qty = tp_plan_qty(input, total_qty, far);
     }
 
     let allocation = state.take_profit_allocation;
@@ -321,8 +304,121 @@ fn live_tp_quantities(
 pub(crate) fn all_tp_marks(direction: Direction) -> Vec<String> {
     let base = tp_mark(direction);
     std::iter::once(base.clone())
+        .chain(std::iter::once(format!("{base}-far")))
         .chain((1..=3).map(move |index| format!("{base}-{index}")))
         .collect()
+}
+
+fn far_mark(direction: Direction) -> String {
+    format!("{}-far", tp_mark(direction))
+}
+
+fn favorable(side: PositionState, entry: f64, price: f64) -> bool {
+    match side {
+        PositionState::Long => price > entry,
+        PositionState::Short => price < entry,
+        PositionState::Flat => false,
+    }
+}
+
+/// Select the next MRC line beyond the current target and the latest
+/// confirmed staircase extreme. Cascade is deliberately not consulted here:
+/// it supplies timing/activity context, while MRC and stairs supply price
+/// structure.
+pub(crate) fn far_target_for_position(
+    state: &EngineState,
+    snapshot: &IndicatorSnapshot,
+    entry_price: f64,
+    primary_target: f64,
+) -> Option<f64> {
+    let reason = state.position.entry_reason.as_ref()?;
+    let EntryReason::MrcCrossing { target_line, .. } = reason;
+    let side = state.position.side;
+    let direction = mrc_crossing::reason_direction(reason);
+    if !matches!(direction, 1 | -1)
+        || direction
+            != match side {
+                PositionState::Long => 1,
+                PositionState::Short => -1,
+                PositionState::Flat => 0,
+            }
+        || state.staircase_progress.direction != direction
+        || state.staircase_progress.favorable_extreme_time_ms < state.exit_progress.entry_time_ms
+    {
+        return None;
+    }
+
+    let extreme = state.staircase_progress.favorable_extreme_price;
+    let reference = if favorable(side, entry_price, extreme) {
+        match side {
+            PositionState::Long => primary_target.max(extreme),
+            PositionState::Short => primary_target.min(extreme),
+            PositionState::Flat => primary_target,
+        }
+    } else {
+        primary_target
+    };
+    let lines = snapshot.tf1m.mrc.lines();
+    let mut line = *target_line;
+    loop {
+        let price = lines.get(line as usize).copied()?;
+        if favorable(side, entry_price, price) && favorable(side, reference, price) {
+            return (price - reference).abs().is_finite().then_some(price);
+        }
+        line = mrc_cross_analysis::adjacent_line(line, direction)?;
+    }
+}
+
+fn stalled_far_target(state: &EngineState, side: PositionState, entry_price: f64) -> Option<f64> {
+    let price = state.exit_progress.last_extreme_price;
+    favorable(side, entry_price, price).then_some(price)
+}
+
+fn expected_movement_time_ms(state: &EngineState) -> Option<u64> {
+    let historical = state
+        .position
+        .entry_reason
+        .as_ref()
+        .and_then(|reason| match reason {
+            EntryReason::MrcCrossing {
+                estimated_time_ms, ..
+            } if estimated_time_ms.is_finite() && *estimated_time_ms > 0.0 => {
+                Some(*estimated_time_ms as u64)
+            }
+            _ => None,
+        });
+    historical.or_else(|| {
+        state
+            .cascade_signal
+            .average_duration_ms
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| value as u64)
+    })
+}
+
+fn movement_is_stalled(state: &EngineState, now_ms: u64) -> bool {
+    if state.exit_progress.mode == crate::state::ExitProgressMode::Stalled {
+        return true;
+    }
+    let lifecycle_stalled = matches!(
+        state.staircase_progress.lifecycle,
+        Some(
+            crate::detection::mrc_pattern_classification::StaircaseLifecycle::Stalled
+                | crate::detection::mrc_pattern_classification::StaircaseLifecycle::Invalidated
+        )
+    );
+    if lifecycle_stalled {
+        return true;
+    }
+    let no_new_extreme = state.exit_progress.last_extreme_update_ms == 0
+        || now_ms.saturating_sub(state.exit_progress.last_extreme_update_ms)
+            >= expected_movement_time_ms(state).unwrap_or(u64::MAX);
+    if !no_new_extreme {
+        return false;
+    }
+    !state
+        .exit_progress
+        .activity_supports_continuation(state.mrc_crossing.no_pullback_count)
 }
 
 pub(crate) fn take_profit_orders(
@@ -333,7 +429,7 @@ pub(crate) fn take_profit_orders(
     entry_price: f64,
     target_price: f64,
     note: Option<&str>,
-    multi: bool,
+    far_target: Option<f64>,
 ) -> (Vec<ModulePlaceOrder>, Vec<String>) {
     let direction = match side {
         PositionState::Long => Direction::Long,
@@ -344,15 +440,38 @@ pub(crate) fn take_profit_orders(
         return (Vec::new(), Vec::new());
     }
     let base_mark = tp_mark(direction);
-    if !multi {
-        let cancel_orders = if state.cascade_exit_orders {
-            (1..=3)
-                .map(|index| format!("{base_mark}-{index}"))
-                .collect()
+    let far_mark = far_mark(direction);
+    let tick = tick_size(input).max(f64::EPSILON);
+    let was_stalled = state.exit_progress.mode == crate::state::ExitProgressMode::Stalled;
+    let previous_mode = state.exit_progress.mode;
+    let first_order_setup = !state.exit_progress.orders_initialized;
+    let far_reference = if was_stalled {
+        entry_price
+    } else {
+        target_price
+    };
+    let Some(far_target) = far_target.filter(|price| {
+        favorable(side, far_reference, *price) && (*price - target_price).abs() > tick * 0.5
+    }) else {
+        state.exit_progress.mode = if was_stalled {
+            crate::state::ExitProgressMode::Stalled
         } else {
-            Vec::new()
+            crate::state::ExitProgressMode::Primary
         };
-        state.cascade_exit_orders = false;
+        state.exit_progress.far_target_price = 0.0;
+        state.take_profit_allocation.begin(side, qty);
+        if !state.take_profit_allocation.has_plan(side) {
+            state.take_profit_allocation.planned_qty =
+                [state.take_profit_allocation.total_qty.max(qty), 0.0, 0.0];
+        }
+        let mut cancel_orders = Vec::new();
+        if first_order_setup || previous_mode != crate::state::ExitProgressMode::Primary {
+            cancel_orders.push(far_mark);
+        }
+        if first_order_setup {
+            cancel_orders.extend((1..=3).map(|index| format!("{base_mark}-{index}")));
+        }
+        state.exit_progress.orders_initialized = true;
         return (
             vec![tp_limit_order(
                 direction,
@@ -363,48 +482,41 @@ pub(crate) fn take_profit_orders(
             )],
             cancel_orders,
         );
-    }
+    };
 
-    let order_quantities = live_tp_quantities(input, state, side, qty);
+    let order_quantities = live_tp_quantities(input, state, side, qty, true);
     if order_quantities.is_empty() {
         return (Vec::new(), Vec::new());
     }
 
-    let tick = tick_size(input).max(f64::EPSILON);
-    let mut prices = Vec::with_capacity(3);
-    for fraction in [0.40, 0.70, 1.00] {
-        let price = entry_price + (target_price - entry_price) * fraction;
-        if price.is_finite()
-            && price > 0.0
-            && prices
-                .last()
-                .is_none_or(|last: &f64| (price - *last).abs() > tick * 0.5)
-        {
-            prices.push(price);
-        }
-    }
-    if prices.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
     let mut orders = Vec::with_capacity(order_quantities.len());
     for (index, order_qty) in order_quantities {
-        let Some(price) = prices.get(index).copied() else {
-            continue;
+        let (mark, price) = match index {
+            0 => (base_mark.clone(), target_price),
+            1 => (far_mark.clone(), far_target),
+            _ => continue,
         };
-        let mark = format!("{base_mark}-{}", index + 1);
+        if !price.is_finite() || price <= 0.0 {
+            continue;
+        }
         orders.push(tp_limit_order(direction, order_qty, price, &mark, note));
     }
     if orders.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    state.cascade_exit_orders = true;
-    let mut cancel_orders = vec![base_mark.clone()];
-    for index in 0..3 {
-        let mark = format!("{base_mark}-{}", index + 1);
-        if !orders.iter().any(|order| order.mark == mark) {
-            cancel_orders.push(mark);
-        }
+    if !was_stalled {
+        state.exit_progress.mode = crate::state::ExitProgressMode::Continuation;
     }
+    state.exit_progress.far_target_price = far_target;
+    let mut cancel_orders = all_tp_marks(direction)
+        .into_iter()
+        .filter(|mark| {
+            !orders.iter().any(|order| order.mark == *mark)
+                && (first_order_setup || mark == &base_mark || mark == &far_mark)
+        })
+        .collect::<Vec<_>>();
+    cancel_orders.sort();
+    state.exit_progress.orders_initialized = true;
     (orders, cancel_orders)
 }
 
@@ -467,7 +579,7 @@ fn ensure_trailing_exit_order(
             reference_price,
             plan.take_profit.price(),
             Some(&plan.take_profit.order_note()),
-            state.cascade_signal.multi_order_ready(),
+            far_target_for_position(state, snapshot, reference_price, plan.take_profit.price()),
         );
         return (tp_orders, Vec::new(), cancel_orders);
     }
@@ -520,7 +632,7 @@ fn ensure_trailing_exit_order(
             input.price,
             recovery_tp,
             Some(&note),
-            false,
+            None,
         );
         return (tp_orders, Vec::new(), cancel_orders);
     }
@@ -559,7 +671,7 @@ fn ensure_trailing_exit_order(
             ),
         );
         let note = tp_reprice_order_note(state, tick, "tp:virtual-sl-cross");
-        let (tp_orders, mut cancel_orders) = take_profit_orders(
+        let (tp_orders, cancel_orders) = take_profit_orders(
             input,
             state,
             side,
@@ -567,15 +679,22 @@ fn ensure_trailing_exit_order(
             input.price,
             recovery_tp,
             Some(&note),
-            false,
+            None,
         );
-        cancel_orders.push(mark);
         return (tp_orders, Vec::new(), cancel_orders);
     }
 
     if state.position.exit_mode == ExitMode::Fixed {
-        let multi = state.cascade_signal.multi_order_ready();
-        if state.cascade_exit_orders != multi {
+        let now_ms = input
+            .sug_info
+            .as_ref()
+            .map(|info| info.time.max(0) as u64)
+            .unwrap_or_default();
+        let allocation_has_plan = state.take_profit_allocation.has_plan(side);
+        let stalled = movement_is_stalled(state, now_ms);
+        if stalled && state.exit_progress.mode != crate::state::ExitProgressMode::Stalled {
+            state.exit_progress.mode = crate::state::ExitProgressMode::Stalled;
+            let fallback = stalled_far_target(state, side, state.position.entry_price);
             let (tp_orders, cancel_orders) = take_profit_orders(
                 input,
                 state,
@@ -583,8 +702,43 @@ fn ensure_trailing_exit_order(
                 qty,
                 state.position.entry_price,
                 state.position.take_profit,
-                Some("tp:fixed"),
-                multi,
+                Some("tp:stalled-partial"),
+                fallback,
+            );
+            return (tp_orders, Vec::new(), cancel_orders);
+        }
+        if state.exit_progress.mode == crate::state::ExitProgressMode::Stalled {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+
+        let far_target = far_target_for_position(
+            state,
+            snapshot,
+            state.position.entry_price,
+            state.position.take_profit,
+        );
+        let far_target_changed = far_target
+            .zip(
+                (state.exit_progress.far_target_price > 0.0)
+                    .then_some(state.exit_progress.far_target_price),
+            )
+            .is_some_and(|(next, previous)| {
+                (next - previous).abs() > tick_size(input).max(f64::EPSILON) * 0.5
+            });
+        let recalculate_structure = state.last_active_tp_recalc_bar != Some(state.bar_1m);
+        if !allocation_has_plan || (recalculate_structure && far_target_changed) {
+            if recalculate_structure {
+                state.last_active_tp_recalc_bar = Some(state.bar_1m);
+            }
+            let (tp_orders, cancel_orders) = take_profit_orders(
+                input,
+                state,
+                side,
+                qty,
+                state.position.entry_price,
+                state.position.take_profit,
+                Some("tp:structure"),
+                far_target,
             );
             return (tp_orders, Vec::new(), cancel_orders);
         }
@@ -668,7 +822,12 @@ fn ensure_trailing_exit_order(
                 state.position.entry_price,
                 plan.take_profit.price(),
                 Some(&note),
-                state.cascade_signal.multi_order_ready(),
+                far_target_for_position(
+                    state,
+                    snapshot,
+                    state.position.entry_price,
+                    plan.take_profit.price(),
+                ),
             );
             return (tp_orders, Vec::new(), cancel_orders);
         }

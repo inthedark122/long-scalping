@@ -2,6 +2,15 @@
 
 # Unreleased
 
+# 1.0.107
+
+Structural continuation exit release.
+
+- Remove cascade-staged entry orders and dynamic cascade-driven multi-TP switching.
+- Keep one primary TP with an optional fixed-size far structural TP selected from MRC lines and staircase extremes.
+- Use MRC movement time, cascade duration averages, staircase extreme-update timing, NTPS growth, volume growth, and no-pullback activity to detect stalled continuation.
+- Keep cascade as timing/activity context only and safely handle exchange quantity steps and small final remainders.
+
 # 1.0.106
 
 Empirical MRC touch-learning release.

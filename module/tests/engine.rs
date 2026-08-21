@@ -81,7 +81,10 @@ fn next_sug_info_reprices_trailing_tp_from_current_price() {
     let first_output = run(&first, &mut state);
     assert_eq!(first_output.place_orders.len(), 1);
     assert_eq!(first_output.place_orders[0].enter_price, 99.2);
-    assert_eq!(first_output.cancel_orders, vec!["tp-long"]);
+    assert_eq!(
+        first_output.cancel_orders,
+        vec!["tp-long-far", "tp-long-1", "tp-long-2", "tp-long-3"]
+    );
 
     first.price = 98.0;
     first.sug_info = Some(sug_info(2_000, first.price));
