@@ -4,6 +4,7 @@ use crate::detection::mrc_pattern_classification::{
     self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
 use crate::detection::mrc_prediction;
+use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
 use crate::detection::vlines::MrcCrossEvent;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
@@ -499,7 +500,11 @@ fn pattern_prior(prediction: &MrcPrediction) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) -> f64 {
+fn pattern_score(
+    performance: PatternPerformance,
+    prediction: &MrcPrediction,
+    touch: Option<MrcTouchSignal>,
+) -> f64 {
     // A pattern's global ledger is only relevant when the current target has
     // some supporting route evidence. Keep this continuous: one observation
     // contributes, but it cannot carry the same weight as a repeatedly
@@ -513,16 +518,43 @@ fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) ->
     };
     let evidence_confidence = target_confidence * route_share;
     let prior = pattern_prior(prediction) * evidence_confidence;
-    if performance.trades == 0 {
-        return prior;
+    let base = if performance.trades == 0 {
+        prior
+    } else {
+        let confidence = performance.trades as f64 / (performance.trades as f64 + 4.0);
+        // The recent EMA is useful for adaptation, but using it alone lets a
+        // pattern with a losing history become the winner after a short
+        // streak. Keep the long-run realized average in the score so
+        // selection reflects both the current regime and the full record.
+        let realized = (performance.average_pnl_pct() + performance.ema_pnl_pct) / 2.0;
+        (realized * confidence + prior * (1.0 - confidence)) * evidence_confidence
+    };
+    let touch_adjustment = if matches!(
+        prediction.pattern_kind,
+        MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
+    ) {
+        touch
+            .map(|signal| {
+                signal.stairs_pressure
+                    * signal.interest
+                    * direction_sign(prediction.pattern_direction)
+                    * 0.25
+            })
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    base + touch_adjustment
+}
+
+fn direction_sign(direction: i8) -> f64 {
+    if direction > 0 {
+        1.0
+    } else if direction < 0 {
+        -1.0
+    } else {
+        0.0
     }
-    let confidence = performance.trades as f64 / (performance.trades as f64 + 4.0);
-    // The recent EMA is useful for adaptation, but using it alone lets a
-    // pattern with a losing history become the winner after a short streak.
-    // Keep the long-run realized average in the score so selection reflects
-    // both the current regime and the pattern's full observed record.
-    let realized = (performance.average_pnl_pct() + performance.ema_pnl_pct) / 2.0;
-    (realized * confidence + prior * (1.0 - confidence)) * evidence_confidence
 }
 
 fn candidate_key(candidate: &PatternCandidate) -> Option<(u8, u8, u8)> {
@@ -883,6 +915,7 @@ pub fn observe_with_context(
         volume,
         None,
         mrc_prediction::MrcPredictionContext::default(),
+        None,
     )
 }
 
@@ -929,6 +962,33 @@ pub fn observe_with_forecast_context(
         volume,
         Some((current_price, now_ms)),
         context,
+        None,
+    )
+}
+
+/// Forecast path with the incremental MRC touch signal available to
+/// candidate scoring. The pure observation APIs remain unchanged for
+/// research and unit-test callers that do not have realtime touch state.
+pub fn observe_with_forecast_and_touch_context(
+    state: &mut MrcCrossingModel,
+    events: &[MrcCrossEvent],
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    current_price: f64,
+    now_ms: u64,
+    context: mrc_prediction::MrcPredictionContext,
+    touch: MrcTouchSignal,
+) -> Observation {
+    observe_events(
+        state,
+        events,
+        lines,
+        crossing,
+        volume,
+        Some((current_price, now_ms)),
+        context,
+        Some(touch),
     )
 }
 
@@ -940,6 +1000,7 @@ fn observe_events(
     volume: (f64, f64, f64, f64),
     forecast: Option<(f64, u64)>,
     context: mrc_prediction::MrcPredictionContext,
+    touch: Option<MrcTouchSignal>,
 ) -> Observation {
     state.current_entry = None;
     let mut observation = Observation::default();
@@ -1001,7 +1062,7 @@ fn observe_events(
             observation.events.push(analysis.clone());
             observation.candidates.push(PatternCandidate {
                 pattern_kind: prediction.pattern_kind,
-                score: pattern_score(*performance, &prediction),
+                score: pattern_score(*performance, &prediction, touch),
                 analysis,
                 entry,
                 forecast: false,
@@ -1052,7 +1113,7 @@ fn observe_events(
                     };
                     observation.candidates.push(PatternCandidate {
                         pattern_kind: prediction.pattern_kind,
-                        score: pattern_score(*performance, &prediction),
+                        score: pattern_score(*performance, &prediction, touch),
                         analysis,
                         entry,
                         forecast: true,
@@ -1323,6 +1384,32 @@ pub fn seed_from_history(
     history: &IndicatorHistory,
     now_ms: u64,
 ) {
+    seed_from_history_impl(state, vlines, crossing, history, now_ms, None);
+}
+
+/// Seed the discrete crossing model and the incremental touch analyzer from
+/// the same historical MRC/candle samples. Keeping this replay here avoids a
+/// second history reader in the touch analyzer and makes its EMA immediately
+/// useful after startup.
+pub fn seed_from_history_with_touch(
+    state: &mut MrcCrossingModel,
+    vlines: &mut [crate::state::VLineState; 9],
+    crossing: &mut MrcCrossingState,
+    history: &IndicatorHistory,
+    now_ms: u64,
+    touch: &mut MrcTouchState,
+) {
+    seed_from_history_impl(state, vlines, crossing, history, now_ms, Some(touch));
+}
+
+fn seed_from_history_impl(
+    state: &mut MrcCrossingModel,
+    vlines: &mut [crate::state::VLineState; 9],
+    crossing: &mut MrcCrossingState,
+    history: &IndicatorHistory,
+    now_ms: u64,
+    mut touch: Option<&mut MrcTouchState>,
+) {
     const HISTORY_LIMIT: usize = 10_080;
     if now_ms == 0 {
         return;
@@ -1362,6 +1449,9 @@ pub fn seed_from_history(
             (HISTORY_LIMIT - offset) as u64,
             now,
         );
+        if let Some(touch) = touch.as_deref_mut() {
+            touch.update(lines, price, now);
+        }
         for event in events {
             append_history_event(state, &event);
         }

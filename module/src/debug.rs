@@ -122,6 +122,7 @@ pub fn render(
         format!("volume=[{}]", state.volume_gain.summary()),
         format!("mrc_risk=[{mrc_risk}]"),
         format!("mrc_cross=[{}]", format_mrc_crossing(state)),
+        format!("mrc_touch=[{}]", state.mrc_touch.signal.summary()),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(
@@ -263,7 +264,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
             )
         };
         format!(
-            "{}:+{:.2}%:-{:.2}%",
+            "{}:+{:.2}%:{:+.2}%",
             direction,
             following_pct.max(0.0),
             opposite_pct.min(0.0)
@@ -271,7 +272,17 @@ fn format_mrc_crossing(state: &EngineState) -> String {
     } else {
         "na".to_string()
     };
-    let tracked_line = "na";
+    let tracked_line = crossing
+        .movement_target_line
+        .map(mrc_line_label)
+        .unwrap_or("na");
+    let movement_age = crossing
+        .sequence_len
+        .checked_sub(1)
+        .map(|index| crossing.sequence_times_ms[index])
+        .filter(|started| *started > 0 && state.mrc_touch.signal.now_ms >= *started)
+        .map(|started| format_sequence_duration(state.mrc_touch.signal.now_ms - started))
+        .unwrap_or_else(|| "na".to_string());
     let next_progress = if crossing.movement_start > 0.0
         && crossing.movement_target > 0.0
         && crossing.last_price.is_some()
@@ -308,7 +319,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         })
         .unwrap_or("na");
     format!(
-        "[last={}:{}:{} track={} seq={} no_pullback={} revert=long:{}:short:{} move={} next={}]",
+        "[last={}:{}:{} track={} seq={} no_pullback={} revert=long:{}:short:{} move={} age={} next={}]",
         latest,
         direction,
         count,
@@ -324,6 +335,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
             .map(mrc_line_label)
             .unwrap_or("na"),
         movement,
+        movement_age,
         next_progress
     )
 }

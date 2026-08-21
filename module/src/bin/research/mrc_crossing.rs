@@ -7,7 +7,8 @@ use long_scalping::detection::mrc_pattern_classification::{
 };
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
-    cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction, vlines,
+    cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction,
+    mrc_touch, vlines,
 };
 use long_scalping::model::Candle;
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
@@ -841,6 +842,7 @@ fn stair_statistics(
 pub(crate) struct Analyzer {
     vlines: [VLineState; LINE_COUNT],
     crossing: MrcCrossingState,
+    touch: mrc_touch::MrcTouchState,
     model: MrcCrossingModel,
     cascade: cascade::CascadeState,
     cascade_signal: cascade::CascadeSignal,
@@ -878,6 +880,7 @@ impl Analyzer {
         let mut analyzer = Self {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
+            touch: mrc_touch::MrcTouchState::default(),
             model: MrcCrossingModel::default(),
             cascade: cascade::CascadeState::default(),
             cascade_signal: cascade::CascadeSignal::default(),
@@ -945,6 +948,8 @@ impl Analyzer {
             row.time_ms.max(0) as u64,
         );
         let lines = row.mrc.lines();
+        self.touch
+            .update(lines, row.close, row.time_ms.max(0) as u64);
         let crossed = vlines::update_with_events(
             &mut self.vlines,
             &mut self.crossing,
@@ -980,7 +985,7 @@ impl Analyzer {
             cascade_potential_move_pct: self.cascade_signal.potential_move_pct,
             cascade_adverse_move_pct: self.cascade_signal.adverse_move_pct,
         };
-        let observation = mrc_crossing::observe_with_forecast_context(
+        let observation = mrc_crossing::observe_with_forecast_and_touch_context(
             &mut self.model,
             &crossed,
             lines,
@@ -989,6 +994,7 @@ impl Analyzer {
             row.close,
             row.time_ms.max(0) as u64,
             prediction_context,
+            self.touch.signal,
         );
         if log_prediction {
             eprintln!(

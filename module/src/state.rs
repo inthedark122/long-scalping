@@ -1,6 +1,7 @@
 use crate::detection::cascade::{CascadeSignal, CascadeState, CascadeTradeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::detection::mrc_pattern_classification::MrcPatternKind;
+use crate::detection::mrc_touch::MrcTouchState;
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
     MRC_CROSSING_EXIT_TYPE,
@@ -336,6 +337,8 @@ pub struct EngineState {
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
+    /// Time-decayed per-line touch pressure used as context for stairs.
+    pub mrc_touch: MrcTouchState,
     pub mrc_crossing_model: MrcCrossingModel,
     pub cascade: CascadeState,
     pub cascade_signal: CascadeSignal,
@@ -372,6 +375,7 @@ impl Default for EngineState {
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
+            mrc_touch: MrcTouchState::default(),
             mrc_crossing_model: MrcCrossingModel::default(),
             cascade: CascadeState::default(),
             cascade_signal: CascadeSignal::default(),

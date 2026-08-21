@@ -196,6 +196,7 @@ fn handle_signal(
         state.mrc_crossing_model.decision_state.reset();
         state.vlines = [crate::state::VLineState::default(); 9];
         state.mrc_crossing = crate::state::MrcCrossingState::default();
+        state.mrc_touch.reset();
         state.cascade = crate::detection::cascade::CascadeState::default();
         state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
         state.cascade_entry_marks.clear();
@@ -207,12 +208,13 @@ fn handle_signal(
             .filter(|time| *time > 0)
             .map(|time| time as u64)
         {
-            mrc_crossing::seed_from_history(
+            mrc_crossing::seed_from_history_with_touch(
                 &mut state.mrc_crossing_model,
                 &mut state.vlines,
                 &mut state.mrc_crossing,
                 &state.history,
                 now_ms,
+                &mut state.mrc_touch,
             );
         }
         state.cfg_loaded = true;
@@ -679,12 +681,13 @@ fn process_realtime(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     if !state.mrc_crossing_model.seeded_from_history {
-        mrc_crossing::seed_from_history(
+        mrc_crossing::seed_from_history_with_touch(
             &mut state.mrc_crossing_model,
             &mut state.vlines,
             &mut state.mrc_crossing,
             &state.history,
             sug_info.time.max(0) as u64,
+            &mut state.mrc_touch,
         );
     }
     let mrc_events = vlines::update_with_events(
@@ -694,6 +697,11 @@ fn process_realtime(
         input.price,
         state.ticks,
         sug_info.time as u64,
+    );
+    state.mrc_touch.update(
+        snapshot.tf1m.mrc.lines(),
+        input.price,
+        sug_info.time.max(0) as u64,
     );
     state
         .mrc_risk
@@ -711,7 +719,7 @@ fn process_realtime(
         cascade_potential_move_pct: state.cascade_signal.potential_move_pct,
         cascade_adverse_move_pct: state.cascade_signal.adverse_move_pct,
     };
-    let mrc_observation = mrc_crossing::observe_with_forecast_context(
+    let mrc_observation = mrc_crossing::observe_with_forecast_and_touch_context(
         &mut state.mrc_crossing_model,
         &mrc_events,
         snapshot.tf1m.mrc.lines(),
@@ -725,6 +733,7 @@ fn process_realtime(
         input.price,
         sug_info.time as u64,
         prediction_context,
+        state.mrc_touch.signal,
     );
 
     state.direction_source = "pattern-selector".to_string();
