@@ -53,42 +53,6 @@ fn stair_is_primary_and_fbr_only_marks_a_pullback() {
 }
 
 #[test]
-fn outward_ends_when_an_opposing_fbr_confirms_the_return() {
-    let mut state = DecisionState::default();
-    let components = DecisionComponents::default();
-    let outward = candidate(0, MrcPatternKind::OutwardContinuation, 0.5, 1);
-    assert_eq!(
-        state.choose(components, &[outward], 1_000).primary_kind,
-        Some(PrimaryKind::Outward)
-    );
-
-    let outward = candidate(0, MrcPatternKind::OutwardContinuation, 0.5, 1);
-    let mut fbr = candidate(1, MrcPatternKind::FastBreakReturn, 5.0, -1);
-    fbr.entry = false;
-    let result = state.choose(components, &[outward, fbr], 2_000);
-
-    assert_eq!(result.selected_index, None);
-    assert_eq!(result.primary_kind, None);
-    assert!(result.support.pullback);
-}
-
-#[test]
-fn outward_volume_climax_ends_without_a_new_favorable_extreme() {
-    let mut state = DecisionState::default();
-    let components = DecisionComponents::default();
-    let mut outward = candidate(0, MrcPatternKind::OutwardContinuation, 0.5, 1);
-    outward.volume_gain = 2.5;
-    let result = state.choose(components, &[outward], 1_000);
-    assert_eq!(result.selected_index, Some(0));
-    assert_eq!(result.primary_phase, Some(PrimaryPhase::Exhaustion));
-
-    let outward = candidate(0, MrcPatternKind::OutwardContinuation, 0.5, 1);
-    let result = state.choose(components, &[outward], 2_000);
-    assert_eq!(result.selected_index, None);
-    assert_eq!(result.primary_kind, None);
-}
-
-#[test]
 fn stairs_end_after_the_favorable_extreme_stops_updating() {
     let mut state = DecisionState::default();
     let components = DecisionComponents::default();
@@ -128,19 +92,7 @@ fn protected_swing_break_ends_stairs_and_blocks_rearming() {
 }
 
 #[test]
-fn stairs_rank_above_outward_when_both_are_available() {
-    let mut state = DecisionState::default();
-    let stairs = candidate(0, MrcPatternKind::StairsUp, -1.0, 1);
-    let outward = candidate(1, MrcPatternKind::OutwardContinuation, 100.0, -1);
-
-    let result = state.choose(DecisionComponents::default(), &[stairs, outward], 1_000);
-    assert_eq!(result.selected_index, Some(0));
-    assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
-    assert_eq!(result.primary_direction, 1);
-}
-
-#[test]
-fn direction_lock_blocks_opposite_routes_and_rearms_same_direction() {
+fn direction_lock_blocks_opposite_routes_and_keeps_stairs_authority() {
     let mut state = DecisionState::default();
     let components = DecisionComponents::default();
     let long_stairs = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
@@ -151,19 +103,12 @@ fn direction_lock_blocks_opposite_routes_and_rearms_same_direction() {
         Some(0)
     );
 
-    let short_outward = candidate(1, MrcPatternKind::OutwardContinuation, 10.0, -1);
-    let result = state.choose_with_direction_lock(components, &[short_outward], Some(1), 2_000);
+    let short_stairs = candidate(1, MrcPatternKind::StairsDown, 10.0, -1);
+    let result = state.choose_with_direction_lock(components, &[short_stairs], Some(1), 2_000);
     assert_eq!(result.selected_index, None);
     assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
     assert_eq!(state.trace.blocked_by_direction_lock, 1);
     assert_eq!(state.trace.reason, "direction-lock-wait");
-
-    let long_outward = candidate(2, MrcPatternKind::OutwardContinuation, 0.1, 1);
-    let result = state.choose_with_direction_lock(components, &[long_outward], Some(1), 3_000);
-    assert_eq!(result.selected_index, Some(2));
-    assert_eq!(result.primary_kind, Some(PrimaryKind::Outward));
-    assert_eq!(state.trace.primary_before, Some(PrimaryKind::Stairs));
-    assert_eq!(state.trace.primary_after, Some(PrimaryKind::Outward));
 }
 
 #[test]
@@ -178,10 +123,10 @@ fn direction_lock_resets_an_opposite_primary_before_rearming() {
         Some(0)
     );
 
-    let long_outward = candidate(1, MrcPatternKind::OutwardContinuation, 0.1, 1);
-    let result = state.choose_with_direction_lock(components, &[long_outward], Some(1), 2_000);
-    assert_eq!(result.selected_index, Some(1));
-    assert_eq!(result.primary_kind, Some(PrimaryKind::Outward));
+    let long_fbr = candidate(1, MrcPatternKind::FastBreakReturn, 0.1, 1);
+    let result = state.choose_with_direction_lock(components, &[long_fbr], Some(1), 2_000);
+    assert_eq!(result.selected_index, None);
+    assert_eq!(result.primary_kind, None);
     assert!(state.trace.direction_lock_reset_primary);
 }
 
@@ -245,15 +190,15 @@ fn decision_components_can_be_replaced_added_and_removed_at_runtime() {
     let mut values = HashMap::new();
     values.insert(
         "components".to_string(),
-        serde_json::json!(["primary-outward", "support-volume"]),
+        serde_json::json!(["primary-stairs", "support-volume"]),
     );
     run(&action_input("decision_components", values), &mut state);
     assert_eq!(
         state.cfg.decision_components,
-        vec!["primary-outward", "support-volume"]
+        vec!["primary-stairs", "support-volume"]
     );
-    assert!(state.mrc_crossing_model.decision_components.primary_outward);
-    assert!(!state.mrc_crossing_model.decision_components.primary_stairs);
+    assert!(state.mrc_crossing_model.decision_components.primary_stairs);
+    assert!(state.mrc_crossing_model.decision_components.primary_stairs);
 
     let mut values = HashMap::new();
     values.insert("add".to_string(), serde_json::json!("support-trend"));
@@ -276,11 +221,5 @@ fn decision_components_can_be_replaced_added_and_removed_at_runtime() {
 fn primary_modes_keep_support_but_limit_entry_authority() {
     let stairs = DecisionComponents::for_primary_mode("stairs").expect("stairs mode");
     assert!(stairs.primary_stairs);
-    assert!(!stairs.primary_outward);
     assert!(stairs.support_fast_break_return);
-
-    let outward = DecisionComponents::for_primary_mode("outward").expect("outward mode");
-    assert!(!outward.primary_stairs);
-    assert!(outward.primary_outward);
-    assert!(outward.support_volume);
 }

@@ -1,17 +1,18 @@
 # Adaptive pattern-engine overview
 
-The module is a limit-entry MRC pattern trader. It does not choose between
-separate strategy modes. Every supported pattern is evaluated on every new MRC
-movement, and one selector chooses the best currently tradable candidate.
+The module is a market-entry MRC staircase trader. Every supported pattern is
+evaluated on every new MRC movement, but only staircase candidates can open a
+position. Pullback patterns remain available for analysis and learning without
+entry authority.
 
 ## Trading model
 
 - Input timeframes: `1m` and `5m` MRC lines plus volume/NTPS; candle OHLC, live price, and cascade speed provide market context
 - Position policy: one open position at a time
 - Pattern policy: classify all matches, preserve overlaps, and score them independently
-- Selection policy: stay with the active pattern until a challenger beats it by the configured switch margin
-- Continuation policy: advance through successive MRC lines while a staircase or outward continuation remains valid
-- Execution policy: use stairs for structural context and cascade for direction, speed, continuation potential, adverse excursion, and staged entry/exit decisions
+- Selection policy: stay with the active staircase pattern until its protected structure ends
+- Continuation policy: advance through successive MRC lines while the staircase remains valid
+- Execution policy: use stairs for structural context and directional levels; retain cascade, volume, and fast-candle data as diagnostics, while valid stairs force a market entry
 
 ## Pattern pipeline
 
@@ -19,7 +20,8 @@ movement, and one selector chooses the best currently tradable candidate.
 2. `detection/mrc_pattern_classification.rs::classify_all` runs every matcher and keeps overlapping results.
 3. `detection/mrc_crossing.rs` builds a candidate for each match with a directional target, stop, and score.
 4. `state.rs` updates the observation ledger and the realized net-PnL ledger for each pattern.
-5. The selector picks the best candidate, with hysteresis to avoid noisy pattern flapping.
+5. The selector picks the best staircase candidate; pullback matches remain
+   diagnostic candidates and cannot be executed.
 6. `engine.rs` executes only the selected candidate and attributes the completed trade to its opening pattern.
 
 ## Line execution plan
@@ -34,8 +36,10 @@ as market-speed context; they do not pretend to be a probability.
 
 The selector has an explicit one-direction lock after a directional `start`
 signal. Candidates in the opposite direction remain observable but cannot be
-selected or executed. The cascade measures active movement speed and supplies
-fast-trading context; it does not independently open a position.
+selected or executed while the lock is active. The cascade measures active
+movement speed and supplies fast-trading context; it does not independently
+open a position or veto a structurally valid staircase leg. Only an invalidated
+staircase is blocked by the live stairs gate.
 
 ## Pattern learning
 

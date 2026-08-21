@@ -13,9 +13,9 @@ pub const MRC_LINE_COUNT: usize = 9;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MrcPredictionContext {
-    /// Live execution explicitly enables the cascade gate. Keeping this
-    /// separate lets pure pattern/research callers request line plans without
-    /// pretending they have a live cascade signal.
+    /// Live execution supplies cascade context. Keeping this separate lets
+    /// pure pattern/research callers request line plans without pretending
+    /// they have a live cascade signal.
     pub cascade_enabled: bool,
     pub ntps: i64,
     pub ntps_fast_time_ms: Option<i64>,

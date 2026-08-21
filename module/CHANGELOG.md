@@ -1,5 +1,19 @@
 # Changelog
 
+# Unreleased
+
+# 1.0.102
+
+Stairs-only pattern engine cleanup.
+
+- Keep pullback classification available for analysis and learning only.
+- Prevent pullback patterns from opening live positions.
+- Remove obsolete primary-rule and pattern state from runtime, reports, and configuration.
+- Keep valid staircase legs through cascade mismatch, stalled lifecycle, and
+  barrier context; only invalidated staircase structure blocks entry.
+- Force valid staircase entries to market execution so authorized continuation
+  signals are not lost as unfilled one-candle limit orders.
+
 # 1.0.101
 
 Cascade limit-entry execution fix and stale default cleanup.
@@ -23,7 +37,6 @@ Cascade-driven stairs execution release.
 Selected-candidate entry-note fix.
 
 - Use the selected candidate for the actual opening note, not only the direction summary.
-- Remove unrelated outward and short prediction fields from stairs entry diagnostics.
 - Add staircase lifecycle transitions with protected-swing invalidation; stalled and invalidated staircases no longer create entries.
 - Use cascade as the execution gate for stairs: confirm direction and speed, compare continuation potential with TP distance, and reject adverse movement larger than the planned SL.
 - Support up to three marked cascade entry orders and three reduce-only partial TP orders while preserving one aggregate risk budget.
@@ -34,7 +47,6 @@ Selected-candidate direction diagnostics release.
 
 - Render the selected candidate's prediction in entry notes instead of the last evaluated candidate.
 - Keep selected pattern, predicted direction, trade direction, and order side aligned in diagnostics.
-- Preserve stairs-only execution while removing misleading outward/short annotations from stairs entries.
 
 # 1.0.97
 
@@ -49,7 +61,6 @@ Current prediction and long-only evaluation release.
 
 State-machine primary pattern selection release.
 
-- Add runtime selection between All, Stairs, and Outward primary rules.
 - Keep support evidence available for the selected primary rule without allowing support patterns to open trades alone.
 - Expose the selected pattern and all-pattern PnL/reason views in the research report.
 - Preserve stair sequences and price-movement metrics in live and research decision traces.

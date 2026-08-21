@@ -327,7 +327,6 @@ fn primary_mode_name(value: Option<&serde_json::Value>) -> Option<String> {
         serde_json::Value::Number(value) => match value.as_f64()?.round() as i32 {
             0 => Some("all".to_string()),
             1 => Some("stairs".to_string()),
-            2 => Some("outward".to_string()),
             _ => None,
         },
         _ => None,

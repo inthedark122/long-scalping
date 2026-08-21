@@ -71,13 +71,11 @@ pub fn render(
             state.mrc_crossing_model.decision_components.names().join(",")
         ),
         format!(
-            "primary-trace=stairs_up={}/{} stairs_down={}/{} outward={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} stair_lifecycle={} stair_transition={} end=[fbr={},extreme={},protected_swing={},volume={}] reset={} reason={}",
+            "primary-trace=stairs_up={}/{} stairs_down={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} stair_lifecycle={} stair_transition={} end=[extreme={},protected_swing={}] reset={} reason={}",
             primary_trace.stairs_up_candidates,
             primary_trace.stairs_up_tradeable,
             primary_trace.stairs_down_candidates,
             primary_trace.stairs_down_tradeable,
-            primary_trace.outward_candidates,
-            primary_trace.outward_tradeable,
             primary_trace.direction_lock,
             primary_trace.blocked_by_direction_lock,
             primary_trace.primary_before,
@@ -92,10 +90,8 @@ pub fn render(
                 .staircase_transition
                 .map(|value| value.as_str())
                 .unwrap_or("na"),
-            primary_trace.ended_by_fbr,
             primary_trace.ended_by_extreme,
             primary_trace.ended_by_protected_swing,
-            primary_trace.ended_by_volume,
             primary_trace.direction_lock_reset_primary,
             primary_trace.reason
         ),

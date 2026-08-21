@@ -128,6 +128,18 @@ impl MrcCrossAnalysis {
     }
 
     pub fn tradeable(&self) -> bool {
+        // Stairs is the execution pattern. Its structural direction and
+        // directional levels are the entry authority; cascade remains
+        // diagnostic context instead of suppressing nearly every valid leg.
+        if matches!(
+            self.pattern_kind,
+            Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
+        ) {
+            return !matches!(
+                self.staircase_lifecycle,
+                Some(StaircaseLifecycle::Invalidated)
+            ) && self.levels_tradeable();
+        }
         if matches!(
             self.staircase_lifecycle,
             Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
@@ -149,6 +161,15 @@ impl MrcCrossAnalysis {
     /// anticipatory entry before the next line is crossed. Its entry is still
     /// validated against the current MRC target and stop levels.
     pub fn forecast_tradeable(&self) -> bool {
+        if matches!(
+            self.pattern_kind,
+            Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
+        ) {
+            return !matches!(
+                self.staircase_lifecycle,
+                Some(StaircaseLifecycle::Invalidated)
+            ) && self.levels_tradeable();
+        }
         if matches!(
             self.staircase_lifecycle,
             Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
@@ -258,7 +279,7 @@ pub(crate) fn mrc_stop_line(
 
     // The source line is the line that generated the setup. It is never a
     // stop: a fill can already be beyond it, making it an invalid and
-    // misleading stop level. Walk outward from the source on the adverse MRC
+    // misleading stop level. Walk away from the source on the adverse MRC
     // side until the level is actually beyond the fill price.
     let mut candidate = adjacent_line(source_line, -direction)?;
     loop {

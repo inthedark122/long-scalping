@@ -1,16 +1,14 @@
 use super::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle, StaircaseTransition};
 
 pub const PRIMARY_STAIRS: &str = "primary-stairs";
-pub const PRIMARY_OUTWARD: &str = "primary-outward";
 pub const SUPPORT_FAST_BREAK_RETURN: &str = "support-fast-break-return";
 pub const SUPPORT_PULLBACK: &str = "support-pullback";
 pub const SUPPORT_VOLUME: &str = "support-volume";
 pub const SUPPORT_EXTREME: &str = "support-extreme";
 pub const SUPPORT_TREND: &str = "support-trend";
 
-pub const DEFAULT_COMPONENTS: [&str; 7] = [
+pub const DEFAULT_COMPONENTS: [&str; 6] = [
     PRIMARY_STAIRS,
-    PRIMARY_OUTWARD,
     SUPPORT_FAST_BREAK_RETURN,
     SUPPORT_PULLBACK,
     SUPPORT_VOLUME,
@@ -21,7 +19,6 @@ pub const DEFAULT_COMPONENTS: [&str; 7] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionComponent {
     PrimaryStairs,
-    PrimaryOutward,
     SupportFastBreakReturn,
     SupportPullback,
     SupportVolume,
@@ -33,7 +30,6 @@ impl DecisionComponent {
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             PRIMARY_STAIRS => Self::PrimaryStairs,
-            PRIMARY_OUTWARD => Self::PrimaryOutward,
             SUPPORT_FAST_BREAK_RETURN => Self::SupportFastBreakReturn,
             SUPPORT_PULLBACK => Self::SupportPullback,
             SUPPORT_VOLUME => Self::SupportVolume,
@@ -46,7 +42,6 @@ impl DecisionComponent {
     pub const fn name(self) -> &'static str {
         match self {
             Self::PrimaryStairs => PRIMARY_STAIRS,
-            Self::PrimaryOutward => PRIMARY_OUTWARD,
             Self::SupportFastBreakReturn => SUPPORT_FAST_BREAK_RETURN,
             Self::SupportPullback => SUPPORT_PULLBACK,
             Self::SupportVolume => SUPPORT_VOLUME,
@@ -59,7 +54,6 @@ impl DecisionComponent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecisionComponents {
     pub primary_stairs: bool,
-    pub primary_outward: bool,
     pub support_fast_break_return: bool,
     pub support_pullback: bool,
     pub support_volume: bool,
@@ -71,7 +65,6 @@ impl Default for DecisionComponents {
     fn default() -> Self {
         Self {
             primary_stairs: true,
-            primary_outward: true,
             support_fast_break_return: true,
             support_pullback: true,
             support_volume: true,
@@ -83,15 +76,9 @@ impl Default for DecisionComponents {
 
 impl DecisionComponents {
     pub fn for_primary_mode(mode: &str) -> Option<Self> {
-        let mut components = Self::default();
+        let components = Self::default();
         match mode.to_ascii_lowercase().as_str() {
-            "all" | "both" => {}
-            "stairs" | "stairs-only" | "long-stairs" => {
-                components.primary_outward = false;
-            }
-            "outward" | "outward-only" => {
-                components.primary_stairs = false;
-            }
+            "all" | "both" | "stairs" | "stairs-only" | "long-stairs" => {}
             _ => return None,
         }
         Some(components)
@@ -100,7 +87,6 @@ impl DecisionComponents {
     pub fn from_names(names: &[String]) -> (Self, Vec<String>) {
         let mut components = Self {
             primary_stairs: false,
-            primary_outward: false,
             support_fast_break_return: false,
             support_pullback: false,
             support_volume: false,
@@ -111,7 +97,6 @@ impl DecisionComponents {
         for name in names {
             match DecisionComponent::parse(name) {
                 Some(DecisionComponent::PrimaryStairs) => components.primary_stairs = true,
-                Some(DecisionComponent::PrimaryOutward) => components.primary_outward = true,
                 Some(DecisionComponent::SupportFastBreakReturn) => {
                     components.support_fast_break_return = true
                 }
@@ -128,7 +113,6 @@ impl DecisionComponents {
     pub fn names(self) -> Vec<String> {
         [
             (self.primary_stairs, PRIMARY_STAIRS),
-            (self.primary_outward, PRIMARY_OUTWARD),
             (self.support_fast_break_return, SUPPORT_FAST_BREAK_RETURN),
             (self.support_pullback, SUPPORT_PULLBACK),
             (self.support_volume, SUPPORT_VOLUME),
@@ -143,7 +127,6 @@ impl DecisionComponents {
     pub fn enabled(self, component: DecisionComponent) -> bool {
         match component {
             DecisionComponent::PrimaryStairs => self.primary_stairs,
-            DecisionComponent::PrimaryOutward => self.primary_outward,
             DecisionComponent::SupportFastBreakReturn => self.support_fast_break_return,
             DecisionComponent::SupportPullback => self.support_pullback,
             DecisionComponent::SupportVolume => self.support_volume,
@@ -155,7 +138,6 @@ impl DecisionComponents {
     pub fn primary_enabled(self, kind: PrimaryKind) -> bool {
         match kind {
             PrimaryKind::Stairs => self.primary_stairs,
-            PrimaryKind::Outward => self.primary_outward,
         }
     }
 }
@@ -163,7 +145,6 @@ impl DecisionComponents {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrimaryKind {
     Stairs,
-    Outward,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -205,7 +186,7 @@ pub struct DecisionState {
 
 /// Latest primary-rule evaluation. This is intentionally stateful rather than
 /// emitted only when an entry opens: a wait is useful information too, since
-/// it tells us whether stairs/outward had no tradeable route or whether the
+/// it tells us whether stairs had no tradeable route or whether the
 /// direction reservation blocked an opposite route.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -216,18 +197,14 @@ pub struct PrimaryRuleTrace {
     pub stairs_down_candidates: u32,
     pub stairs_down_tradeable: u32,
     pub stairs_tradeable: u32,
-    pub outward_candidates: u32,
-    pub outward_tradeable: u32,
     pub direction_lock: Option<i8>,
     pub blocked_by_direction_lock: u32,
     pub primary_before: Option<PrimaryKind>,
     pub primary_after: Option<PrimaryKind>,
     pub selected_index: Option<usize>,
     pub selected_direction: i8,
-    pub ended_by_fbr: bool,
     pub ended_by_extreme: bool,
     pub ended_by_protected_swing: bool,
-    pub ended_by_volume: bool,
     pub staircase_lifecycle: Option<StaircaseLifecycle>,
     pub staircase_transition: Option<StaircaseTransition>,
     pub direction_lock_reset_primary: bool,
@@ -306,23 +283,7 @@ impl DecisionState {
             now_ms,
         );
         trace.direction_lock_reset_primary = direction_lock_reset_primary;
-        let (support, fbr_opposes_primary) = self.support(components, candidates, current);
-        let current_primary_candidate = current.is_some_and(|current| {
-            candidates.iter().any(|candidate| {
-                candidate_allowed(candidate, components, direction_lock)
-                    && primary_kind(candidate.pattern_kind) == Some(current.kind)
-                    && candidate.direction == current.direction
-            })
-        });
-        let ended_by_fbr = current
-            .is_some_and(|current| current.kind == PrimaryKind::Outward && fbr_opposes_primary);
-        let ended_by_volume = current.is_some_and(|current| {
-            current.kind == PrimaryKind::Outward
-                && current.volume_climax
-                && current_primary_candidate
-                && !support.favorable_extreme_updated
-                && !support.pullback
-        });
+        let support = self.support(components, candidates, current);
         let ended_by_extreme = current.is_some_and(|current| {
             current.kind == PrimaryKind::Stairs && support.favorable_extreme_failed
         });
@@ -336,15 +297,11 @@ impl DecisionState {
         });
         let ended = current.is_some_and(|current| {
             !components.primary_enabled(current.kind)
-                || ended_by_fbr
-                || ended_by_volume
                 || ended_by_extreme
                 || ended_by_protected_swing
         });
-        trace.ended_by_fbr = ended_by_fbr;
         trace.ended_by_extreme = ended_by_extreme;
         trace.ended_by_protected_swing = ended_by_protected_swing;
-        trace.ended_by_volume = ended_by_volume;
 
         if ended {
             self.primary = None;
@@ -361,10 +318,8 @@ impl DecisionState {
                 })
                 .max_by(candidate_order)
                 .or_else(|| {
-                    // Keep the reserved direction, but allow the primary
-                    // hierarchy to re-arm on the other primary rule. This is
-                    // what lets a stairs route replace an exhausted outward
-                    // route without opening the opposite side.
+                    // Keep the reserved direction while allowing a fresh
+                    // staircase route to replace an exhausted primary state.
                     candidates
                         .iter()
                         .filter(|candidate| {
@@ -373,7 +328,7 @@ impl DecisionState {
                         .filter_map(|candidate| {
                             (primary_kind(candidate.pattern_kind)
                                 .is_some_and(|kind| components.primary_enabled(kind))
-                                && candidate.direction == current.direction)
+                                && candidate.direction != 0)
                                 .then_some(candidate)
                         })
                         .max_by(candidate_order)
@@ -408,9 +363,7 @@ impl DecisionState {
         let Some(candidate) = candidate else {
             self.support = support;
             trace.primary_after = self.primary.map(|primary| primary.kind);
-            trace.reason = if trace.blocked_by_direction_lock > 0
-                && trace.stairs_tradeable + trace.outward_tradeable == 0
-            {
+            trace.reason = if trace.blocked_by_direction_lock > 0 && trace.stairs_tradeable == 0 {
                 "direction-lock-wait".to_string()
             } else if ended {
                 "primary-ended-awaiting-rearm".to_string()
@@ -492,19 +445,12 @@ impl DecisionState {
         components: DecisionComponents,
         candidates: &[CandidateView],
         primary: Option<PrimaryState>,
-    ) -> (SupportEvidence, bool) {
+    ) -> SupportEvidence {
         let primary_direction = primary.map(|primary| primary.direction);
         let fbr = components.enabled(DecisionComponent::SupportFastBreakReturn)
             && candidates
                 .iter()
                 .any(|candidate| candidate.pattern_kind == MrcPatternKind::FastBreakReturn);
-        let fbr_opposes_primary = fbr
-            && primary_direction.is_some_and(|direction| {
-                candidates.iter().any(|candidate| {
-                    candidate.pattern_kind == MrcPatternKind::FastBreakReturn
-                        && candidate.direction == -direction
-                })
-            });
         let pullback = fbr
             && components.enabled(DecisionComponent::SupportPullback)
             && primary.is_some_and(|primary| {
@@ -551,17 +497,14 @@ impl DecisionState {
                 candidate.pattern_kind == MrcPatternKind::TrendingCycle
                     && primary_direction.is_none_or(|direction| candidate.direction == direction)
             });
-        (
-            SupportEvidence {
-                fast_break_return: fbr,
-                pullback,
-                volume_climax,
-                trend,
-                favorable_extreme_updated,
-                favorable_extreme_failed,
-            },
-            fbr_opposes_primary,
-        )
+        SupportEvidence {
+            fast_break_return: fbr,
+            pullback,
+            volume_climax,
+            trend,
+            favorable_extreme_updated,
+            favorable_extreme_failed,
+        }
     }
 }
 
@@ -573,7 +516,7 @@ fn candidate_allowed(
     candidate.entry
         && !matches!(
             candidate.staircase_lifecycle,
-            Some(StaircaseLifecycle::Invalidated | StaircaseLifecycle::Stalled)
+            Some(StaircaseLifecycle::Invalidated)
         )
         && primary_kind(candidate.pattern_kind).is_some_and(|kind| components.primary_enabled(kind))
         && direction_lock.is_none_or(|direction| candidate.direction == direction)
@@ -601,23 +544,17 @@ fn primary_trace(
         match (kind, candidate.direction) {
             (PrimaryKind::Stairs, direction) if direction > 0 => trace.stairs_up_candidates += 1,
             (PrimaryKind::Stairs, direction) if direction < 0 => trace.stairs_down_candidates += 1,
-            (PrimaryKind::Outward, _) => trace.outward_candidates += 1,
             _ => {}
         }
         if candidate.entry && !direction_allowed {
             trace.blocked_by_direction_lock += 1;
         }
         if candidate_allowed(candidate, components, direction_lock) {
-            match kind {
-                PrimaryKind::Stairs => {
-                    trace.stairs_tradeable += 1;
-                    if candidate.direction > 0 {
-                        trace.stairs_up_tradeable += 1;
-                    } else if candidate.direction < 0 {
-                        trace.stairs_down_tradeable += 1;
-                    }
-                }
-                PrimaryKind::Outward => trace.outward_tradeable += 1,
+            trace.stairs_tradeable += 1;
+            if candidate.direction > 0 {
+                trace.stairs_up_tradeable += 1;
+            } else if candidate.direction < 0 {
+                trace.stairs_down_tradeable += 1;
             }
         }
     }
@@ -627,26 +564,13 @@ fn primary_trace(
 fn primary_kind(kind: MrcPatternKind) -> Option<PrimaryKind> {
     match kind {
         MrcPatternKind::StairsUp | MrcPatternKind::StairsDown => Some(PrimaryKind::Stairs),
-        MrcPatternKind::OutwardContinuation => Some(PrimaryKind::Outward),
         _ => None,
     }
 }
 
-fn primary_rank(kind: PrimaryKind) -> u8 {
-    match kind {
-        PrimaryKind::Stairs => 2,
-        PrimaryKind::Outward => 1,
-    }
-}
-
 fn candidate_order(left: &&CandidateView, right: &&CandidateView) -> std::cmp::Ordering {
-    primary_kind(left.pattern_kind)
-        .map(primary_rank)
-        .cmp(&primary_kind(right.pattern_kind).map(primary_rank))
-        .then_with(|| {
-            left.score
-                .partial_cmp(&right.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    left.score
+        .partial_cmp(&right.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| left.index.cmp(&right.index))
 }

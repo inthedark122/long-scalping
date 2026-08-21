@@ -42,7 +42,7 @@ fn successful_movement() -> MrcMovementSnapshot {
 
 #[test]
 fn pattern_identifiers_are_stable_and_round_trip() {
-    assert_eq!(MRC_PATTERN_DEFINITIONS.len(), 7);
+    assert_eq!(MRC_PATTERN_DEFINITIONS.len(), 6);
 
     for pattern in MRC_PATTERN_DEFINITIONS {
         assert_eq!(
@@ -64,10 +64,6 @@ fn each_pattern_has_a_definition() {
     assert_eq!(
         definition(MrcPatternKind::FastBreakReturn).kind,
         MrcPatternKind::FastBreakReturn
-    );
-    assert_eq!(
-        definition(MrcPatternKind::OutwardContinuation).kind,
-        MrcPatternKind::OutwardContinuation
     );
 }
 
@@ -307,16 +303,6 @@ fn classification_distinguishes_sideway_and_trending_cycles() {
 }
 
 #[test]
-fn classification_records_outward_continuation_from_movement_result() {
-    let mut events = history(&[(5, 100.0), (6, 102.0)]);
-    events[1].completed_movement = Some(successful_movement());
-    let signal = classify(&events).expect("successful outward continuation");
-    assert_eq!(signal.kind, MrcPatternKind::OutwardContinuation);
-    assert_eq!(signal.direction, 1);
-    assert_eq!(signal.target_line, 7);
-}
-
-#[test]
 fn classification_keeps_overlapping_pattern_matches_for_parallel_learning() {
     let mut events = history(&[(3, 100.0), (4, 101.0), (3, 99.0), (4, 101.0), (5, 102.0)]);
     events[4].completed_movement = Some(successful_movement());
@@ -326,7 +312,6 @@ fn classification_keeps_overlapping_pattern_matches_for_parallel_learning() {
         .map(|signal| signal.kind)
         .collect::<Vec<_>>();
     assert!(kinds.contains(&MrcPatternKind::StairsUp));
-    assert!(kinds.contains(&MrcPatternKind::OutwardContinuation));
     assert_eq!(
         classify(&events).map(|signal| signal.kind),
         Some(MrcPatternKind::StairsUp)

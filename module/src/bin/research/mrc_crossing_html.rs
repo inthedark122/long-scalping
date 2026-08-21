@@ -1,9 +1,125 @@
 use std::error::Error;
 use std::fs;
+use std::io::{self, BufWriter, Write};
 
-use serde_json::json;
+use super::virtual_trade::{
+    VirtualPosition, VirtualPredictionResult, VirtualPredictionSummary, VirtualTradeResult,
+    VirtualTradeSummary,
+};
+use serde::Serialize;
 
 use super::mrc_crossing::AnalysisReport;
+
+const HTML_PREDICTION_LIMIT: usize = 500;
+
+#[derive(Debug, Serialize)]
+struct PatternDefinitions {
+    pattern: &'static str,
+    pattern_steps: &'static str,
+    stair_sequence: &'static str,
+    stair_price_move_pct: &'static str,
+    stair_favorable_move_pct: &'static str,
+    stair_adverse_move_pct: &'static str,
+    staircase_lifecycle: &'static str,
+    staircase_transition: &'static str,
+    staircase_protected_line: &'static str,
+    staircase_extreme_line: &'static str,
+    cascade_phase: &'static str,
+    cascade_potential_move_pct: &'static str,
+    cascade_adverse_move_pct: &'static str,
+    cascade_trade_state: &'static str,
+    outcome_counts: &'static str,
+    resistance: &'static str,
+    tp_sl: &'static str,
+    trace_outcome: &'static str,
+    position_mfe: &'static str,
+    win_rate: &'static str,
+}
+
+impl Default for PatternDefinitions {
+    fn default() -> Self {
+        Self {
+            pattern: "A stable local movement classification: staircase, break-return, range/trend cycle, or pullback.",
+            pattern_steps: "For a staircase, the number of same-direction zigzag legs supporting the classified pattern.",
+            stair_sequence: "The MRC line sequence used by the STAIRS_UP or STAIRS_DOWN decision.",
+            stair_price_move_pct: "Direction-adjusted net price movement from the beginning of the stair to the current event.",
+            stair_favorable_move_pct: "Maximum favorable price excursion from the beginning of the stair.",
+            stair_adverse_move_pct: "Maximum adverse price excursion from the beginning of the stair.",
+            staircase_lifecycle: "Current staircase state: progressing, pullback, stalled, or invalidated.",
+            staircase_transition: "Structural transition that produced the current staircase state.",
+            staircase_protected_line: "Protected swing line. Breaking it invalidates the staircase.",
+            staircase_extreme_line: "Furthest line reached by the latest confirmed directional leg.",
+            cascade_phase: "Current candle-cascade phase: starting, building, mature, counter_move, or reversal.",
+            cascade_potential_move_pct: "Continuation range estimated from the active and recent same-direction cascade movements.",
+            cascade_adverse_move_pct: "Largest recent opposite-direction cascade movement, used as adverse-excursion risk.",
+            cascade_trade_state: "Cascade execution gate explaining whether direction, speed, potential, and adverse risk permit entry.",
+            outcome_counts: "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
+            resistance: "The opposite reverted MRC line and its barrier state at the signal.",
+            tp_sl: "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
+            trace_outcome: "Observed movement is profitable when its favorable excursion is larger than its absolute adverse excursion; otherwise it is negative.",
+            position_mfe: "For a completed filled position, MFE is the maximum favorable price movement observed before the simulated target, stop, or end-of-history exit. OHLC data cannot determine intrabar order when target and stop share one candle.",
+            win_rate: "Wins divided by closed virtual positions for the exact displayed pattern; the position count must be read with the percentage.",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct HtmlReportData<'a> {
+    symbol_key: &'a str,
+    history_requested_1m: usize,
+    history_loaded_1m: usize,
+    direction: Option<&'static str>,
+    latest_event_time_ms: Option<i64>,
+    trade_summary: &'a VirtualTradeSummary,
+    trades: &'a [VirtualTradeResult],
+    open_trade: &'a Option<VirtualPosition>,
+    prediction_summary: &'a VirtualPredictionSummary,
+    prediction_total: usize,
+    predictions: &'a [VirtualPredictionResult],
+    pending_predictions: usize,
+    active_predictions: usize,
+    pattern_win_rates: &'a [super::mrc_crossing::PatternWinRateReport],
+    stair_statistics: &'a super::mrc_crossing::StairStatistics,
+    pattern_performance: &'a [super::mrc_crossing::PatternPerformanceReport],
+    parallel_pattern_trades: &'a [super::mrc_crossing::PatternTradeReport],
+    active_pattern: Option<&'static str>,
+    active_pattern_score: f64,
+    pattern_definitions: PatternDefinitions,
+    events: &'a [super::mrc_crossing::CrossingEvent],
+    forecast: &'a super::mrc_crossing::Forecast,
+}
+
+/// Serialize JSON directly into the report file while preserving the script
+/// safety guarantee previously provided by `replace('<', "\\u003c")`.
+struct HtmlJsonWriter<W> {
+    inner: W,
+}
+
+impl<W> HtmlJsonWriter<W> {
+    fn new(inner: W) -> Self {
+        Self { inner }
+    }
+}
+
+impl<W: Write> Write for HtmlJsonWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut start = 0;
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            if byte != b'<' {
+                continue;
+            }
+            self.inner.write_all(&bytes[start..index])?;
+            self.inner.write_all(b"\\u003c")?;
+            start = index + 1;
+        }
+        self.inner.write_all(&bytes[start..])?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 pub(crate) fn write_report(
     path: &str,
@@ -13,53 +129,44 @@ pub(crate) fn write_report(
     direction: Option<i8>,
     report: &AnalysisReport,
 ) -> Result<(), Box<dyn Error>> {
-    let data = json!({
-        "symbol_key": symbol_key,
-        "history_requested_1m": history_requested,
-        "history_loaded_1m": minute_count,
-        "direction": direction.map(|value| if value > 0 { "long" } else { "short" }),
-        "latest_event_time_ms": report.latest_event.as_ref().map(|event| event.time_ms),
-        "trade_summary": report.trade_summary,
-        "trades": report.trades,
-        "open_trade": report.open_trade,
-        "prediction_summary": report.prediction_summary,
-        "predictions": report.predictions,
-        "pending_predictions": report.pending_predictions,
-        "active_predictions": report.active_predictions,
-        "pattern_win_rates": report.pattern_win_rates,
-        "stair_statistics": report.stair_statistics,
-        "pattern_performance": report.pattern_performance,
-        "parallel_pattern_trades": report.parallel_pattern_trades,
-        "active_pattern": report.active_pattern,
-        "active_pattern_score": report.active_pattern_score,
-        "pattern_definitions": {
-            "pattern": "A stable local movement classification: staircase, break-return, range/trend cycle, pullback, or outward continuation.",
-            "pattern_steps": "For a staircase, the number of same-direction zigzag legs supporting the classified pattern.",
-            "stair_sequence": "The MRC line sequence used by the STAIRS_UP or STAIRS_DOWN decision.",
-            "stair_price_move_pct": "Direction-adjusted net price movement from the beginning of the stair to the current event.",
-            "stair_favorable_move_pct": "Maximum favorable price excursion from the beginning of the stair.",
-            "stair_adverse_move_pct": "Maximum adverse price excursion from the beginning of the stair.",
-            "staircase_lifecycle": "Current staircase state: progressing, pullback, stalled, or invalidated.",
-            "staircase_transition": "Structural transition that produced the current staircase state.",
-            "staircase_protected_line": "Protected swing line. Breaking it invalidates the staircase.",
-            "staircase_extreme_line": "Furthest line reached by the latest confirmed directional leg.",
-            "cascade_phase": "Current candle-cascade phase: starting, building, mature, counter_move, or reversal.",
-            "cascade_potential_move_pct": "Continuation range estimated from the active and recent same-direction cascade movements.",
-            "cascade_adverse_move_pct": "Largest recent opposite-direction cascade movement, used as adverse-excursion risk.",
-            "cascade_trade_state": "Cascade execution gate explaining whether direction, speed, potential, and adverse risk permit entry.",
-            "outcome_counts": "Exact rejection, continuation, and neutral outcome counts used by the classifier. They are raw evidence, not trade win rate.",
-            "resistance": "The opposite reverted MRC line and its barrier state at the signal.",
-            "tp_sl": "TP and SL are the actual MRC lines used by the executed side, not merely the learned destination.",
-            "trace_outcome": "Observed movement is profitable when its favorable excursion is larger than its absolute adverse excursion; otherwise it is negative.",
-            "position_mfe": "For a completed filled position, MFE is the maximum favorable price movement observed before the simulated target, stop, or end-of-history exit. OHLC data cannot determine intrabar order when target and stop share one candle.",
-            "win_rate": "Wins divided by closed virtual positions for the exact displayed pattern; the position count must be read with the percentage."
-        },
-        "events": report.events,
-        "forecast": report.forecast,
-    });
-    let payload = serde_json::to_string(&data)?.replace('<', "\\u003c");
-    let html = TEMPLATE.replace("__DATA__", &payload);
-    fs::write(path, html)?;
+    let data = HtmlReportData {
+        symbol_key,
+        history_requested_1m: history_requested,
+        history_loaded_1m: minute_count,
+        direction: direction.map(|value| if value > 0 { "long" } else { "short" }),
+        latest_event_time_ms: report.latest_event.as_ref().map(|event| event.time_ms),
+        trade_summary: &report.trade_summary,
+        trades: &report.trades,
+        open_trade: &report.open_trade,
+        prediction_summary: &report.prediction_summary,
+        prediction_total: report.predictions.len(),
+        predictions: &report.predictions[report
+            .predictions
+            .len()
+            .saturating_sub(HTML_PREDICTION_LIMIT)..],
+        pending_predictions: report.pending_predictions,
+        active_predictions: report.active_predictions,
+        pattern_win_rates: &report.pattern_win_rates,
+        stair_statistics: &report.stair_statistics,
+        pattern_performance: &report.pattern_performance,
+        parallel_pattern_trades: &report.parallel_pattern_trades,
+        active_pattern: report.active_pattern,
+        active_pattern_score: report.active_pattern_score,
+        pattern_definitions: PatternDefinitions::default(),
+        events: &report.events,
+        forecast: &report.forecast,
+    };
+    let (prefix, suffix) = TEMPLATE
+        .split_once("__DATA__")
+        .ok_or("HTML template is missing the data placeholder")?;
+    let file = fs::File::create(path)?;
+    let mut output = BufWriter::new(file);
+    output.write_all(prefix.as_bytes())?;
+    let mut json_writer = HtmlJsonWriter::new(&mut output);
+    serde_json::to_writer(&mut json_writer, &data)?;
+    json_writer.flush()?;
+    output.write_all(suffix.as_bytes())?;
+    output.flush()?;
     Ok(())
 }
 
@@ -140,16 +247,17 @@ const TEMPLATE: &str = r###"<!doctype html>
     .pattern-reason-group { margin: 10px 0; }
     .pattern-reason-group summary { cursor: pointer; color: var(--text); font-weight: 700; }
     .pattern-reason-group table { margin-top: 8px; }
-    .copy-id {
+    .copy-id, .reason-toggle {
       color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
       border-radius: 6px; padding: 3px 6px; cursor: pointer; font: inherit; font-size: 11px;
     }
-    .copy-id:hover { color: var(--text); border-color: var(--blue); }
+    .copy-id:hover, .reason-toggle:hover { color: var(--text); border-color: var(--blue); }
     .empty {
       position: absolute; inset: 0; display: grid; place-items: center;
       color: var(--muted); pointer-events: none;
     }
     .table-wrap { overflow-x: auto; }
+    .table-note { margin: 0 0 10px; font-size: 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td {
       padding: 10px 8px;
@@ -290,6 +398,7 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     <section class="panel">
       <h2>Positions</h2>
+      <div id="positions-note" class="subtle table-note"></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -307,6 +416,7 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     <section class="panel">
       <h2>Prediction outcomes</h2>
+      <div id="predictions-note" class="subtle table-note"></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -353,16 +463,20 @@ const TEMPLATE: &str = r###"<!doctype html>
 
     <section class="panel crossing-panel">
       <h2>Crossing / price trace</h2>
-      <p class="subtle">Long-only execution focus. Each crossing shows only its current prediction result, target/SL movement, and filled long-position result when available.</p>
+      <p class="subtle">Long-only execution focus. Each crossing shows its current prediction result, target/SL movement, and filled long-position result when available. Click Details to load the full route plan.</p>
       <div id="crossings" class="table-wrap"></div>
     </section>
   </main>
 
   <script>
     const DATA = __DATA__;
+    // Keep the report focused on the data needed for interactive inspection.
+    // The JSON report remains the archival/full-fidelity output.
+    const MAX_RENDERED_ROWS = 500;
     const trades = DATA.trades || [];
     const tradeSummary = DATA.trade_summary || {};
     const predictions = DATA.predictions || [];
+    const predictionTotal = Number(DATA.prediction_total || predictions.length);
     const summary = DATA.prediction_summary || {};
     const patternWinRates = DATA.pattern_win_rates || [];
     const stairStatistics = DATA.stair_statistics || {};
@@ -388,6 +502,16 @@ const TEMPLATE: &str = r###"<!doctype html>
     ).join("");
     let selectedPatternNames = new Set(patternNames);
     const patternIsSelected = (pattern) => selectedPatternNames.has(pattern);
+    const latestRows = (rows) => rows.slice(Math.max(0, rows.length - MAX_RENDERED_ROWS));
+    const selectedPredictionTotal = () => patternWinRates
+      .filter((pattern) => patternIsSelected(pattern.pattern))
+      .reduce((total, pattern) => total + Number(pattern.matches || 0), 0);
+    const tableWindowNote = (elementId, total, label, loaded = Math.min(total, MAX_RENDERED_ROWS)) => {
+      const omitted = Math.max(0, total - loaded);
+      document.getElementById(elementId).textContent = omitted
+        ? "Showing " + loaded + " recent " + label + " of " + total + ". Use the JSON report for the complete history."
+        : "";
+    };
     const updatePatternSelection = () => {
       selectedPatternNames = new Set([...patternFilter.querySelectorAll(".pattern-chip.selected")]
         .map((chip) => chip.dataset.pattern));
@@ -426,6 +550,10 @@ const TEMPLATE: &str = r###"<!doctype html>
       const id = shareId(kind, row);
       return '<button type="button" class="copy-id" title="Copy identifier" aria-label="Copy identifier" data-copy-id="' + esc(id) + '">Copy</button>';
     };
+    const reasonMarkup = (kind, index, pattern = "", colspan = 13) =>
+      '<button type="button" class="reason-toggle" title="Show full reason" data-reason-kind="' +
+      esc(kind) + '" data-reason-index="' + index + '" data-reason-pattern="' + esc(pattern) +
+      '" data-reason-colspan="' + colspan + '">Reason</button>';
     const copyToClipboard = (value) => {
       const fallback = () => {
         const area = document.createElement("textarea");
@@ -443,6 +571,64 @@ const TEMPLATE: &str = r###"<!doctype html>
         : Promise.resolve(fallback());
     };
     document.addEventListener("click", (event) => {
+      const crossingButton = event.target.closest(".crossing-toggle");
+      if (crossingButton) {
+        const row = crossingButton.closest("tr");
+        const existing = row && row.nextElementSibling &&
+          row.nextElementSibling.classList.contains("crossing-lazy-detail")
+          ? row.nextElementSibling : null;
+        if (existing) {
+          existing.remove();
+          crossingButton.textContent = "Details";
+          return;
+        }
+        if (!row) return;
+        const details = document.createElement("tr");
+        details.className = "crossing-detail crossing-lazy-detail";
+        const cell = document.createElement("td");
+        cell.colSpan = 8;
+        cell.innerHTML = crossingDetailMarkup(
+          selectedEvents[Number(crossingButton.dataset.crossingIndex)]);
+        details.appendChild(cell);
+        row.after(details);
+        crossingButton.textContent = "Hide details";
+        return;
+      }
+      const reasonButton = event.target.closest(".reason-toggle");
+      if (reasonButton) {
+        const index = Number(reasonButton.dataset.reasonIndex);
+        let reason = null;
+        if (reasonButton.dataset.reasonKind === "position") {
+          reason = selectedTrades[index]?.reason;
+        } else if (reasonButton.dataset.reasonKind === "prediction") {
+          reason = selectedPredictions[index]?.reason;
+        } else if (reasonButton.dataset.reasonKind === "parallel") {
+          const group = parallelPatternTrades.find((item) =>
+            item.pattern === reasonButton.dataset.reasonPattern);
+          reason = group?.trades?.[index]?.reason;
+        }
+        const row = reasonButton.closest("tr");
+        const existing = row && row.nextElementSibling &&
+          row.nextElementSibling.classList.contains("lazy-reason")
+          ? row.nextElementSibling : null;
+        if (existing) {
+          existing.remove();
+          reasonButton.textContent = "Reason";
+          return;
+        }
+        if (!row) return;
+        const details = document.createElement("tr");
+        details.className = "trade-reason lazy-reason";
+        const cell = document.createElement("td");
+        cell.colSpan = Number(reasonButton.dataset.reasonColspan || 13);
+        cell.innerHTML = '<span class="trade-reason-label">' +
+          (reasonButton.dataset.reasonKind === "prediction" ? "Prediction reason:" : "Entry reason:") +
+          '</span>' + formatReason(reason || "—");
+        details.appendChild(cell);
+        row.after(details);
+        reasonButton.textContent = "Hide reason";
+        return;
+      }
       const button = event.target.closest(".copy-id");
       if (!button) return;
       copyToClipboard(button.dataset.copyId || "").then(() => {
@@ -611,6 +797,35 @@ const TEMPLATE: &str = r###"<!doctype html>
           ' · NTPS: ' + esc(ntpsText) + '</div>' +
       '</div>';
     };
+    const crossingDetailMarkup = (event) => {
+      const evidence = event.target_line == null
+        ? "no prediction"
+        : "history=" + event.history_scope +
+          " context=" + event.context_samples +
+          " no_pullback=" + event.no_pullback_count +
+          " reverted=" + (event.reverted_line_name || "na") +
+          " next=" + event.next_line_crosses +
+          " support/resistance=" + event.support_resistance_moves +
+          " price-only=" + event.price_only_moves;
+      const stair = event.stair_sequence && event.stair_sequence.length
+        ? "stair=" + event.stair_sequence.join(">") +
+          " net=" + Number(event.stair_price_move_pct || 0).toFixed(3) + "%" +
+          " favorable=" + Number(event.stair_favorable_move_pct || 0).toFixed(3) + "%" +
+          " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%" +
+          " lifecycle=" + (event.staircase_lifecycle || "na") +
+          " transition=" + (event.staircase_transition || "na") +
+          " protected=" + (event.staircase_protected_line != null ? lineLabels[event.staircase_protected_line] : "na") +
+          " extreme=" + (event.staircase_extreme_line != null ? lineLabels[event.staircase_extreme_line] : "na") +
+          " cascade_state=" + (event.cascade_trade_state || "not_configured") +
+          " cascade_dir=" + (event.cascade_direction > 0 ? "long" : event.cascade_direction < 0 ? "short" : "na") +
+          " cascade_potential=" + (event.cascade_potential_move_pct == null ? "na" : Number(event.cascade_potential_move_pct).toFixed(3) + "%") +
+          " cascade_adverse=" + (event.cascade_adverse_move_pct == null ? "na" : Number(event.cascade_adverse_move_pct).toFixed(3) + "%")
+        : "";
+      return '<div class="crossing-detail-content">' +
+        linePlanDetails(event) +
+        '<div class="crossing-evidence"><span class="crossing-evidence-label">Historical evidence</span><span>' +
+        esc(evidence + (stair ? " " + stair : "")) + '</span></div></div>';
+    };
     const signedClass = (value) => Number(value) >= 0 ? "positive" : "negative";
     const percentFrom = (value, reference) => {
       const level = Number(value);
@@ -756,18 +971,20 @@ const TEMPLATE: &str = r###"<!doctype html>
         averageDuration: durationCount ? durationSum / durationCount : 0,
       };
     };
-    const summarizePredictions = (rows) => {
-      const followed = rows.filter((prediction) =>
-        prediction.outcome === "reached_and_followed" || prediction.outcome === "not_reached_but_followed").length;
+    const summarizePredictions = () => {
+      const selected = patternWinRates.filter((pattern) => patternIsSelected(pattern.pattern));
+      const total = selected.reduce((count, pattern) => count + Number(pattern.matches || 0), 0);
+      const filled = selected.reduce((count, pattern) => count + Number(pattern.filled_predictions || 0), 0);
+      const followed = selected.reduce((count, pattern) => count + Number(pattern.followed_predictions || 0), 0);
       return {
-        predictions: rows.length,
-        filled: rows.filter((prediction) => prediction.filled).length,
-        followedRate: rows.length ? followed / rows.length * 100 : 0,
+        predictions: total,
+        filled,
+        followedRate: total ? followed / total * 100 : 0,
       };
     };
     const renderCards = () => {
       const tradeStats = summarizeTrades(selectedTrades);
-      const predictionStats = summarizePredictions(selectedPredictions);
+      const predictionStats = summarizePredictions();
       const cardData = [
         ["Positions", tradeStats.trades],
         ["Win rate", tradeStats.winRate.toFixed(1) + "%"],
@@ -791,7 +1008,9 @@ const TEMPLATE: &str = r###"<!doctype html>
     };
 
     const renderCrossings = () => {
-      const crossingRows = selectedEvents.slice(-500).reverse().map((event) => {
+      const visibleEvents = selectedEvents.slice(-500).reverse();
+      const crossingRows = visibleEvents.map((event, index) => {
+      const sourceIndex = selectedEvents.length - 1 - index;
       const direction = Number(event.direction || 0) > 0 ? "UP" : "DOWN";
       const learned = event.target_name
         ? (event.pattern_kind || "pattern") + " steps=" + (event.pattern_steps || 0) + " -> " +
@@ -805,43 +1024,16 @@ const TEMPLATE: &str = r###"<!doctype html>
       const resistance = event.barrier_state + ":" + (event.barrier_line != null
         ? (event.barrier_line_name || event.barrier_line) + " @ " + price(event.barrier_price)
         : "na");
-      const evidence = event.target_line == null
-        ? "no prediction"
-        : "history=" + event.history_scope +
-          " context=" + event.context_samples +
-          " no_pullback=" + event.no_pullback_count +
-          " reverted=" + (event.reverted_line_name || "na") +
-          " next=" + event.next_line_crosses +
-          " support/resistance=" + event.support_resistance_moves +
-          " price-only=" + event.price_only_moves;
-      const stair = event.stair_sequence && event.stair_sequence.length
-        ? "stair=" + event.stair_sequence.join(">") +
-          " net=" + Number(event.stair_price_move_pct || 0).toFixed(3) + "%" +
-          " favorable=" + Number(event.stair_favorable_move_pct || 0).toFixed(3) + "%" +
-          " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%" +
-          " lifecycle=" + (event.staircase_lifecycle || "na") +
-          " transition=" + (event.staircase_transition || "na") +
-          " protected=" + (event.staircase_protected_line != null ? lineLabels[event.staircase_protected_line] : "na") +
-          " extreme=" + (event.staircase_extreme_line != null ? lineLabels[event.staircase_extreme_line] : "na") +
-          " cascade_state=" + (event.cascade_trade_state || "not_configured") +
-          " cascade_dir=" + (event.cascade_direction > 0 ? "long" : event.cascade_direction < 0 ? "short" : "na") +
-          " cascade_potential=" + (event.cascade_potential_move_pct == null ? "na" : Number(event.cascade_potential_move_pct).toFixed(3) + "%") +
-          " cascade_adverse=" + (event.cascade_adverse_move_pct == null ? "na" : Number(event.cascade_adverse_move_pct).toFixed(3) + "%")
-        : "";
       const compactResult = predictionSummary(event) +
         (event.position_outcome ? '<br><span class="subtle">LONG ' + positionSummary(event) + '</span>' : '');
-      return '<tr><td class="numeric">' + esc(date(event.time_ms)) + ' ' + shareMarkup("event", event) + '</td><td>' + direction +
+      return '<tr><td class="numeric">' + esc(date(event.time_ms)) + ' ' + shareMarkup("event", event) + ' ' +
+        '<button type="button" class="reason-toggle crossing-toggle" title="Show route details" data-crossing-index="' +
+        sourceIndex + '">Details</button></td><td>' + direction +
         ' ' + esc(event.line_name) + '</td><td class="numeric">' + price(event.market_price) +
         '</td><td class="numeric">' + price(event.effective_entry_price) +
         '</td><td>' + esc(learned) + '</td><td>' + esc(event.trade_direction > 0 ? "LONG" : event.trade_direction < 0 ? "SHORT" : "—") +
         '</td><td>' + esc(exits) + '<br><span class="subtle">' + esc(resistance) + '</span></td>' +
-        '<td>' + compactResult + '</td></tr>' +
-        '<tr class="crossing-detail"><td colspan="8"><div class="crossing-detail-content">' +
-          linePlanDetails(event) +
-          '<div class="crossing-evidence">' +
-            '<span class="crossing-evidence-label">Historical evidence</span><span>' + esc(evidence + (stair ? " " + stair : "")) + '</span>' +
-          '</div>' +
-        '</div></td></tr>';
+        '<td>' + compactResult + '</td></tr>';
       }).join("");
       document.getElementById("crossings").innerHTML = selectedEvents.length
         ? '<table class="crossing-table"><thead><tr><th>Time</th><th>Cross</th><th>Market price</th><th>Entry</th>' +
@@ -972,28 +1164,33 @@ const TEMPLATE: &str = r###"<!doctype html>
       const groups = parallelPatternTrades.filter((group) => patternIsSelected(group.pattern)).map((group) => {
         const groupTrades = group.trades || [];
         const summary = group.summary || {};
-        const rows = groupTrades.map((trade, index) => {
+        const visibleTrades = latestRows(groupTrades);
+        const rows = visibleTrades.map((trade, index) => {
+          const sourceIndex = groupTrades.length - visibleTrades.length + index;
           const side = Number(trade.side) > 0 ? "LONG" : "SHORT";
           const fees = Number(trade.entry_fee_pct || 0) + Number(trade.exit_fee_pct || 0);
           const pnlClass = signedClass(trade.pnl_pct);
           const route = side + " " + trade.source_name + " → " + trade.target_name;
-          return '<tr><td>' + (index + 1) + ' ' + shareMarkup("trade", trade) + '</td><td>' + esc(date(trade.closed_at)) +
+          return '<tr><td>' + (sourceIndex + 1) + ' ' + shareMarkup("trade", trade) + ' ' +
+            reasonMarkup("parallel", sourceIndex, group.pattern, 13) + '</td><td>' + esc(date(trade.closed_at)) +
             '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td><td>' +
             price(trade.entry_price) + '</td><td>' + price(trade.target_price) + '</td><td>' +
             price(trade.stop_price) + '</td><td>' + esc(trade.exit_reason) + '</td><td>' +
             money(trade.gross_pnl_pct) + '</td><td class="negative">-' + money(fees) +
             '</td><td class="' + pnlClass + '">' + money(trade.pnl_pct) + '</td><td>' +
-            money(trade.mfe_pct) + '</td><td>' + money(trade.mae_pct) + '</td></tr>' +
-            '<tr class="trade-reason"><td colspan="13"><span class="trade-reason-label">Reason:</span> ' +
-            formatReason(trade.reason) + '</td></tr>';
+            money(trade.mfe_pct) + '</td><td>' + money(trade.mae_pct) + '</td></tr>';
         }).join("");
         const net = money(summary.total_pnl_pct);
         const mfeRange = valueRange(groupTrades.map((trade) => trade.mfe_pct));
         const maeRange = valueRange(groupTrades.map((trade) => trade.mae_pct));
+        const windowNote = groupTrades.length > MAX_RENDERED_ROWS
+          ? '<div class="subtle table-note">Showing the latest ' + MAX_RENDERED_ROWS +
+            ' trades of ' + groupTrades.length + '. Full results remain in the embedded report data.</div>'
+          : '';
         return '<details class="pattern-reason-group" open><summary><code>' +
           esc(group.pattern) + '</code> · ' + groupTrades.length + ' closed · net ' +
           '<span class="' + signedClass(summary.total_pnl_pct) + '">' + net +
-          '</span> · MFE ' + mfeRange + ' · MAE ' + maeRange + '</summary>' + (rows
+          '</span> · MFE ' + mfeRange + ' · MAE ' + maeRange + '</summary>' + windowNote + (rows
             ? '<table><thead><tr><th>#</th><th>Closed</th><th>Side</th><th>Route</th><th>Entry</th>' +
               '<th>Target</th><th>Stop</th><th>Exit</th><th>Gross</th><th>Fees</th><th>Net</th><th>MFE price</th><th>MAE price</th></tr></thead><tbody>' +
               rows + '</tbody></table>'
@@ -1159,12 +1356,16 @@ const TEMPLATE: &str = r###"<!doctype html>
     renderPatternLegend();
 
     const renderPositions = () => {
-      const positionRows = selectedTrades.map((trade, index) => {
+      const visibleTrades = latestRows(selectedTrades);
+      tableWindowNote("positions-note", selectedTrades.length, "positions");
+      const positionRows = visibleTrades.map((trade, index) => {
+        const sourceIndex = selectedTrades.length - visibleTrades.length + index;
         const side = trade.side > 0 ? "LONG" : "SHORT";
         const route = side + " " + trade.source_name + " → " + trade.target_name;
         const pnlClass = signedClass(trade.pnl_pct);
         return '<tr>' +
-          '<td>' + (index + 1) + ' ' + shareMarkup("trade", trade) + '</td>' +
+          '<td>' + (sourceIndex + 1) + ' ' + shareMarkup("trade", trade) + ' ' +
+          reasonMarkup("position", sourceIndex, "", 16) + '</td>' +
           '<td>' + esc(side) + '</td>' +
           '<td>' + esc(route) + '</td>' +
           '<td>' + esc(date(trade.opened_at)) + '</td>' +
@@ -1180,9 +1381,7 @@ const TEMPLATE: &str = r###"<!doctype html>
           '<td>' + money(trade.mfe_pct) + '</td>' +
           '<td>' + money(trade.mae_pct) + '</td>' +
           '<td>' + duration(trade.opened_at, trade.closed_at) + '</td>' +
-          '</tr>' +
-          '<tr class="trade-reason"><td colspan="16"><span class="trade-reason-label">Entry reason:</span>' +
-          formatReason(trade.reason) + '</td></tr>';
+          '</tr>';
       });
       if (selectedOpenTrade) {
         const trade = selectedOpenTrade;
@@ -1202,13 +1401,17 @@ const TEMPLATE: &str = r###"<!doctype html>
     };
 
     const renderPredictions = () => {
-      const predictionRows = selectedPredictions.map((prediction, index) => {
+      const visiblePredictions = latestRows(selectedPredictions);
+      tableWindowNote("predictions-note", selectedPredictionTotal(), "predictions", selectedPredictions.length);
+      const predictionRows = visiblePredictions.map((prediction, index) => {
+      const sourceIndex = selectedPredictions.length - visiblePredictions.length + index;
       const side = prediction.side > 0 ? "LONG" : "SHORT";
       const route = side + " " + prediction.source_name + " → " + prediction.target_name;
       const outcomeClass = prediction.outcome === "prediction_broken" ? "negative"
         : prediction.outcome === "unresolved" ? "" : "positive";
       return '<tr>' +
-        '<td>' + (index + 1) + ' ' + shareMarkup("prediction", prediction) + '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td>' +
+        '<td>' + (sourceIndex + 1) + ' ' + shareMarkup("prediction", prediction) + ' ' +
+        reasonMarkup("prediction", sourceIndex, "", 13) + '</td><td>' + esc(side) + '</td><td>' + esc(route) + '</td>' +
         '<td>' + esc(date(prediction.created_at)) + '</td><td>' + price(prediction.entry_price) + '</td>' +
         '<td>' + price(prediction.target_price) + '</td><td>' + price(prediction.stop_price) + '</td>' +
         '<td>' + esc(date(prediction.resolved_at)) + '</td><td>' + (prediction.filled ? "yes" : "no") + '</td>' +
@@ -1216,9 +1419,7 @@ const TEMPLATE: &str = r###"<!doctype html>
           ? esc(prediction.furthest_line_before_return_name + " (#" + prediction.furthest_line_before_return + ")")
           : "—") + '</td><td>' + (prediction.returned_to_source_line ? "yes" : "no") + '</td>' +
         '<td class="' + outcomeClass + '">' + esc(prediction.outcome) + '</td>' +
-        '<td>' + duration(prediction.created_at, prediction.resolved_at) + '</td></tr>' +
-        '<tr class="trade-reason"><td colspan="13"><span class="trade-reason-label">Prediction reason:</span>' +
-        formatReason(prediction.reason) + '</td></tr>';
+        '<td>' + duration(prediction.created_at, prediction.resolved_at) + '</td></tr>';
     });
     document.getElementById("predictions").innerHTML = predictionRows.join("") ||
       '<tr><td colspan="13" class="subtle">No selected predictions</td></tr>';
@@ -1301,6 +1502,7 @@ const TEMPLATE: &str = r###"<!doctype html>
 mod tests {
     use super::*;
     use crate::research::virtual_trade::{VirtualPredictionSummary, VirtualTradeSummary};
+    use serde_json::json;
 
     #[test]
     fn generated_report_is_standalone_html() {

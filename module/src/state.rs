@@ -1,5 +1,6 @@
 use crate::detection::cascade::{CascadeSignal, CascadeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
+use crate::detection::mrc_pattern_classification::MrcPatternKind;
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
     MRC_CROSSING_EXIT_TYPE,
@@ -188,7 +189,7 @@ pub struct MrcCrossingModel {
     pub last_direction: i8,
     pub last_event_ms: u64,
     pub current_entry: Option<EntryReason>,
-    pub pattern_performance: [PatternPerformance; 7],
+    pub pattern_performance: [PatternPerformance; 6],
     pub active_pattern: Option<u8>,
     pub active_pattern_score: f64,
     pub active_pattern_since_ms: u64,
@@ -210,7 +211,7 @@ impl Default for MrcCrossingModel {
             last_direction: 0,
             last_event_ms: 0,
             current_entry: None,
-            pattern_performance: [PatternPerformance::default(); 7],
+            pattern_performance: [PatternPerformance::default(); 6],
             active_pattern: None,
             active_pattern_score: 0.0,
             active_pattern_since_ms: 0,
@@ -334,7 +335,7 @@ struct PersistedState {
     #[serde(default)]
     exit_memory: ExitMemory,
     #[serde(default)]
-    pattern_performance: [PatternPerformance; 7],
+    pattern_performance: [PatternPerformance; 6],
     #[serde(default)]
     active_pattern: Option<u8>,
     #[serde(default)]
@@ -374,12 +375,17 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.ticks = persisted.ticks;
     state.bar_1m = persisted.bar_1m;
     state.cfg = persisted.cfg;
+    state.cfg.decision_components = DecisionComponents::from_names(&state.cfg.decision_components)
+        .0
+        .names();
     state.cfg_loaded = persisted.cfg_loaded;
     state.trade_budget = persisted.trade_budget;
     state.position.side = persisted.position;
     state.exit_memory = persisted.exit_memory;
     state.mrc_crossing_model.pattern_performance = persisted.pattern_performance;
-    state.mrc_crossing_model.active_pattern = persisted.active_pattern.filter(|index| *index < 7);
+    state.mrc_crossing_model.active_pattern = persisted
+        .active_pattern
+        .filter(|index| MrcPatternKind::ALL.get(*index as usize).is_some());
     state.mrc_crossing_model.active_pattern_score = persisted.active_pattern_score;
     state.mrc_crossing_model.decision_components =
         DecisionComponents::from_names(&state.cfg.decision_components).0;

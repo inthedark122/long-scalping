@@ -105,7 +105,6 @@ fn default_required_samples() -> u32 {
 fn default_decision_components() -> Vec<String> {
     [
         "primary-stairs",
-        "primary-outward",
         "support-fast-break-return",
         "support-pullback",
         "support-volume",

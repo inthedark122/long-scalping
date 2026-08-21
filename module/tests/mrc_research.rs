@@ -60,8 +60,8 @@ fn research_retains_variable_length_event_history() {
         .events
         .iter()
         .any(|event| event.trace_outcome.is_some()));
-    assert_eq!(report.pattern_performance.len(), 7);
-    assert_eq!(report.parallel_pattern_trades.len(), 7);
+    assert_eq!(report.pattern_performance.len(), 6);
+    assert_eq!(report.parallel_pattern_trades.len(), 6);
 }
 
 #[test]

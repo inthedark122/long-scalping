@@ -401,7 +401,7 @@ fn staircase_entry_stays_at_the_crossed_line() {
 }
 
 #[test]
-fn invalidated_or_stalled_staircases_do_not_create_entries() {
+fn invalidated_staircases_are_blocked_but_stalled_ones_can_rearm() {
     let mut invalidated = stair_prediction(MrcPatternKind::StairsUp, 1, 6);
     invalidated.staircase_lifecycle = Some(StaircaseLifecycle::Invalidated);
     let invalidated_analysis = mrc_cross_analysis::build(
@@ -423,12 +423,12 @@ fn invalidated_or_stalled_staircases_do_not_create_entries() {
         &MrcCrossingState::default(),
         (0.0, 0.0, 0.0, 0.0),
     );
-    assert!(!stalled_analysis.tradeable());
-    assert!(!stalled_analysis.forecast_tradeable());
+    assert!(stalled_analysis.tradeable());
+    assert!(stalled_analysis.forecast_tradeable());
 }
 
 #[test]
-fn cascade_must_confirm_stair_direction_before_entry() {
+fn cascade_is_context_only_for_stair_entries() {
     let prediction = stair_prediction(MrcPatternKind::StairsUp, 1, 6);
     let context = MrcPredictionContext {
         cascade_enabled: true,
@@ -451,8 +451,8 @@ fn cascade_must_confirm_stair_direction_before_entry() {
         analysis.cascade_trade_state,
         CascadeTradeState::DirectionMismatch
     );
-    assert!(!analysis.tradeable());
-    assert!(!analysis.forecast_tradeable());
+    assert!(analysis.tradeable());
+    assert!(analysis.forecast_tradeable());
 }
 
 #[test]
@@ -475,8 +475,11 @@ fn reverted_opposite_line_is_a_barrier_until_it_is_crossed() {
         observation.events[0].barrier_state,
         BarrierState::Approaching
     );
-    assert!(observation.entry.is_none());
-    assert_eq!(observation.wait_reason, Some(MrcWaitReason::Crossing));
+    let Some(EntryReason::MrcCrossing { pattern_kind, .. }) = observation.entry.as_ref() else {
+        panic!("a valid staircase should be allowed through the barrier context");
+    };
+    assert!(pattern_kind.starts_with("STAIRS_"));
+    assert_eq!(observation.wait_reason, None);
 }
 
 #[test]
@@ -501,70 +504,7 @@ fn movement_data_is_stored_with_the_crossing_that_realized_it() {
 }
 
 #[test]
-fn prediction_keeps_support_resistance_counts() {
-    let mut model = MrcCrossingModel::default();
-    for (index, target) in [6, 6, 4].into_iter().enumerate() {
-        let base = index as u64 * 10_000;
-        model.history.extend([
-            MrcHistoryEvent {
-                line: 5,
-                direction: 1,
-                now_ms: base,
-                market_price: lines()[5],
-                mrc_low: lines()[0],
-                mrc_high: lines()[8],
-                no_pullback_count: 0,
-                reverted_line: None,
-                completed_movement: None,
-            },
-            MrcHistoryEvent {
-                line: target,
-                direction: 1,
-                now_ms: base + 1_000,
-                market_price: lines()[target as usize],
-                mrc_low: lines()[0],
-                mrc_high: lines()[8],
-                no_pullback_count: 0,
-                reverted_line: None,
-                completed_movement: Some(successful_movement()),
-            },
-        ]);
-    }
-    // Keep the latest observation out of the A -> B -> A classifier so this
-    // test continues to exercise the generic transition statistics.
-    model.history.push(MrcHistoryEvent {
-        line: 4,
-        direction: -1,
-        now_ms: 30_000,
-        market_price: lines()[4],
-        mrc_low: lines()[0],
-        mrc_high: lines()[8],
-        no_pullback_count: 0,
-        reverted_line: None,
-        completed_movement: None,
-    });
-
-    let mut crossing = event(5, 40_000);
-    crossing.price = 103.0;
-    crossing.completed_movement = Some(successful_movement());
-    let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
-    let Some(EntryReason::MrcCrossing {
-        target_line,
-        next_line_crosses,
-        support_resistance_moves,
-        ..
-    }) = observation.entry
-    else {
-        panic!("the continuation route should remain tradable");
-    };
-
-    assert_eq!(target_line, 6);
-    assert_eq!(next_line_crosses, 2);
-    assert_eq!(support_resistance_moves, 1);
-}
-
-#[test]
-fn prediction_uses_pullback_and_revert_context_when_available() {
+fn pullback_context_is_retained_without_creating_an_entry() {
     let mut model = MrcCrossingModel::default();
     for index in 0..2u64 {
         let base = index * 10_000;
@@ -636,21 +576,12 @@ fn prediction_uses_pullback_and_revert_context_when_available() {
     crossing.price = 103.0;
     crossing.completed_movement = Some(successful_movement());
     let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
-    let Some(EntryReason::MrcCrossing {
-        target_line,
-        context_samples,
-        no_pullback_count,
-        reverted_line,
-        ..
-    }) = observation.entry
-    else {
-        panic!("matching pullback/revert context should produce a prediction");
-    };
-
-    assert_eq!(target_line, 6);
-    assert_eq!(context_samples, 2);
-    assert_eq!(no_pullback_count, 0);
-    assert_eq!(reverted_line, None);
+    assert!(observation.entry.is_none());
+    assert!(observation.selected_candidate_index.is_none());
+    assert!(model
+        .prediction_history
+        .iter()
+        .any(|event| event.no_pullback_count == 2 && event.reverted_line == Some(4)));
 }
 
 #[test]
@@ -740,8 +671,11 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
     let mut crossing = event(5, 4 * 30 * 60_000 + 10 * 60_000);
     crossing.price = 104.5;
     let observation = mrc_crossing::observe(&mut model, &[crossing], lines());
-    assert!(observation.entry.is_none());
-    assert!(observation.selected_candidate_index.is_none());
+    let Some(EntryReason::MrcCrossing { pattern_kind, .. }) = observation.entry.as_ref() else {
+        panic!("a staircase route should remain tradable when FBR rejects");
+    };
+    assert!(pattern_kind.starts_with("STAIRS_"));
+    assert!(observation.selected_candidate_index.is_some());
     let event = &observation.events[0];
     assert_eq!(event.target_line, Some(4));
     assert_eq!(

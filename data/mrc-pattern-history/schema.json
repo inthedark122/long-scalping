@@ -27,8 +27,7 @@
           "FAST_BREAK_RETURN",
           "RANGE_CYCLE_SIDEWAY",
           "TRENDING_CYCLE",
-          "PULLBACK_TO_INNER",
-          "OUTWARD_CONTINUATION"
+          "PULLBACK_TO_INNER"
         ]
       },
       "minItems": 1,

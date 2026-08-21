@@ -9,10 +9,10 @@ This repo tracks the current adaptive MRC pattern release only.
 - Rust crate: `module/`
 - Runtime model: one position at a time
 - Input: 1m/5m MRC lines, volume, candles, and live price
-- Classification: all seven MRC patterns are evaluated for every observation
-- Selection: the highest-scoring tradable pattern remains active until a challenger beats it by the switch margin
+- Classification: six active MRC patterns are evaluated for every observation
+- Selection: the highest-scoring tradable staircase remains active until its protected structure ends
 - Learning: each pattern stores observations, trades, wins, net PnL, and an EMA of realized net PnL
-- Continuation: successful staircase/outward legs advance to the next MRC line instead of stopping after one leg
+- Continuation: successful staircase legs advance to the next MRC line instead of stopping after one leg
 
 ## Config surface
 
@@ -42,9 +42,10 @@ strategy-mode selector: the pattern engine is always active.
 ## Execution rules
 
 - Flat state can open either a long or a short, never both.
-- Only the selected pattern can open a position.
+- Only a selected staircase pattern can open a position.
+- Pullback patterns remain visible to analysis and learning but cannot open positions.
 - Existing positions are not reversed in the same tick.
-- Continuation patterns can re-plan the next adjacent MRC line while the active movement remains valid.
+- Staircase patterns can re-plan the next adjacent MRC line while the active movement remains valid.
 - A realized trade result is attributed to the pattern that opened it.
 
 ## Validation

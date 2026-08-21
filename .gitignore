@@ -1,6 +1,7 @@
 # Rust build artifacts (163M+ — never commit)
 target/
 module/target/
+release/
 
 # Python
 __pycache__/

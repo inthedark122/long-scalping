@@ -606,15 +606,30 @@ impl VirtualTradeSimulator {
         self.activate(setup, opened_at);
     }
 
-    pub(crate) fn queue_next_candle(&mut self, setup: TradeSetup) {
-        self.queue_next_candle_with_fill_side(setup.clone(), setup.fill_side);
+    pub(crate) fn open_market(&mut self, mut setup: TradeSetup, fill_price: f64) -> bool {
+        if self.active.is_some()
+            || self.pending_next_candle.is_some()
+            || !fill_price.is_finite()
+            || fill_price <= 0.0
+        {
+            return false;
+        }
+        setup.entry_price = fill_price;
+        let opened_at = setup.opened_at;
+        self.activate(setup, opened_at);
+        true
     }
 
-    fn queue_next_candle_with_fill_side(&mut self, setup: TradeSetup, fill_side: i8) {
+    pub(crate) fn queue_next_candle(&mut self, setup: TradeSetup) -> bool {
+        self.queue_next_candle_with_fill_side(setup.clone(), setup.fill_side)
+    }
+
+    fn queue_next_candle_with_fill_side(&mut self, setup: TradeSetup, fill_side: i8) -> bool {
         if self.active.is_some() || self.pending_next_candle.is_some() {
-            return;
+            return false;
         }
         self.pending_next_candle = Some((setup, fill_side));
+        true
     }
 
     fn activate(&mut self, setup: TradeSetup, opened_at: i64) {

@@ -70,10 +70,11 @@ impl MovementPhase {
     }
 }
 
-/// Why the cascade did or did not authorize a directional entry.
+/// Why the cascade would or would not authorize a strict directional entry.
 ///
 /// `NotConfigured` is retained for research/unit-test callers that do not
-/// provide live cascade context. Live execution enables the gate explicitly.
+/// provide live cascade context. Staircase execution records this state as
+/// context; the structural stairs gate remains the live entry authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CascadeTradeState {

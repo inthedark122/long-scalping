@@ -285,11 +285,7 @@ pub fn valid_price_levels_for_pattern(
     // reward/risk check would suppress the very continuation being learned.
     if matches!(
         pattern_kind,
-        Some(
-            MrcPatternKind::StairsUp
-                | MrcPatternKind::StairsDown
-                | MrcPatternKind::OutwardContinuation
-        )
+        Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
     ) {
         return true;
     }
@@ -1088,9 +1084,7 @@ fn observe_events(
                     let forecast_allowed = (forecast_can_reach(&analysis)
                         || matches!(
                             prediction.pattern_kind,
-                            MrcPatternKind::StairsUp
-                                | MrcPatternKind::StairsDown
-                                | MrcPatternKind::OutwardContinuation
+                            MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
                         ))
                         && analysis.forecast_tradeable();
                     let entry = if forecast_allowed {

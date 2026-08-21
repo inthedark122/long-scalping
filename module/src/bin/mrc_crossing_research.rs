@@ -18,7 +18,7 @@ const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--direction both|long|short] [--primary all|stairs|outward] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--direction both|long|short] [--primary stairs] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -32,9 +32,8 @@ fn parse_direction(value: &str) -> Result<Option<i8>, Box<dyn Error>> {
 }
 
 fn parse_primary(value: &str) -> Result<DecisionComponents, Box<dyn Error>> {
-    DecisionComponents::for_primary_mode(value).ok_or_else(|| {
-        format!("invalid primary mode '{value}', expected all, stairs, or outward").into()
-    })
+    DecisionComponents::for_primary_mode(value)
+        .ok_or_else(|| format!("invalid primary mode '{value}', expected stairs").into())
 }
 
 fn symbol_slug(symbol_key: &str) -> String {
@@ -370,12 +369,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         direction_lock
             .map(|direction| if direction > 0 { "long" } else { "short" })
             .unwrap_or("both"),
-        if decision_components.primary_stairs && decision_components.primary_outward {
-            "all"
-        } else if decision_components.primary_stairs {
+        if decision_components.primary_stairs {
             "stairs"
-        } else if decision_components.primary_outward {
-            "outward"
         } else {
             "none"
         },
@@ -418,7 +413,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let document = json!({
                 "symbol_key": symbol_key,
                 "direction": direction_lock.map(|direction| if direction > 0 { "long" } else { "short" }).unwrap_or("both"),
-                "primary": if decision_components.primary_stairs && decision_components.primary_outward { "all" } else if decision_components.primary_stairs { "stairs" } else if decision_components.primary_outward { "outward" } else { "none" },
+                "primary": if decision_components.primary_stairs { "stairs" } else { "none" },
                 "decision_components": decision_components.names(),
                 "history_requested_1m": history,
                 "end_time_ms": end_time_ms,

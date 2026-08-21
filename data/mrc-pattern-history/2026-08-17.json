@@ -41,7 +41,7 @@
         "FAST_BREAK_RETURN": {
           "observations_5_to_10_min": 16,
           "median_duration_ms": 480000,
-          "median_outward_move_pct": 0.24,
+          "median_break_move_pct": 0.24,
           "median_net_price_change_pct": -0.003
         },
         "RANGE_CYCLE_SIDEWAY": {
@@ -58,14 +58,6 @@
         "PULLBACK_TO_INNER": {
           "observations": 62,
           "movement_success_rate": 0.3387
-        },
-        "OUTWARD_CONTINUATION": {
-          "transitions": [
-            { "from": "up_inner", "to": "up_small", "observations": 40, "movement_success_rate": 0.65, "median_favorable_pct": 1.01, "median_adverse_pct": -0.59, "median_duration_ms": 720000 },
-            { "from": "up_small", "to": "up_outer", "observations": 24, "movement_success_rate": 0.667, "median_favorable_pct": 0.83, "median_adverse_pct": 0.0, "median_duration_ms": 240000 },
-            { "from": "down_inner", "to": "down_small", "observations": 28, "movement_success_rate": 0.536, "median_favorable_pct": 0.93, "median_adverse_pct": -0.57, "median_duration_ms": 390000 },
-            { "from": "down_small", "to": "down_outer", "observations": 17, "movement_success_rate": 0.824, "median_favorable_pct": 0.97, "median_adverse_pct": 0.0, "median_duration_ms": 240000 }
-          ]
         }
       }
     },
@@ -95,7 +87,7 @@
         "FAST_BREAK_RETURN": {
           "observations_5_to_10_min": 22,
           "median_duration_ms": 420000,
-          "median_outward_move_pct": 0.485,
+          "median_break_move_pct": 0.485,
           "median_net_price_change_pct": -0.094
         },
         "RANGE_CYCLE_SIDEWAY": {
@@ -112,15 +104,6 @@
         "PULLBACK_TO_INNER": {
           "observations": 76,
           "movement_success_rate": 0.2632
-        },
-        "OUTWARD_CONTINUATION": {
-          "transitions": [
-            { "from": "up_inner", "to": "up_small", "observations": 37, "movement_success_rate": 0.73, "median_favorable_pct": 2.07, "median_adverse_pct": -0.42, "median_duration_ms": 300000 },
-            { "from": "up_small", "to": "up_outer", "observations": 21, "movement_success_rate": 0.667, "median_favorable_pct": 0.80, "median_adverse_pct": -0.16, "median_duration_ms": 240000 },
-            { "from": "down_inner", "to": "down_small", "observations": 43, "movement_success_rate": 0.698, "median_favorable_pct": 1.59, "median_adverse_pct": -0.34, "median_duration_ms": 540000 },
-            { "from": "down_small", "to": "down_outer", "observations": 25, "movement_success_rate": 0.76, "median_favorable_pct": 2.11, "median_adverse_pct": -0.05, "median_duration_ms": 300000 },
-            { "from": "up_outer", "to": "up_big", "observations": 5, "movement_success_rate": 0.60, "median_favorable_pct": 0.90, "median_adverse_pct": 0.0, "median_duration_ms": 240000 }
-          ]
         }
       }
     }

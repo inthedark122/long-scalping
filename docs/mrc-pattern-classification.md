@@ -36,7 +36,7 @@ The line order is fixed:
 
 Every plan still requires a directionally valid target and stop. The general
 reward-versus-risk floor is retained for reversal and barrier-driven patterns,
-but adjacent `STAIRS_UP`, `STAIRS_DOWN`, and `OUTWARD_CONTINUATION` legs may
+but adjacent `STAIRS_UP` and `STAIRS_DOWN` legs may
 continue when their next MRC target is valid. This keeps an MRC stop
 from suppressing the stair sequence itself.
 
@@ -51,10 +51,10 @@ An observation records the local movement that just finished:
 - price drift and MRC range movement;
 - later, the filled trade result and net PnL.
 
-The same movement can develop through several classifications. For example,
-an `OUTWARD_CONTINUATION` can be followed by `STAIRS_UP`, while a rejected
-next line can instead produce `FAST_BREAK_RETURN`. These are parallel
-candidates, not a hard-coded precedence chain. The score combines the
+The same movement can develop through several classifications. A staircase can
+overlap with a pullback or a rejected next line can instead produce
+`FAST_BREAK_RETURN`. These are parallel candidates, not a hard-coded precedence
+chain. The score combines the
 pattern's learned route value with realized net PnL; a small switch margin
 prevents noisy one-tick oscillation between patterns.
 
@@ -233,7 +233,7 @@ pullback candidate rather than immediately reversing the strategy.
 
 ### Meaning
 
-Price first moves outward and then crosses back toward an inner MRC line before
+Price first expands away from the mean and then crosses back toward an inner MRC line before
 the expected continuation is confirmed:
 
 ```text
@@ -243,42 +243,14 @@ down_inner -> down_small -> down_inner
 
 ### Detection
 
-Record the outward line, returned inner line, elapsed time, favorable excursion
-of the outward leg, and adverse excursion during the return.
+Record the expanded line, returned inner line, elapsed time, favorable excursion
+of the expansion leg, and adverse excursion during the return.
 
 ### Prediction
 
 Reduce continuation confidence. The returned inner line can become a reversal
-or re-entry area. A later outward break should be treated as a new observation,
+or re-entry area. A later expansion should be treated as a new observation,
 not silently combined with the failed attempt.
-
-## 7. `OUTWARD_CONTINUATION`
-
-### Meaning
-
-Price crosses the adjacent MRC line in the current movement direction and its
-favorable excursion is stronger than its adverse excursion. This is the small
-building block from which a staircase is learned.
-
-### Detection
-
-For every local transition, record:
-
-- source line and adjacent destination line;
-- direction;
-- elapsed time;
-- favorable and adverse percentage movement;
-- movement success;
-- return-to-source status.
-
-Examples from the current reports include `up_inner -> up_small`,
-`up_small -> up_outer`, `down_inner -> down_small`, and
-`down_small -> down_outer`.
-
-### Prediction
-
-Use the next line as the immediate destination. Repeated successful outward
-continuations increase the evidence for `STAIRS_UP` or `STAIRS_DOWN`.
 
 ## Learning and outcome labels
 
@@ -289,8 +261,9 @@ The classifier and the outcome ledger are separate:
 - the virtual/live trade result later labels whether a trade based on that
   observation won or lost;
 - a target hit advances the continuation leg to the next unbroken MRC line,
-  allowing the selected staircase/outward pattern to keep trading the trend;
-- a different pattern takes control only when its score is materially better.
+  allowing the selected staircase pattern to keep trading the trend;
+- pullback classifications remain analysis evidence and never take entry
+  authority.
 
 Movement success is not trade win rate. A movement can reach a favorable price
 but still produce a losing trade because of entry fill, stop placement, fees,

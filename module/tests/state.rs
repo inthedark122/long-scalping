@@ -16,7 +16,7 @@ fn pattern_learning_is_restored_from_bridge_state() {
     source.mrc_crossing_model.active_pattern = Some(MrcPatternKind::StairsUp.index() as u8);
     source.mrc_crossing_model.active_pattern_score = 1.25;
     source.cfg.decision_components =
-        vec!["primary-outward".to_string(), "support-volume".to_string()];
+        vec!["primary-stairs".to_string(), "support-volume".to_string()];
     source.mrc_crossing_model.decision_components =
         long_scalping::detection::decision::DecisionComponents::from_names(
             &source.cfg.decision_components,
@@ -24,7 +24,7 @@ fn pattern_learning_is_restored_from_bridge_state() {
         .0;
     source.mrc_crossing_model.decision_state.primary =
         Some(long_scalping::detection::decision::PrimaryState {
-            kind: PrimaryKind::Outward,
+            kind: PrimaryKind::Stairs,
             direction: -1,
             phase: PrimaryPhase::Exhaustion,
             started_at_ms: 123,
@@ -50,23 +50,25 @@ fn pattern_learning_is_restored_from_bridge_state() {
     assert_eq!(restored.mrc_crossing_model.active_pattern_score, 1.25);
     assert_eq!(
         restored.cfg.decision_components,
-        vec!["primary-outward", "support-volume"]
+        vec!["primary-stairs", "support-volume"]
     );
     assert!(
         restored
-            .mrc_crossing_model
-            .decision_components
-            .primary_outward
-    );
-    assert!(
-        !restored
             .mrc_crossing_model
             .decision_components
             .primary_stairs
     );
     assert_eq!(
         restored.mrc_crossing_model.decision_state.primary,
-        source.mrc_crossing_model.decision_state.primary
+        Some(long_scalping::detection::decision::PrimaryState {
+            kind: PrimaryKind::Stairs,
+            direction: -1,
+            phase: PrimaryPhase::Exhaustion,
+            started_at_ms: 123,
+            best_favorable_pct: 0.8,
+            last_price: 100.0,
+            volume_climax: true,
+        })
     );
     assert_eq!(restored.mrc_crossing_model.trade_direction_lock, Some(-1));
 }

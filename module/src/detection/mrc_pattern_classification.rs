@@ -4,8 +4,8 @@
 //! trading decisions by themselves and deliberately do not encode a fixed
 //! history length or a rare, complete crossing path. A research observation
 //! can match more than one classification while it is developing; for
-//! example, an outward continuation can become a zigzag staircase and later
-//! become a fast break-and-return.
+//! example, a pullback can overlap with a zigzag staircase and later become a
+//! fast break-and-return.
 
 use crate::state::MrcHistoryEvent;
 
@@ -26,23 +26,19 @@ pub enum MrcPatternKind {
     /// Price alternates between lower and upper MRC zones, but the net drift
     /// is large enough that the repeated crossings are part of a trend.
     TrendingCycle,
-    /// After an outward line movement, price crosses back toward the inner
+    /// After an expanded line movement, price crosses back toward the inner
     /// band before the expected continuation is completed.
     PullbackToInner,
-    /// A local movement crosses the next line in the current direction and
-    /// its favorable excursion is stronger than its adverse excursion.
-    OutwardContinuation,
 }
 
 impl MrcPatternKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 6] = [
         Self::StairsUp,
         Self::StairsDown,
         Self::FastBreakReturn,
         Self::RangeCycleSideway,
         Self::TrendingCycle,
         Self::PullbackToInner,
-        Self::OutwardContinuation,
     ];
 
     pub const fn index(self) -> usize {
@@ -53,7 +49,6 @@ impl MrcPatternKind {
             Self::RangeCycleSideway => 3,
             Self::TrendingCycle => 4,
             Self::PullbackToInner => 5,
-            Self::OutwardContinuation => 6,
         }
     }
 
@@ -66,7 +61,6 @@ impl MrcPatternKind {
             Self::RangeCycleSideway => "RANGE_CYCLE_SIDEWAY",
             Self::TrendingCycle => "TRENDING_CYCLE",
             Self::PullbackToInner => "PULLBACK_TO_INNER",
-            Self::OutwardContinuation => "OUTWARD_CONTINUATION",
         }
     }
 
@@ -79,7 +73,6 @@ impl MrcPatternKind {
             "RANGE_CYCLE_SIDEWAY" => Self::RangeCycleSideway,
             "TRENDING_CYCLE" => Self::TrendingCycle,
             "PULLBACK_TO_INNER" => Self::PullbackToInner,
-            "OUTWARD_CONTINUATION" => Self::OutwardContinuation,
             _ => return None,
         })
     }
@@ -260,32 +253,6 @@ fn distance_from_mean(line: u8) -> u8 {
     line.abs_diff(MEAN_LINE)
 }
 
-fn movement_success(event: &MrcHistoryEvent) -> bool {
-    let Some(movement) = event.completed_movement else {
-        return false;
-    };
-    let start = if movement.market_start_price > 0.0 {
-        movement.market_start_price
-    } else {
-        movement.start_price
-    };
-    if start <= 0.0 || !start.is_finite() || movement.direction == 0 {
-        return false;
-    }
-    let (favorable, adverse) = if movement.direction > 0 {
-        (
-            (movement.high - start) / start * 100.0,
-            (movement.low - start) / start * 100.0,
-        )
-    } else {
-        (
-            (start - movement.low) / start * 100.0,
-            (start - movement.high) / start * 100.0,
-        )
-    };
-    favorable > adverse.abs()
-}
-
 fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     let [source, crossed, returned] = history.get(history.len().checked_sub(3)?..)? else {
         return None;
@@ -320,16 +287,16 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
 }
 
 fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
-    let [source, outward, returned] = history.get(history.len().checked_sub(3)?..)? else {
+    let [source, expanded, returned] = history.get(history.len().checked_sub(3)?..)? else {
         return None;
     };
-    let outward_direction = line_direction(source.line, outward.line);
-    let return_direction = line_direction(outward.line, returned.line);
-    if outward.line.abs_diff(source.line) != 1
-        || distance_from_mean(outward.line) <= distance_from_mean(source.line)
-        || distance_from_mean(returned.line) >= distance_from_mean(outward.line)
+    let expansion_direction = line_direction(source.line, expanded.line);
+    let return_direction = line_direction(expanded.line, returned.line);
+    if expanded.line.abs_diff(source.line) != 1
+        || distance_from_mean(expanded.line) <= distance_from_mean(source.line)
+        || distance_from_mean(returned.line) >= distance_from_mean(expanded.line)
         || returned.line == source.line
-        || outward_direction == 0
+        || expansion_direction == 0
         || return_direction == 0
     {
         return None;
@@ -342,7 +309,7 @@ fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         failed_break_line: None,
         failed_break_direction: 0,
         steps: 1,
-        elapsed_ms: returned.now_ms.saturating_sub(outward.now_ms),
+        elapsed_ms: returned.now_ms.saturating_sub(expanded.now_ms),
         sequence: Vec::new(),
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
@@ -661,40 +628,9 @@ pub fn classify(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     classify_all(history).into_iter().next()
 }
 
-fn outward_continuation(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
-    if history.len() < 2 {
-        return None;
-    }
-    let [source, current] = history.get(history.len() - 2..)? else {
-        return None;
-    };
-    let direction = line_direction(source.line, current.line);
-    if source.line.abs_diff(current.line) != 1 || direction == 0 || !movement_success(current) {
-        return None;
-    }
-    Some(MrcPatternSignal {
-        kind: MrcPatternKind::OutwardContinuation,
-        source_line: current.line,
-        target_line: adjacent_line(current.line, direction)?,
-        direction,
-        failed_break_line: None,
-        failed_break_direction: 0,
-        steps: 1,
-        elapsed_ms: current.now_ms.saturating_sub(source.now_ms),
-        sequence: Vec::new(),
-        price_move_pct: 0.0,
-        favorable_move_pct: 0.0,
-        adverse_move_pct: 0.0,
-        staircase_lifecycle: None,
-        staircase_transition: None,
-        staircase_protected_line: None,
-        staircase_extreme_line: None,
-    })
-}
-
 /// Evaluate every independent matcher. The result deliberately keeps
-/// overlapping matches: a staircase can also be an outward continuation and
-/// a trending cycle can coexist with a local pullback.
+/// overlapping matches: a staircase can coexist with a local pullback or a
+/// trending cycle.
 pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     if history.len() < 2 {
         return Vec::new();
@@ -704,14 +640,13 @@ pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     matches.extend(pullback_to_inner(history));
     matches.extend(staircases(history));
     matches.extend(cycle(history));
-    matches.extend(outward_continuation(history));
     matches
 }
 
 /// The complete, stable catalogue. Keep this list small and behavior based;
 /// learned thresholds and outcome statistics belong in the external history
 /// files under `data/mrc-pattern-history/`.
-pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 7] = [
+pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 6] = [
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsUp,
         title: "MRC upward staircase",
@@ -750,16 +685,9 @@ pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 7] = [
     MrcPatternDefinition {
         kind: MrcPatternKind::PullbackToInner,
         title: "Pullback to inner line",
-        summary: "After an outward movement, price returns toward an inner MRC line before continuation is confirmed.",
-        detection: "An outward transition followed by an inward transition, including the returned line, elapsed time, and adverse excursion.",
+        summary: "After an expansion, price returns toward an inner MRC line before continuation is confirmed.",
+        detection: "An expansion followed by an inward transition, including the returned line, elapsed time, and adverse excursion.",
         prediction: "Reduce continuation confidence and evaluate the returned inner line as a possible reversal or re-entry area.",
-    },
-    MrcPatternDefinition {
-        kind: MrcPatternKind::OutwardContinuation,
-        title: "Outward continuation",
-        summary: "A local movement crosses the next line in the current direction and produces favorable excursion.",
-        detection: "A source line followed by its adjacent line in the same direction, with movement percentages and duration recorded.",
-        prediction: "Use the next line as the immediate destination and feed repeated continuations into staircase learning.",
     },
 ];
 
