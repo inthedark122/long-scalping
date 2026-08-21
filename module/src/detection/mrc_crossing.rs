@@ -8,6 +8,7 @@ use crate::detection::mrc_pattern_classification::{
 };
 use crate::detection::mrc_prediction;
 use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
+use crate::detection::mrc_touch_learning::MrcTouchLearningSignal;
 use crate::detection::vlines::MrcCrossEvent;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
@@ -534,6 +535,7 @@ fn pattern_score(performance: PatternPerformance, prediction: &MrcPrediction) ->
 
 fn direction_prediction(
     touch: Option<MrcTouchSignal>,
+    touch_learning: MrcTouchLearningSignal,
     analysis: &MrcCrossAnalysis,
 ) -> MrcDirectionPrediction {
     let Some(touch) = touch else {
@@ -566,12 +568,13 @@ fn direction_prediction(
             target_samples: analysis.target_samples,
             target_distance_pct,
             stop_distance_pct,
+            touch_learning,
         },
     )
 }
 
 fn prediction_allows_entry(prediction: MrcDirectionPrediction) -> bool {
-    !prediction.has_evidence() || prediction.candidate_edge_pct > 0.0
+    !prediction.has_evidence() || prediction.candidate_allowed
 }
 
 fn candidate_key(candidate: &PatternCandidate) -> Option<(u8, u8, u8)> {
@@ -933,6 +936,7 @@ pub fn observe_with_context(
         None,
         mrc_prediction::MrcPredictionContext::default(),
         None,
+        None,
     )
 }
 
@@ -980,6 +984,7 @@ pub fn observe_with_forecast_context(
         Some((current_price, now_ms)),
         context,
         None,
+        None,
     )
 }
 
@@ -997,6 +1002,35 @@ pub fn observe_with_forecast_and_touch_context(
     context: mrc_prediction::MrcPredictionContext,
     touch: MrcTouchSignal,
 ) -> Observation {
+    observe_with_forecast_and_touch_and_learning_context(
+        state,
+        events,
+        lines,
+        crossing,
+        volume,
+        current_price,
+        now_ms,
+        context,
+        touch,
+        MrcTouchLearningSignal::default(),
+    )
+}
+
+/// Forecast path with both incremental touch state and empirical touch
+/// outcomes. The old touch-only API remains available for callers that do not
+/// maintain the learner.
+pub fn observe_with_forecast_and_touch_and_learning_context(
+    state: &mut MrcCrossingModel,
+    events: &[MrcCrossEvent],
+    lines: [f64; 9],
+    crossing: &MrcCrossingState,
+    volume: (f64, f64, f64, f64),
+    current_price: f64,
+    now_ms: u64,
+    context: mrc_prediction::MrcPredictionContext,
+    touch: MrcTouchSignal,
+    touch_learning: MrcTouchLearningSignal,
+) -> Observation {
     observe_events(
         state,
         events,
@@ -1006,6 +1040,7 @@ pub fn observe_with_forecast_and_touch_context(
         Some((current_price, now_ms)),
         context,
         Some(touch),
+        Some(touch_learning),
     )
 }
 
@@ -1018,6 +1053,7 @@ fn observe_events(
     forecast: Option<(f64, u64)>,
     context: mrc_prediction::MrcPredictionContext,
     touch: Option<MrcTouchSignal>,
+    touch_learning: Option<MrcTouchLearningSignal>,
 ) -> Observation {
     state.current_entry = None;
     let mut observation = Observation::default();
@@ -1051,7 +1087,8 @@ fn observe_events(
                 volume,
                 context,
             );
-            let direction_prediction = direction_prediction(touch, &analysis);
+            let direction_prediction =
+                direction_prediction(touch, touch_learning.unwrap_or_default(), &analysis);
             let entry = (analysis.tradeable() && prediction_allows_entry(direction_prediction))
                 .then(|| {
                     analysis
@@ -1079,8 +1116,7 @@ fn observe_events(
             observation.events.push(analysis.clone());
             observation.candidates.push(PatternCandidate {
                 pattern_kind: prediction.pattern_kind,
-                score: pattern_score(*performance, &prediction)
-                    + direction_prediction.candidate_edge_pct,
+                score: pattern_score(*performance, &prediction),
                 analysis,
                 direction_prediction,
                 entry,
@@ -1106,7 +1142,8 @@ fn observe_events(
                         volume,
                         context,
                     );
-                    let direction_prediction = direction_prediction(touch, &analysis);
+                    let direction_prediction =
+                        direction_prediction(touch, touch_learning.unwrap_or_default(), &analysis);
                     let forecast_allowed = (forecast_can_reach(&analysis)
                         || matches!(
                             prediction.pattern_kind,
@@ -1134,8 +1171,7 @@ fn observe_events(
                     };
                     observation.candidates.push(PatternCandidate {
                         pattern_kind: prediction.pattern_kind,
-                        score: pattern_score(*performance, &prediction)
-                            + direction_prediction.candidate_edge_pct,
+                        score: pattern_score(*performance, &prediction),
                         analysis,
                         direction_prediction,
                         entry,

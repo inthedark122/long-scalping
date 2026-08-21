@@ -2,39 +2,53 @@ use long_scalping::detection::mrc_direction_prediction::{
     predict, MrcDirectionContext, MrcPredictionState,
 };
 use long_scalping::detection::mrc_touch::MrcTouchState;
+use long_scalping::detection::mrc_touch_learning::MrcTouchLearningState;
 
 fn lines(low: f64, high: f64) -> [f64; 9] {
     let step = (high - low) / 8.0;
     std::array::from_fn(|index| low + step * index as f64)
 }
 
+fn learned_up_touch(bands: [f64; 9]) -> MrcTouchLearningState {
+    let mut learning = MrcTouchLearningState::default();
+    for (time_ms, price) in [
+        (1_000, 100.0),
+        (61_000, 102.5),
+        (121_000, 100.0),
+        (181_000, 102.5),
+        (241_000, 100.0),
+        (301_000, 102.5),
+        (361_000, 100.0),
+    ] {
+        learning.update(bands, price, time_ms, bands, 1);
+    }
+    learning
+}
+
 #[test]
-fn below_mean_recovery_predicts_up_without_forcing_a_trade() {
+fn exact_touch_history_predicts_the_next_line_without_a_weighted_formula() {
     let mut touch = MrcTouchState::default();
     let bands = lines(90.0, 110.0);
-    touch.update(bands, 99.0, 1_000);
-    touch.update(bands, 99.20, 61_000);
-    touch.update(bands, 99.60, 121_000);
+    touch.update(bands, 100.0, 1_000);
+    touch.update(bands, 100.1, 61_000);
+    let learning = learned_up_touch(bands);
 
     let prediction = predict(
         touch.signal,
         MrcDirectionContext {
             structural_direction: -1,
             candidate_direction: 1,
-            mean_distance_pct: touch.signal.line(4).unwrap().distance_ema_pct,
-            pattern_samples: 3,
-            target_samples: 1,
-            target_distance_pct: 1.2,
-            stop_distance_pct: 1.0,
+            touch_learning: learning.signal,
             ..Default::default()
         },
     );
 
-    assert!(prediction.up_probability > prediction.down_probability);
-    assert!(prediction.candidate_edge_pct > 0.0);
+    assert_eq!(prediction.learned_direction, 1);
+    assert!(prediction.candidate_allowed);
+    assert_eq!(prediction.up_probability, 1.0);
     assert!(matches!(
         prediction.state,
-        MrcPredictionState::RecoveryUp | MrcPredictionState::ContinuationUp
+        MrcPredictionState::ContinuationUp
     ));
 }
 
@@ -42,19 +56,15 @@ fn below_mean_recovery_predicts_up_without_forcing_a_trade() {
 fn opposite_candidate_has_lower_expected_value_in_recovery() {
     let mut touch = MrcTouchState::default();
     let bands = lines(90.0, 110.0);
-    touch.update(bands, 99.0, 1_000);
-    touch.update(bands, 99.20, 61_000);
-    touch.update(bands, 99.60, 121_000);
-    let mean_distance_pct = touch.signal.line(4).unwrap().distance_ema_pct;
+    touch.update(bands, 100.0, 1_000);
+    let learning = learned_up_touch(bands);
 
     let long = predict(
         touch.signal,
         MrcDirectionContext {
             structural_direction: -1,
             candidate_direction: 1,
-            mean_distance_pct,
-            target_distance_pct: 1.2,
-            stop_distance_pct: 1.0,
+            touch_learning: learning.signal,
             ..Default::default()
         },
     );
@@ -63,15 +73,14 @@ fn opposite_candidate_has_lower_expected_value_in_recovery() {
         MrcDirectionContext {
             structural_direction: -1,
             candidate_direction: -1,
-            mean_distance_pct,
-            target_distance_pct: 1.2,
-            stop_distance_pct: 1.0,
+            touch_learning: learning.signal,
             ..Default::default()
         },
     );
 
-    assert!(long.candidate_edge_pct > short.candidate_edge_pct);
-    assert!(short.direction_score > -1.0);
+    assert!(long.candidate_allowed);
+    assert!(!short.candidate_allowed);
+    assert_eq!(short.direction_score, 1.0);
 }
 
 #[test]
@@ -92,6 +101,6 @@ fn repeated_mean_bounces_raise_sideways_probability() {
         },
     );
 
-    assert!(prediction.sideways_probability > prediction.up_probability);
-    assert!(prediction.sideways_probability > prediction.down_probability);
+    assert_eq!(prediction.state, MrcPredictionState::Unknown);
+    assert_eq!(prediction.learned_samples, 0);
 }

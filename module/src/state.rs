@@ -3,6 +3,7 @@ use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::detection::mrc_direction_prediction::MrcDirectionPrediction;
 use crate::detection::mrc_pattern_classification::{MrcPatternKind, MRC_PATTERN_COUNT};
 use crate::detection::mrc_touch::MrcTouchState;
+use crate::detection::mrc_touch_learning::MrcTouchLearningState;
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
     MRC_CROSSING_EXIT_TYPE,
@@ -343,6 +344,8 @@ pub struct EngineState {
     /// Continuous direction prediction derived from the current MRC touch
     /// state and the selected learned route.
     pub mrc_direction_prediction: MrcDirectionPrediction,
+    /// Persistent empirical outcomes of exact MRC-line touch episodes.
+    pub mrc_touch_learning: MrcTouchLearningState,
     pub mrc_crossing_model: MrcCrossingModel,
     pub cascade: CascadeState,
     pub cascade_signal: CascadeSignal,
@@ -381,6 +384,7 @@ impl Default for EngineState {
             mrc_crossing: MrcCrossingState::default(),
             mrc_touch: MrcTouchState::default(),
             mrc_direction_prediction: MrcDirectionPrediction::default(),
+            mrc_touch_learning: MrcTouchLearningState::default(),
             mrc_crossing_model: MrcCrossingModel::default(),
             cascade: CascadeState::default(),
             cascade_signal: CascadeSignal::default(),
@@ -428,6 +432,8 @@ struct PersistedState {
     decision_state: DecisionState,
     #[serde(default)]
     trade_direction_lock: Option<i8>,
+    #[serde(default)]
+    mrc_touch_learning: MrcTouchLearningState,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -445,6 +451,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         active_pattern_score: state.mrc_crossing_model.active_pattern_score,
         decision_state: state.mrc_crossing_model.decision_state.clone(),
         trade_direction_lock: state.mrc_crossing_model.trade_direction_lock,
+        mrc_touch_learning: state.mrc_touch_learning.clone(),
     })
     .ok()
 }
@@ -477,6 +484,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
         DecisionComponents::from_names(&state.cfg.decision_components).0;
     state.mrc_crossing_model.decision_state = persisted.decision_state;
     state.mrc_crossing_model.trade_direction_lock = persisted.trade_direction_lock;
+    state.mrc_touch_learning = persisted.mrc_touch_learning;
     state
         .mrc_crossing_model
         .decision_state

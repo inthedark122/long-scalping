@@ -704,6 +704,18 @@ fn process_realtime(
         input.price,
         sug_info.time.max(0) as u64,
     );
+    let touched_lines = mrc_events
+        .iter()
+        .map(|event| event.line_idx)
+        .collect::<Vec<_>>();
+    state.mrc_touch_learning.update_with_events(
+        snapshot.tf1m.mrc.lines(),
+        input.price,
+        sug_info.time.max(0) as u64,
+        snapshot.tf5m.mrc.lines(),
+        snapshot.tf5m.mrc_signal.slope_sign,
+        &touched_lines,
+    );
     state.mrc_direction_prediction = mrc_direction_prediction::predict(
         state.mrc_touch.signal,
         mrc_direction_prediction::MrcDirectionContext {
@@ -713,6 +725,7 @@ fn process_realtime(
                 .line(4)
                 .map(|line| line.distance_ema_pct)
                 .unwrap_or(0.0),
+            touch_learning: state.mrc_touch_learning.signal,
             ..Default::default()
         },
     );
@@ -732,7 +745,7 @@ fn process_realtime(
         cascade_potential_move_pct: state.cascade_signal.potential_move_pct,
         cascade_adverse_move_pct: state.cascade_signal.adverse_move_pct,
     };
-    let mrc_observation = mrc_crossing::observe_with_forecast_and_touch_context(
+    let mrc_observation = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
         &mut state.mrc_crossing_model,
         &mrc_events,
         snapshot.tf1m.mrc.lines(),
@@ -747,6 +760,7 @@ fn process_realtime(
         sug_info.time as u64,
         prediction_context,
         state.mrc_touch.signal,
+        state.mrc_touch_learning.signal,
     );
     if let Some(index) = mrc_observation.selected_candidate_index {
         if let Some(candidate) = mrc_observation.candidates.get(index) {

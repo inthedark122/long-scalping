@@ -8,7 +8,7 @@ use long_scalping::detection::mrc_pattern_classification::{
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
     cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction,
-    mrc_touch, vlines,
+    mrc_touch, mrc_touch_learning, vlines,
 };
 use long_scalping::model::Candle;
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
@@ -843,6 +843,7 @@ pub(crate) struct Analyzer {
     vlines: [VLineState; LINE_COUNT],
     crossing: MrcCrossingState,
     touch: mrc_touch::MrcTouchState,
+    touch_learning: mrc_touch_learning::MrcTouchLearningState,
     model: MrcCrossingModel,
     cascade: cascade::CascadeState,
     cascade_signal: cascade::CascadeSignal,
@@ -872,6 +873,10 @@ pub(crate) struct Analyzer {
     rejected_barrier: [usize; MRC_PATTERN_COUNT],
     rejected_levels: [usize; MRC_PATTERN_COUNT],
     rejected_other: [usize; MRC_PATTERN_COUNT],
+    touch_observations: usize,
+    touch_reliable: usize,
+    touch_learned_up: usize,
+    touch_learned_down: usize,
     started_at: Instant,
 }
 
@@ -881,6 +886,7 @@ impl Analyzer {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
             touch: mrc_touch::MrcTouchState::default(),
+            touch_learning: mrc_touch_learning::MrcTouchLearningState::default(),
             model: MrcCrossingModel::default(),
             cascade: cascade::CascadeState::default(),
             cascade_signal: cascade::CascadeSignal::default(),
@@ -910,6 +916,10 @@ impl Analyzer {
             rejected_barrier: [0; MRC_PATTERN_COUNT],
             rejected_levels: [0; MRC_PATTERN_COUNT],
             rejected_other: [0; MRC_PATTERN_COUNT],
+            touch_observations: 0,
+            touch_reliable: 0,
+            touch_learned_up: 0,
+            touch_learned_down: 0,
             started_at: Instant::now(),
         };
         analyzer.model.trade_direction_lock = direction_lock;
@@ -958,6 +968,29 @@ impl Analyzer {
             self.events.len() as u64 + 1,
             row.time_ms.max(0) as u64,
         );
+        let touched_lines = crossed
+            .iter()
+            .map(|event| event.line_idx)
+            .collect::<Vec<_>>();
+        self.touch_learning.update_with_events(
+            lines,
+            row.close,
+            row.time_ms.max(0) as u64,
+            lines,
+            0,
+            &touched_lines,
+        );
+        if self.touch_learning.signal.current_line.is_some() {
+            self.touch_observations = self.touch_observations.saturating_add(1);
+        }
+        if self.touch_learning.signal.reliable {
+            self.touch_reliable = self.touch_reliable.saturating_add(1);
+            match self.touch_learning.signal.learned_direction {
+                1 => self.touch_learned_up = self.touch_learned_up.saturating_add(1),
+                -1 => self.touch_learned_down = self.touch_learned_down.saturating_add(1),
+                _ => {}
+            }
+        }
         let expected_event_count = self.events.len().saturating_add(crossed.len());
         let log_prediction =
             !crossed.is_empty() && (self.events.is_empty() || expected_event_count % 100 == 0);
@@ -985,7 +1018,7 @@ impl Analyzer {
             cascade_potential_move_pct: self.cascade_signal.potential_move_pct,
             cascade_adverse_move_pct: self.cascade_signal.adverse_move_pct,
         };
-        let observation = mrc_crossing::observe_with_forecast_and_touch_context(
+        let observation = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
             &mut self.model,
             &crossed,
             lines,
@@ -995,6 +1028,7 @@ impl Analyzer {
             row.time_ms.max(0) as u64,
             prediction_context,
             self.touch.signal,
+            self.touch_learning.signal,
         );
         if log_prediction {
             eprintln!(
@@ -1167,6 +1201,13 @@ impl Analyzer {
             self.selected_market_busy,
             self.selected_plan_suppressed,
             self.forecast_plan_suppressed,
+        );
+        eprintln!(
+            "[mrc-research][touch-learning] observations={} reliable={} learned_up={} learned_down={}",
+            self.touch_observations,
+            self.touch_reliable,
+            self.touch_learned_up,
+            self.touch_learned_down,
         );
         for pattern in MrcPatternKind::ALL {
             let slot = pattern.index();

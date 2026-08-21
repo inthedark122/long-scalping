@@ -2,6 +2,15 @@
 
 # Unreleased
 
+# 1.0.106
+
+Empirical MRC touch-learning release.
+
+- Learn next-line direction from exact and crossing MRC touch episodes instead of weighted direction formulas.
+- Tag touch history by 5m MRC slope/price-side context and fast/normal/slow touch intervals.
+- Persist touch-learning state and expose learned line, samples, scope, timeframe, and reliability in debug output.
+- Replay note: CAP net -25.923%, BEAT net -47.194%, ETH net -28.937% on cached 10k windows; ENA replay unavailable. Released at user request for live observation.
+
 # 1.0.105
 
 Incremental MRC-touch direction prediction release.
