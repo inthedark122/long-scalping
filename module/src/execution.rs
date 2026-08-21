@@ -329,19 +329,6 @@ fn entry_reason(decision: &TradeDecision) -> Option<&EntryReason> {
     }
 }
 
-fn is_staircase_mrc_entry(decision: &TradeDecision) -> bool {
-    let Some(EntryReason::MrcCrossing { pattern_kind, .. }) = entry_reason(decision) else {
-        return false;
-    };
-    matches!(
-        mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
-        Some(
-            mrc_pattern_classification::MrcPatternKind::StairsUp
-                | mrc_pattern_classification::MrcPatternKind::StairsDown
-        )
-    )
-}
-
 fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64) -> f64 {
     let tick = tick_size(input);
     match side {
@@ -470,42 +457,36 @@ pub fn evaluate_with_mrc(
         MarketState::Sideways => PositionState::Flat,
     };
     let decision_is_open = matches!(&decision.entry, EntryGate::Open { .. });
-    // Stairs is the live entry authority. When it produces a valid entry,
-    // execute it immediately instead of placing a one-candle limit order that
-    // can miss the continuation before the next signal arrives.
-    let force_market_entry = decision_is_open && is_staircase_mrc_entry(decision);
-    if !force_market_entry {
-        if let Some(side) = [PositionState::Long, PositionState::Short]
-            .into_iter()
-            .find(|side| pending_limit_entry_expired(input, state, *side))
-        {
-            let direction = match side {
-                PositionState::Long => Direction::Long,
-                PositionState::Short => Direction::Short,
-                PositionState::Flat => Direction::Both,
-            };
-            let reason = close_reason(
-                "limit-entry-expired-after-one-candle",
-                state,
-                input.price,
-                tick_size(input),
-            );
-            state.position.entry_reason = None;
-            state.mrc_crossing_model.current_entry = None;
-            state.pending_entry_bar = None;
-            let cancel_orders = std::mem::take(&mut state.cascade_entry_marks);
+    if let Some(side) = [PositionState::Long, PositionState::Short]
+        .into_iter()
+        .find(|side| pending_limit_entry_expired(input, state, *side))
+    {
+        let direction = match side {
+            PositionState::Long => Direction::Long,
+            PositionState::Short => Direction::Short,
+            PositionState::Flat => Direction::Both,
+        };
+        let reason = close_reason(
+            "limit-entry-expired-after-one-candle",
+            state,
+            input.price,
+            tick_size(input),
+        );
+        state.position.entry_reason = None;
+        state.mrc_crossing_model.current_entry = None;
+        state.pending_entry_bar = None;
+        let cancel_orders = std::mem::take(&mut state.cascade_entry_marks);
 
-            // Cancel the expired order first. The host still reports the old
-            // pending order in this evaluation, so opening a replacement in the
-            // same result can associate the new MRC exit levels with a different
-            // eventual fill. The next evaluation will process a fresh signal
-            // after the cancellation has been applied.
-            return Some(ExecutionResult {
-                close_positions: vec![close(direction, &reason)],
-                cancel_orders,
-                ..Default::default()
-            });
-        }
+        // Cancel the expired order first. The host still reports the old
+        // pending order in this evaluation, so opening a replacement in the
+        // same result can associate the new MRC exit levels with a different
+        // eventual fill. The next evaluation will process a fresh signal
+        // after the cancellation has been applied.
+        return Some(ExecutionResult {
+            close_positions: vec![close(direction, &reason)],
+            cancel_orders,
+            ..Default::default()
+        });
     }
 
     let finish = |result: ExecutionResult| Some(result);
@@ -523,13 +504,10 @@ pub fn evaluate_with_mrc(
             ) {
                 state.mrc_crossing_model.current_entry = None;
             }
-            let update = (!force_market_entry)
-                .then(|| created_position_update(input, state, PositionState::Long))
-                .flatten();
+            let update = created_position_update(input, state, PositionState::Long);
             if update.is_some() {
-                state.pending_entry_bar = (state.cfg.entry_type == EntryType::Limit
-                    && !force_market_entry)
-                    .then_some(state.bar_1m);
+                state.pending_entry_bar =
+                    (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
             }
             return finish(ExecutionResult {
                 update_positions: update.into_iter().collect(),
@@ -560,13 +538,10 @@ pub fn evaluate_with_mrc(
             ) {
                 state.mrc_crossing_model.current_entry = None;
             }
-            let update = (!force_market_entry)
-                .then(|| created_position_update(input, state, PositionState::Short))
-                .flatten();
+            let update = created_position_update(input, state, PositionState::Short);
             if update.is_some() {
-                state.pending_entry_bar = (state.cfg.entry_type == EntryType::Limit
-                    && !force_market_entry)
-                    .then_some(state.bar_1m);
+                state.pending_entry_bar =
+                    (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
             }
             return finish(ExecutionResult {
                 update_positions: update.into_iter().collect(),
@@ -685,7 +660,7 @@ pub fn evaluate_with_mrc(
         if !entry_price.is_finite() || entry_price <= 0.0 {
             return None;
         }
-        if state.cfg.entry_type == EntryType::Limit && !force_market_entry {
+        if state.cfg.entry_type == EntryType::Limit {
             let order_price = if mrc_entry {
                 entry_price
             } else {
@@ -710,16 +685,14 @@ pub fn evaluate_with_mrc(
     if mrc_entry {
         state.mrc_crossing_model.current_entry = None;
     }
-    state.pending_entry_bar =
-        (state.cfg.entry_type == EntryType::Limit && !force_market_entry).then_some(state.bar_1m);
+    state.pending_entry_bar = (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
 
     let order_price = if mrc_entry {
         entry_price
     } else {
         order_entry_price(input, entry_side, entry_price)
     };
-    let sizing_reference_price = if force_market_entry || state.cfg.entry_type == EntryType::Market
-    {
+    let sizing_reference_price = if state.cfg.entry_type == EntryType::Market {
         input.price
     } else {
         order_price
@@ -775,107 +748,101 @@ pub fn evaluate_with_mrc(
         state,
         sizing,
     );
-    if !force_market_entry {
-        if let Some((first_open, entry_orders, entry_marks)) = cascade_entry_orders(
-            input,
-            state,
-            entry_side,
-            amount,
-            order_price,
-            projected_stop_loss.unwrap_or_else(|| {
-                pre_entry_exit_plan(state, snapshot, sizing_reference_price, entry_side)
-                    .map(|plan| plan.stop_loss.price())
-                    .unwrap_or(0.0)
-            }),
-            &cascade_note,
-        ) {
-            let previous_marks = std::mem::replace(&mut state.cascade_entry_marks, entry_marks);
-            state.pending_entry_bar = Some(state.bar_1m);
-            return finish(ExecutionResult {
-                open_positions: vec![first_open],
-                entry_orders,
-                cancel_orders: previous_marks,
-                ..Default::default()
-            });
-        }
+    if let Some((first_open, entry_orders, entry_marks)) = cascade_entry_orders(
+        input,
+        state,
+        entry_side,
+        amount,
+        order_price,
+        projected_stop_loss.unwrap_or_else(|| {
+            pre_entry_exit_plan(state, snapshot, sizing_reference_price, entry_side)
+                .map(|plan| plan.stop_loss.price())
+                .unwrap_or(0.0)
+        }),
+        &cascade_note,
+    ) {
+        let previous_marks = std::mem::replace(&mut state.cascade_entry_marks, entry_marks);
+        state.pending_entry_bar = Some(state.bar_1m);
+        return finish(ExecutionResult {
+            open_positions: vec![first_open],
+            entry_orders,
+            cancel_orders: previous_marks,
+            ..Default::default()
+        });
     }
     let stale_entry_orders = std::mem::take(&mut state.cascade_entry_marks);
     match decision.market_state {
         MarketState::Long => finish(ExecutionResult {
-            open_positions: vec![
-                if force_market_entry || state.cfg.entry_type == EntryType::Market {
-                    market_open(
+            open_positions: vec![if state.cfg.entry_type == EntryType::Market {
+                market_open(
+                    Direction::Long,
+                    amount,
+                    input.price,
+                    &open_note(
                         Direction::Long,
                         amount,
                         input.price,
-                        &open_note(
-                            Direction::Long,
-                            amount,
-                            input.price,
-                            input.price,
-                            tick_size(input),
-                            decision,
-                            state,
-                            sizing,
-                        ),
-                    )
-                } else {
-                    limit_open(
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                        sizing,
+                    ),
+                )
+            } else {
+                limit_open(
+                    Direction::Long,
+                    amount,
+                    order_price,
+                    &open_note(
                         Direction::Long,
                         amount,
                         order_price,
-                        &open_note(
-                            Direction::Long,
-                            amount,
-                            order_price,
-                            input.price,
-                            tick_size(input),
-                            decision,
-                            state,
-                            sizing,
-                        ),
-                    )
-                },
-            ],
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                        sizing,
+                    ),
+                )
+            }],
             cancel_orders: stale_entry_orders.clone(),
             ..Default::default()
         }),
         MarketState::Short => finish(ExecutionResult {
-            open_positions: vec![
-                if force_market_entry || state.cfg.entry_type == EntryType::Market {
-                    market_open(
+            open_positions: vec![if state.cfg.entry_type == EntryType::Market {
+                market_open(
+                    Direction::Short,
+                    amount,
+                    input.price,
+                    &open_note(
                         Direction::Short,
                         amount,
                         input.price,
-                        &open_note(
-                            Direction::Short,
-                            amount,
-                            input.price,
-                            input.price,
-                            tick_size(input),
-                            decision,
-                            state,
-                            sizing,
-                        ),
-                    )
-                } else {
-                    limit_open(
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                        sizing,
+                    ),
+                )
+            } else {
+                limit_open(
+                    Direction::Short,
+                    amount,
+                    order_price,
+                    &open_note(
                         Direction::Short,
                         amount,
                         order_price,
-                        &open_note(
-                            Direction::Short,
-                            amount,
-                            order_price,
-                            input.price,
-                            tick_size(input),
-                            decision,
-                            state,
-                            sizing,
-                        ),
-                    )
-                },
-            ],
+                        input.price,
+                        tick_size(input),
+                        decision,
+                        state,
+                        sizing,
+                    ),
+                )
+            }],
             cancel_orders: stale_entry_orders.clone(),
             ..Default::default()
         }),
