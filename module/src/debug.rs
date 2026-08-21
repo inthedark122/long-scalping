@@ -1,3 +1,4 @@
+use crate::detection::decision::{PrimaryRuleTrace, SupportEvidence};
 use crate::detection::mrc_pattern_classification;
 use crate::format::fmt_price_tick;
 use crate::model::{EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, TradeDecision};
@@ -14,30 +15,18 @@ pub fn render(
     let mrc_risk = state
         .mrc_risk
         .latest()
-        .map(|risk| risk.summary())
-        .unwrap_or_else(|| "na".to_string());
+        .map(|risk| risk.level.as_str())
+        .unwrap_or("na");
     let active_pattern = state
         .mrc_crossing_model
         .active_pattern
         .and_then(|index| mrc_pattern_classification::MrcPatternKind::ALL.get(index as usize))
         .map(|pattern| pattern.as_str())
         .unwrap_or("none");
-    let decision_state = state
-        .mrc_crossing_model
-        .decision_state
-        .primary
-        .map(|primary| {
-            format!(
-                "primary={:?}:dir={}:phase={:?}:best_favorable={:.4}%",
-                primary.kind, primary.direction, primary.phase, primary.best_favorable_pct
-            )
-        })
-        .unwrap_or_else(|| "primary=none".to_string());
     let support = state.mrc_crossing_model.decision_state.support;
     let primary_trace = &state.mrc_crossing_model.decision_state.trace;
     let mut parts = vec![
         format!("t={}", state.ticks),
-        "strategy=pattern-engine".to_string(),
         format!("entry={}", state.cfg.entry_type.as_str()),
         format!(
             "p={}",
@@ -48,82 +37,19 @@ pub fn render(
             state.position.side,
             fmt_price_tick(state.position.entry_price, tick_size)
         ),
+        format!("pattern={active_pattern}"),
+        format!("support={}", format_support(support)),
+        format_primary_trace(primary_trace),
+        format!("dir={:?}", decision.market_state),
+        format_route(state),
         format!(
-            "selector=active:{} score={:.4} since={}",
-            active_pattern,
-            state.mrc_crossing_model.active_pattern_score,
-            state.mrc_crossing_model.active_pattern_since_ms
-        ),
-        format!(
-            "plan-key={:?} direction-lock={:?}",
-            state.mrc_crossing_model.last_plan_key,
-            state.mrc_crossing_model.trade_direction_lock
-        ),
-        format!(
-            "decision={} support=[fbr={},pullback={},volume={},trend={},extreme_update={},extreme_failed={}] components=[{}]",
-            decision_state,
-            support.fast_break_return,
-            support.pullback,
-            support.volume_climax,
-            support.trend,
-            support.favorable_extreme_updated,
-            support.favorable_extreme_failed,
-            state.mrc_crossing_model.decision_components.names().join(",")
-        ),
-        format!(
-            "primary-trace=stairs_up={}/{} stairs_down={}/{} lock={:?} blocked={} before={:?} after={:?} selected={:?}:dir={} stair_lifecycle={} stair_transition={} end=[extreme={},protected_swing={}] reset={} reason={}",
-            primary_trace.stairs_up_candidates,
-            primary_trace.stairs_up_tradeable,
-            primary_trace.stairs_down_candidates,
-            primary_trace.stairs_down_tradeable,
-            primary_trace.direction_lock,
-            primary_trace.blocked_by_direction_lock,
-            primary_trace.primary_before,
-            primary_trace.primary_after,
-            primary_trace.selected_index,
-            primary_trace.selected_direction,
-            primary_trace
-                .staircase_lifecycle
-                .map(|value| value.as_str())
-                .unwrap_or("na"),
-            primary_trace
-                .staircase_transition
-                .map(|value| value.as_str())
-                .unwrap_or("na"),
-            primary_trace.ended_by_extreme,
-            primary_trace.ended_by_protected_swing,
-            primary_trace.direction_lock_reset_primary,
-            primary_trace.reason
-        ),
-        format!(
-            "dir={:?}:src={}:why={}",
-            decision.market_state, state.direction_source, state.direction_reason
-        ),
-        format!(
-            "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} multi={} staged={}",
+            "cascade={}/{} state={}",
             state.cascade_signal.dir,
             state.cascade_signal.phase.as_str(),
-            state
-                .cascade_signal
-                .speed_pct_per_min
-                .map(|value| format!("{value:.3}%/min"))
-                .unwrap_or_else(|| "na".to_string()),
-            state
-                .cascade_signal
-                .potential_move_pct
-                .map(|value| format!("{value:.3}%"))
-                .unwrap_or_else(|| "na".to_string()),
-            state
-                .cascade_signal
-                .adverse_move_pct
-                .map(|value| format!("{value:.3}%"))
-                .unwrap_or_else(|| "na".to_string()),
-            state.cascade_signal.multi_order_ready(),
-            state.cascade_entry_marks.len(),
+            state.selected_cascade_trade_state.as_str(),
         ),
-        format!("volume=[{}]", state.volume_gain.summary()),
-        format!("mrc_risk=[{mrc_risk}]"),
-        format!("mrc_cross=[{}]", format_mrc_crossing(state)),
+        format!("risk={mrc_risk}"),
+        format!("mrc={}", format_mrc_crossing(state)),
     ];
     if state.position.side == PositionState::Flat {
         parts.push(format!(
@@ -160,6 +86,82 @@ pub fn render(
         parts.push(format!("error={error}"));
     }
     parts.join(" ")
+}
+
+fn format_route(state: &EngineState) -> String {
+    if state.direction_reason.starts_with("line_plans[") {
+        state.direction_reason.clone()
+    } else {
+        format!("reason={}", state.direction_reason)
+    }
+}
+
+fn format_support(support: SupportEvidence) -> String {
+    let mut active = Vec::new();
+    if support.fast_break_return {
+        active.push("fbr");
+    }
+    if support.pullback {
+        active.push("pullback");
+    }
+    if support.volume_climax {
+        active.push("volume");
+    }
+    if support.trend {
+        active.push("trend");
+    }
+    if support.favorable_extreme_updated {
+        active.push("ext+");
+    }
+    if support.favorable_extreme_failed {
+        active.push("ext-");
+    }
+    if active.is_empty() {
+        "none".to_string()
+    } else {
+        active.join("|")
+    }
+}
+
+fn format_primary_trace(trace: &PrimaryRuleTrace) -> String {
+    let lifecycle = trace
+        .staircase_lifecycle
+        .map(|value| value.as_str())
+        .unwrap_or("na");
+    let transition = trace
+        .staircase_transition
+        .map(|value| value.as_str())
+        .unwrap_or("na");
+    let end = match (trace.ended_by_extreme, trace.ended_by_protected_swing) {
+        (false, false) => "none",
+        (true, false) => "extreme",
+        (false, true) => "swing",
+        (true, true) => "extreme+swing",
+    };
+    let lock = match (trace.direction_lock, trace.blocked_by_direction_lock) {
+        (Some(direction), blocked) => format!(" lock={direction} blocked={blocked}"),
+        (None, blocked) if blocked > 0 => format!(" blocked={blocked}"),
+        _ => String::new(),
+    };
+    let reset = if trace.direction_lock_reset_primary {
+        " reset=true"
+    } else {
+        ""
+    };
+    format!(
+        "trace=u{}/{} d{}/{} dir={} life={} trans={} end={}{}{} why={}",
+        trace.stairs_up_candidates,
+        trace.stairs_up_tradeable,
+        trace.stairs_down_candidates,
+        trace.stairs_down_tradeable,
+        trace.selected_direction,
+        lifecycle,
+        transition,
+        end,
+        lock,
+        reset,
+        trace.reason,
+    )
 }
 
 fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
@@ -231,19 +233,7 @@ fn format_mrc_crossing(state: &EngineState) -> String {
         _ => "na",
     };
     let sequence = (0..crossing.sequence_len)
-        .map(|index| {
-            let label = mrc_line_label(crossing.sequence[index]);
-            if index + 1 >= crossing.sequence_len {
-                return label.to_string();
-            }
-            let current_ms = crossing.sequence_times_ms[index];
-            let next_ms = crossing.sequence_times_ms[index + 1];
-            if current_ms == 0 || next_ms <= current_ms {
-                format!("{label}|na")
-            } else {
-                format!("{label}|{}", format_sequence_duration(next_ms - current_ms))
-            }
-        })
+        .map(|index| mrc_line_label(crossing.sequence[index]))
         .collect::<Vec<_>>()
         .join(">");
     let movement = if crossing.movement_start > 0.0
@@ -265,83 +255,25 @@ fn format_mrc_crossing(state: &EngineState) -> String {
             )
         };
         format!(
-            "{}:+{:.2}%:-{:.2}%",
-            direction,
+            "{}:+{:.2}%/-{:.2}%",
+            match crossing.movement_direction {
+                1 => "long",
+                -1 => "short",
+                _ => "na",
+            },
             following_pct.max(0.0),
-            opposite_pct.min(0.0)
+            opposite_pct.abs()
         )
     } else {
         "na".to_string()
     };
-    let tracked_line = "na";
-    let next_progress = if crossing.movement_start > 0.0
-        && crossing.movement_target > 0.0
-        && crossing.last_price.is_some()
-        && crossing.movement_direction != 0
-    {
-        let current = crossing.last_price.unwrap_or(crossing.movement_start);
-        let distance = if crossing.movement_direction > 0 {
-            crossing.movement_target - crossing.movement_start
-        } else {
-            crossing.movement_start - crossing.movement_target
-        };
-        if distance > 0.0 {
-            let progress = if crossing.movement_direction > 0 {
-                (current - crossing.movement_start) / distance * 100.0
-            } else {
-                (crossing.movement_start - current) / distance * 100.0
-            };
-            format!("{:.2}%", progress.clamp(0.0, 100.0))
-        } else {
-            "na".to_string()
-        }
-    } else {
-        "na".to_string()
-    };
-    let count = state
-        .vlines
-        .get(crossing.last_line.unwrap_or(255) as usize)
-        .map(|line| {
-            if line.cross_count <= 1 {
-                "first"
-            } else {
-                "repeat"
-            }
-        })
-        .unwrap_or("na");
     format!(
-        "[last={}:{}:{} track={} seq={} no_pullback={} revert=long:{}:short:{} move={} next={}]",
+        "{}:{} seq={} move={}",
         latest,
         direction,
-        count,
-        tracked_line,
         if sequence.is_empty() { "na" } else { &sequence },
-        crossing.no_pullback_count,
-        crossing
-            .reverted_long_line
-            .map(mrc_line_label)
-            .unwrap_or("na"),
-        crossing
-            .reverted_short_line
-            .map(mrc_line_label)
-            .unwrap_or("na"),
         movement,
-        next_progress
     )
-}
-
-fn format_sequence_duration(duration_ms: u64) -> String {
-    let total_seconds = duration_ms / 1_000;
-    if total_seconds < 60 {
-        return format!("{}s", total_seconds);
-    }
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    if seconds == 0 {
-        format!("{minutes}m")
-    } else {
-        format!("{minutes}m{seconds}s")
-    }
 }
 
 fn format_tp_reprice(

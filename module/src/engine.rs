@@ -89,8 +89,8 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
         ModuleEvent::NewPosition {
             direction,
             entry_price,
-            ..
-        } => handle_new_position(input, state, *direction, *entry_price),
+            qty,
+        } => handle_new_position(input, state, *direction, *entry_price, *qty),
         ModuleEvent::FinishPosition { direction, pnl } => {
             handle_finish_position(input, state, *direction, *pnl)
         }
@@ -371,9 +371,27 @@ fn handle_new_position(
     state: &mut EngineState,
     direction: Direction,
     entry_price: f64,
+    qty: f64,
 ) -> ModuleOutput {
+    let side = dir_to_position(direction);
+    let allocation_qty = qty.abs().max(
+        input
+            .positions
+            .long
+            .as_ref()
+            .map(|position| position.qty.abs())
+            .or_else(|| {
+                input
+                    .positions
+                    .short
+                    .as_ref()
+                    .map(|position| position.qty.abs())
+            })
+            .unwrap_or(0.0),
+    );
+    state.take_profit_allocation.begin(side, allocation_qty);
     state.position = PositionRuntime {
-        side: dir_to_position(direction),
+        side,
         entry_price,
         peak_price: input.price.max(entry_price),
         trough_price: input.price.min(entry_price),
@@ -388,7 +406,6 @@ fn handle_new_position(
     state.mrc_crossing_model.current_entry = None;
     state.pending_entry_bar = None;
 
-    let side = dir_to_position(direction);
     let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -463,6 +480,7 @@ fn handle_finish_position(
     risk::apply_close_pnl(input, state, pnl);
     if state.position.side == dir_to_position(direction) {
         state.position = PositionRuntime::default();
+        state.take_profit_allocation.reset();
         state.pending_entry_bar = None;
         state.mrc_crossing_model.last_plan_key = None;
     }
@@ -720,15 +738,12 @@ fn process_realtime(
                 .map(|reason| format!("wait:{reason:?}"))
                 .unwrap_or_else(|| "no-candidate".to_string())
         });
+    state.selected_cascade_trade_state = selected_analysis
+        .map(|analysis| analysis.cascade_trade_state)
+        .unwrap_or(cascade::CascadeTradeState::NotConfigured);
     state.direction_reason = selected_analysis
-        .map(|analysis| {
-            format!(
-                "{} {}",
-                selected_pattern_reason,
-                mrc_crossing::line_plan_summary(analysis)
-            )
-        })
-        .unwrap_or(selected_pattern_reason);
+        .map(mrc_crossing::line_plan_summary)
+        .unwrap_or_else(|| format!("pattern={selected_pattern_reason}"));
     let mrc_reason_direction = mrc_observation
         .entry
         .as_ref()

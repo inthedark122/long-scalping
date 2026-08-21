@@ -5,7 +5,6 @@ use crate::detection::mrc_pattern_classification::{
 };
 use crate::detection::mrc_prediction;
 use crate::detection::vlines::MrcCrossEvent;
-use crate::format::fmt_duration_f64;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
 };
@@ -752,98 +751,44 @@ pub fn price_projection(
     }
 }
 
-fn line_role_summary(role: mrc_prediction::MrcLineRole) -> String {
-    match role {
-        mrc_prediction::MrcLineRole::CoveredByTarget { target_line } => format!(
-            "covered-by={}",
-            LINE_LABELS
-                .get(target_line as usize)
-                .copied()
-                .unwrap_or("na")
-        ),
-        _ => role.as_str().to_string(),
-    }
+fn compact_plan_move(analysis: &MrcCrossAnalysis, line_idx: Option<u8>) -> String {
+    line_idx
+        .and_then(|line_idx| {
+            analysis
+                .line_plans
+                .iter()
+                .find(|plan| plan.line_idx == line_idx)
+        })
+        .map(|plan| format!("{:+.3}%", plan.move_pct))
+        .unwrap_or_else(|| "na".to_string())
 }
 
-/// Compact live/debug representation of the per-line execution plan.
+/// Compact live/debug representation of the selected MRC route.
+///
+/// The complete per-line array remains available to the research JSON/HTML
+/// reports. Live debug only needs the route that can affect execution:
+/// current line, actual target, and stop.
 pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
-    let plans = analysis
-        .line_plans
-        .iter()
-        .map(|plan| {
-            let is_current = matches!(plan.route_role, mrc_prediction::MrcLineRole::Current);
-            let eta = match plan.time_source {
-                mrc_prediction::MrcLineTimeSource::Current => "now".to_string(),
-                mrc_prediction::MrcLineTimeSource::Unavailable => "unavailable".to_string(),
-                _ => fmt_duration_f64(plan.estimated_time_ms),
-            };
-            let movement = if is_current {
-                "entry".to_string()
-            } else {
-                format!("{:+.3}%", plan.move_pct)
-            };
-            let distance = if is_current {
-                "entry".to_string()
-            } else {
-                format!("{:.3}%", plan.distance_pct)
-            };
-            let stop = if plan.stop_loss_set {
-                format!("{:.3}%", plan.stop_loss_pct)
-            } else {
-                "not-set".to_string()
-            };
-            format!(
-                "{}:move={}:distance={}:sl={}:eta={}({};{};samples={})",
-                LINE_LABELS
-                    .get(plan.line_idx as usize)
-                    .copied()
-                    .unwrap_or("na"),
-                movement,
-                distance,
-                stop,
-                eta,
-                line_role_summary(plan.route_role),
-                plan.time_source.as_str(),
-                plan.historical_samples,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let ntps = analysis
-        .line_plans
-        .iter()
-        .find(|plan| plan.ntps > 0)
-        .map(|plan| plan.ntps.to_string())
-        .unwrap_or_else(|| "unavailable".to_string());
+    let target_line = analysis.take_profit_line.or(analysis.trade_target_line);
+    let line_label = |line_idx: Option<u8>| match line_idx {
+        Some(0) => "db",
+        Some(1) => "do",
+        Some(2) => "ds",
+        Some(3) => "di",
+        Some(4) => "m",
+        Some(5) => "ui",
+        Some(6) => "us",
+        Some(7) => "uo",
+        Some(8) => "ub",
+        _ => "na",
+    };
     format!(
-        "line_plans=[{}] ntps={} ntps_fast={} cascade_dir={} cascade_speed_pct_min={:.3} cascade_phase={} cascade_potential={} cascade_adverse={} cascade_state={}",
-        plans,
-        ntps,
-        analysis
-            .line_plans
-            .iter()
-            .any(|plan| plan.ntps_fast_time_ms.is_some()),
-        analysis
-            .line_plans
-            .iter()
-            .find(|plan| plan.cascade_direction != 0)
-            .map(|plan| plan.cascade_direction)
-            .unwrap_or(0),
-        analysis
-            .line_plans
-            .iter()
-            .find_map(|plan| plan.cascade_speed_pct_per_min)
-            .unwrap_or(0.0),
-        analysis.cascade_phase.as_str(),
-        analysis
-            .cascade_potential_move_pct
-            .map(|value| format!("{value:.3}%"))
-            .unwrap_or_else(|| "na".to_string()),
-        analysis
-            .cascade_adverse_move_pct
-            .map(|value| format!("{value:.3}%"))
-            .unwrap_or_else(|| "na".to_string()),
-        analysis.cascade_trade_state.as_str(),
+        "line_plans[e:{} tp:{}{} sl={}{}]",
+        line_label(Some(analysis.line_idx)),
+        line_label(target_line),
+        compact_plan_move(analysis, target_line),
+        line_label(analysis.stop_loss_line),
+        compact_plan_move(analysis, analysis.stop_loss_line),
     )
 }
 

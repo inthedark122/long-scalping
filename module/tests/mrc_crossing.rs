@@ -369,6 +369,24 @@ fn stair_prediction(kind: MrcPatternKind, direction: i8, target_line: u8) -> Mrc
 }
 
 #[test]
+fn line_plan_summary_reports_only_the_selected_route() {
+    let mut crossing = event(5, 40_000);
+    crossing.direction = -1;
+    let analysis = mrc_cross_analysis::build(
+        &crossing,
+        Some(&stair_prediction(MrcPatternKind::StairsDown, -1, 4)),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+
+    assert_eq!(
+        mrc_crossing::line_plan_summary(&analysis),
+        "line_plans[e:ui tp:m+3.846% sl=us-1.923%]"
+    );
+}
+
+#[test]
 fn staircase_entry_stays_at_the_crossed_line() {
     let mut short_event = event(3, 40_000);
     short_event.direction = -1;

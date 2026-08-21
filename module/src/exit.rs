@@ -191,6 +191,133 @@ type ActiveExitResult = (
 
 const CASCADE_TP_WEIGHTS: [f64; 3] = [0.40, 0.30, 0.30];
 
+fn round_qty(qty: f64, step: f64) -> f64 {
+    if !qty.is_finite() || qty <= 0.0 {
+        return 0.0;
+    }
+    if step.is_finite() && step > 0.0 {
+        ((qty / step).round() * step).max(0.0)
+    } else {
+        qty
+    }
+}
+
+fn tp_plan_qty(input: &ModuleInput, total_qty: f64) -> [f64; 3] {
+    let total_qty = total_qty.max(0.0);
+    let step = input.symbol_info.qty_step_size;
+    let first = round_qty(total_qty * CASCADE_TP_WEIGHTS[0], step).min(total_qty);
+    let second = round_qty(
+        (total_qty - first).max(0.0) * CASCADE_TP_WEIGHTS[1]
+            / (CASCADE_TP_WEIGHTS[1] + CASCADE_TP_WEIGHTS[2]),
+        step,
+    )
+    .min((total_qty - first).max(0.0));
+    let last = (total_qty - first - second).max(0.0);
+    let mut plan = [first, second, last];
+
+    // A leg below the exchange minimum cannot be placed. Merge it into the
+    // next leg so the position is still fully allocated whenever possible.
+    if let Some(minimum) = input.symbol_info.min_order_qty.filter(|value| *value > 0.0) {
+        if plan[0] > 0.0 && plan[0] < minimum {
+            plan[1] += plan[0];
+            plan[0] = 0.0;
+        }
+        if plan[1] > 0.0 && plan[1] < minimum {
+            plan[2] += plan[1];
+            plan[1] = 0.0;
+        }
+        if plan[2] > 0.0 && plan[2] < minimum {
+            if plan[1] >= minimum {
+                plan[1] += plan[2];
+                plan[2] = 0.0;
+            } else if plan[0] >= minimum {
+                plan[0] += plan[2];
+                plan[2] = 0.0;
+            }
+        }
+    }
+    plan
+}
+
+fn live_tp_quantities(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    side: PositionState,
+    live_qty: f64,
+) -> Vec<(usize, f64)> {
+    state.take_profit_allocation.begin(side, live_qty);
+    if !state.take_profit_allocation.has_plan(side) {
+        let total_qty = state.take_profit_allocation.total_qty.max(live_qty);
+        state.take_profit_allocation.planned_qty = tp_plan_qty(input, total_qty);
+    }
+
+    let allocation = state.take_profit_allocation;
+    let mut outstanding = [0.0; 3];
+    for (index, planned) in allocation.planned_qty.iter().copied().enumerate() {
+        outstanding[index] = (planned - allocation.filled_qty[index].max(0.0)).max(0.0);
+    }
+    let outstanding_total: f64 = outstanding.iter().sum();
+    if outstanding_total <= 0.0 {
+        return Vec::new();
+    }
+
+    // Order updates normally identify the filled leg. If one was missed or
+    // the module was restarted before it arrived, cap the replacement orders
+    // to the live position without guessing whether TP1 or TP2 filled.
+    let live_qty = live_qty.max(0.0).min(outstanding_total);
+    let scale = if live_qty + f64::EPSILON < outstanding_total {
+        live_qty / outstanding_total
+    } else {
+        1.0
+    };
+    let candidates = outstanding.map(|qty| qty * scale);
+    let active_indices: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, qty)| (*qty > f64::EPSILON).then_some(index))
+        .collect();
+    let Some(&last_index) = active_indices.last() else {
+        return Vec::new();
+    };
+
+    let step = input.symbol_info.qty_step_size;
+    let minimum = input.symbol_info.min_order_qty.filter(|value| *value > 0.0);
+    let mut remaining = live_qty;
+    let mut orders = Vec::with_capacity(active_indices.len());
+    for index in active_indices {
+        let candidate = candidates[index].min(remaining);
+        let order_qty = if index == last_index {
+            // The final active leg receives the actual remainder, including
+            // any rounding residue from the earlier legs.
+            round_qty(remaining, step).min(remaining)
+        } else {
+            round_qty(candidate, step).min(remaining)
+        };
+        if order_qty <= f64::EPSILON {
+            continue;
+        }
+        if minimum.is_some_and(|minimum| order_qty < minimum) {
+            // Carry a too-small non-final leg into the final leg. The final
+            // leg is handled below and will receive this untouched remainder.
+            continue;
+        }
+        remaining = (remaining - order_qty).max(0.0);
+        orders.push((index, order_qty));
+    }
+
+    // If rounding left a tiny final remainder, add it to the last valid TP
+    // rather than creating an exchange-rejected dust order.
+    if remaining > f64::EPSILON {
+        if let Some((_, last_qty)) = orders.last_mut() {
+            let adjusted = round_qty(*last_qty + remaining, step);
+            if minimum.is_none_or(|minimum| adjusted >= minimum) {
+                *last_qty = adjusted;
+            }
+        }
+    }
+    orders
+}
+
 pub(crate) fn all_tp_marks(direction: Direction) -> Vec<String> {
     let base = tp_mark(direction);
     std::iter::once(base.clone())
@@ -238,6 +365,11 @@ pub(crate) fn take_profit_orders(
         );
     }
 
+    let order_quantities = live_tp_quantities(input, state, side, qty);
+    if order_quantities.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
     let tick = tick_size(input).max(f64::EPSILON);
     let mut prices = Vec::with_capacity(3);
     for fraction in [0.40, 0.70, 1.00] {
@@ -254,27 +386,11 @@ pub(crate) fn take_profit_orders(
     if prices.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let min_qty = input.symbol_info.min_order_qty.filter(|value| *value > 0.0);
-    let count = prices.len().min(CASCADE_TP_WEIGHTS.len()).min(
-        (1..=CASCADE_TP_WEIGHTS.len())
-            .rev()
-            .find(|count| {
-                min_qty.is_none_or(|minimum| qty * CASCADE_TP_WEIGHTS[*count - 1] >= minimum)
-            })
-            .unwrap_or(1),
-    );
-    let mut orders = Vec::with_capacity(count);
-    let mut remaining = qty;
-    for (index, price) in prices.into_iter().take(count).enumerate() {
-        let order_qty = if index + 1 == count {
-            remaining
-        } else {
-            qty * CASCADE_TP_WEIGHTS[index]
-        };
-        if order_qty <= 0.0 || min_qty.is_some_and(|minimum| order_qty < minimum) {
+    let mut orders = Vec::with_capacity(order_quantities.len());
+    for (index, order_qty) in order_quantities {
+        let Some(price) = prices.get(index).copied() else {
             continue;
-        }
-        remaining = (remaining - order_qty).max(0.0);
+        };
         let mark = format!("{base_mark}-{}", index + 1);
         orders.push(tp_limit_order(direction, order_qty, price, &mark, note));
     }
@@ -282,7 +398,14 @@ pub(crate) fn take_profit_orders(
         return (Vec::new(), Vec::new());
     }
     state.cascade_exit_orders = true;
-    (orders, vec![base_mark])
+    let mut cancel_orders = vec![base_mark.clone()];
+    for index in 0..3 {
+        let mark = format!("{base_mark}-{}", index + 1);
+        if !orders.iter().any(|order| order.mark == mark) {
+            cancel_orders.push(mark);
+        }
+    }
+    (orders, cancel_orders)
 }
 
 pub(crate) fn entry_exit_plan(

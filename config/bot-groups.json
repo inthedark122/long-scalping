@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.102",
+          "module_version": "1.0.103",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.102"
+              "module_version": "1.0.103"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.102 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Stairs are the only primary entry authority. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade confirms movement direction, speed, continuation potential, adverse movement, and phase before stairs entry. Ready limit entries may be staged into up to three orders and exits may use up to three reduce-only TP orders. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
+          "description": "Start the 1.0.103 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Stairs are the only primary entry authority. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade confirms movement direction, speed, continuation potential, adverse movement, and phase before stairs entry. Ready limit entries may be staged into up to three orders and exits may use up to three reduce-only TP orders. TP leg quantities stay anchored to the calculated entry allocation, and the final leg absorbs rounding remainder. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after cancellation is confirmed.",
           "name": "Start",
           "params": [
             {
@@ -126,12 +126,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.102",
+          "module_version": "1.0.103",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-              "module_version": "1.0.102"
+              "module_version": "1.0.103"
             }
           }
         }
@@ -139,7 +139,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.102 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Stairs are the only primary entry authority. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade confirms movement direction, speed, continuation potential, adverse movement, and phase before stairs entry. Ready limit entries may be staged into up to three orders and exits may use up to three reduce-only TP orders. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
+          "description": "Start the 1.0.103 state-machine pattern engine using compiled defaults or cap_init/trading_amount/min_tp_percent/min_sl_percent/risk_target_percent/entry_type/required_samples/primary_mode overrides. Stairs are the only primary entry authority. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade confirms movement direction, speed, continuation potential, adverse movement, and phase before stairs entry. Ready limit entries may be staged into up to three orders and exits may use up to three reduce-only TP orders. TP leg quantities stay anchored to the calculated entry allocation, and the final leg absorbs rounding remainder. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
           "name": "Start",
           "params": [
             {

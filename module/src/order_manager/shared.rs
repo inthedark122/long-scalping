@@ -1,5 +1,5 @@
 use crate::model::{ExitKind, ExitMemory};
-use crate::state::EngineState;
+use crate::state::{dir_to_position, EngineState};
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModuleOrderStatus, OrderRole};
 
 pub(super) fn record_exit_memory(
@@ -8,7 +8,29 @@ pub(super) fn record_exit_memory(
     direction: Direction,
     role: &OrderRole,
     fill_price: f64,
+    filled_qty: f64,
+    mark: &Option<String>,
 ) {
+    if matches!(role, OrderRole::TakeProfit) {
+        if let Some(mark) = mark.as_deref() {
+            let prefix = match direction {
+                Direction::Long => "tp-long-",
+                Direction::Short => "tp-short-",
+                Direction::Both => "",
+            };
+            if let Some(index) = mark
+                .strip_prefix(prefix)
+                .and_then(|value| value.parse::<usize>().ok())
+                .and_then(|value| (1..=3).contains(&value).then_some(value - 1))
+            {
+                state.take_profit_allocation.record_fill(
+                    dir_to_position(direction),
+                    index,
+                    filled_qty,
+                );
+            }
+        }
+    }
     if !matches!(role, OrderRole::TakeProfit | OrderRole::StopLoss) {
         return;
     }

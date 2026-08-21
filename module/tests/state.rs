@@ -85,3 +85,22 @@ fn flat_position_clears_only_the_current_plan_deduplication_key() {
     assert_eq!(engine.mrc_crossing_model.last_plan_key, None);
     assert_eq!(engine.mrc_crossing_model.trade_direction_lock, Some(1));
 }
+
+#[test]
+fn take_profit_allocation_is_restored_with_the_bot_state() {
+    let mut source = state::EngineState::default();
+    source.take_profit_allocation = state::TakeProfitAllocation {
+        side: PositionState::Short,
+        total_qty: 157.0,
+        planned_qty: [63.0, 47.0, 47.0],
+        filled_qty: [63.0, 0.0, 0.0],
+    };
+
+    let saved = state::save(&source).expect("state should serialize");
+    let mut restored = state::EngineState::default();
+    assert!(state::restore(&mut restored, Some(&saved)));
+    assert_eq!(
+        restored.take_profit_allocation,
+        source.take_profit_allocation
+    );
+}

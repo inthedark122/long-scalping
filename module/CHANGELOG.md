@@ -2,6 +2,15 @@
 
 # Unreleased
 
+# 1.0.103
+
+Take-profit allocation fix.
+
+- Keep partial TP quantities anchored to the calculated entry allocation instead of re-splitting the shrinking live position.
+- Track cumulative fills by TP mark and cap regenerated orders safely when a fill-stage update is missing.
+- Allocate the final remainder after quantity rounding and merge dust below the exchange minimum.
+- Persist TP allocation state across module restarts.
+
 # 1.0.102
 
 Stairs-only pattern engine cleanup.

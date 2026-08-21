@@ -1,4 +1,4 @@
-use crate::detection::cascade::{CascadeSignal, CascadeState};
+use crate::detection::cascade::{CascadeSignal, CascadeState, CascadeTradeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::detection::mrc_pattern_classification::MrcPatternKind;
 use crate::model::{
@@ -23,6 +23,75 @@ pub struct PositionRuntime {
     pub exit_mode: ExitMode,
     pub exit_type: ExitType,
     pub entry_reason: Option<EntryReason>,
+}
+
+/// Fixed quantity allocation for the partial take-profit legs of one
+/// position. The allocation is created from the quantity produced by the
+/// calculated entry amount and is never re-based on the shrinking live
+/// position after a TP fill.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TakeProfitAllocation {
+    #[serde(default)]
+    pub side: PositionState,
+    #[serde(default)]
+    pub total_qty: f64,
+    #[serde(default)]
+    pub planned_qty: [f64; 3],
+    #[serde(default)]
+    pub filled_qty: [f64; 3],
+}
+
+impl Default for TakeProfitAllocation {
+    fn default() -> Self {
+        Self {
+            side: PositionState::Flat,
+            total_qty: 0.0,
+            planned_qty: [0.0; 3],
+            filled_qty: [0.0; 3],
+        }
+    }
+}
+
+impl TakeProfitAllocation {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn begin(&mut self, side: PositionState, qty: f64) {
+        let qty = qty.abs();
+        if !matches!(side, PositionState::Long | PositionState::Short) || qty <= 0.0 {
+            return;
+        }
+        if self.side != side || self.total_qty <= 0.0 {
+            *self = Self {
+                side,
+                total_qty: qty,
+                planned_qty: [0.0; 3],
+                filled_qty: [0.0; 3],
+            };
+            return;
+        }
+
+        // A later NewPosition notification can reflect an additional same-
+        // side fill. Keep the existing TP history and extend the allocation
+        // only when the host reports a larger aggregate position.
+        self.total_qty = self.total_qty.max(qty);
+        let planned_total: f64 = self.planned_qty.iter().sum();
+        if planned_total > 0.0 && self.total_qty > planned_total {
+            self.planned_qty[2] += self.total_qty - planned_total;
+        }
+    }
+
+    pub fn record_fill(&mut self, side: PositionState, leg: usize, qty: f64) {
+        if self.side != side || leg >= self.filled_qty.len() || !qty.is_finite() || qty <= 0.0 {
+            return;
+        }
+        self.filled_qty[leg] = self.filled_qty[leg].max(qty.abs());
+    }
+
+    pub fn has_plan(&self, side: PositionState) -> bool {
+        self.side == side && self.planned_qty.iter().any(|qty| *qty > 0.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -263,12 +332,14 @@ pub struct EngineState {
     pub last_active_tp_recalc_bar: Option<u64>,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
+    pub take_profit_allocation: TakeProfitAllocation,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
     pub mrc_crossing: MrcCrossingState,
     pub mrc_crossing_model: MrcCrossingModel,
     pub cascade: CascadeState,
     pub cascade_signal: CascadeSignal,
+    pub selected_cascade_trade_state: CascadeTradeState,
     /// Stable marks for up to three cascade-staged entry orders. The orders
     /// remain alive after the first leg fills until the position finishes or a
     /// new entry plan replaces them.
@@ -297,12 +368,14 @@ impl Default for EngineState {
             last_active_tp_recalc_bar: None,
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
+            take_profit_allocation: TakeProfitAllocation::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
             mrc_crossing: MrcCrossingState::default(),
             mrc_crossing_model: MrcCrossingModel::default(),
             cascade: CascadeState::default(),
             cascade_signal: CascadeSignal::default(),
+            selected_cascade_trade_state: CascadeTradeState::NotConfigured,
             cascade_entry_marks: Vec::new(),
             cascade_exit_orders: false,
             pending_entry_bar: None,
@@ -333,6 +406,8 @@ struct PersistedState {
     #[serde(default)]
     position: PositionState,
     #[serde(default)]
+    take_profit_allocation: TakeProfitAllocation,
+    #[serde(default)]
     exit_memory: ExitMemory,
     #[serde(default)]
     pattern_performance: [PatternPerformance; 6],
@@ -354,6 +429,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         cfg_loaded: state.cfg_loaded,
         trade_budget: state.trade_budget,
         position: state.position.side,
+        take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
         pattern_performance: state.mrc_crossing_model.pattern_performance,
         active_pattern: state.mrc_crossing_model.active_pattern,
@@ -381,6 +457,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.cfg_loaded = persisted.cfg_loaded;
     state.trade_budget = persisted.trade_budget;
     state.position.side = persisted.position;
+    state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
     state.mrc_crossing_model.pattern_performance = persisted.pattern_performance;
     state.mrc_crossing_model.active_pattern = persisted
@@ -411,6 +488,7 @@ pub fn sync_position_state(
             // offer a fresh same-direction route again.
             state.mrc_crossing_model.last_plan_key = None;
         }
+        state.take_profit_allocation.reset();
         state.tp_reprice_history.reset();
         state.pending_entry_bar = None;
     }

@@ -23,8 +23,7 @@ impl SingleOrderManager {
         filled_qty: f64,
         mark: &Option<String>,
     ) -> ModuleOutput {
-        shared::record_exit_memory(input, state, direction, &role, fill_price);
-        let _ = filled_qty;
+        shared::record_exit_memory(input, state, direction, &role, fill_price, filled_qty, mark);
         ModuleOutput {
             debug: shared::debug_line(direction, status, role, mark),
             ..Default::default()

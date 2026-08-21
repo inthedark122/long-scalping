@@ -6,7 +6,9 @@ use long_scalping::{
     model::{EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState},
     state::{EngineState, PositionRuntime},
 };
-use lte_strategy_bridge::abi::ModuleSymbolInfo;
+use lte_strategy_bridge::abi::{
+    ModuleExchangeOrderSide, ModuleOrderStatus, ModuleSymbolInfo, OrderRole,
+};
 use lte_strategy_bridge::{
     AlgoSuggestionTradeStatus, Direction, ModuleEvent, ModuleInput, ModulePositionSummary,
     ModulePositions, SuggestionInfo, SuggestionInfoCandle, SuggestionInfoIndicator,
@@ -255,6 +257,213 @@ fn cascade_position_uses_up_to_three_reduce_only_take_profits() {
     assert!(output.place_orders.iter().all(|order| order.reduce_only));
     assert_eq!(output.cancel_orders, vec!["tp-long"]);
     assert!(state.cascade_exit_orders);
+}
+
+#[test]
+fn cascade_tp_recalculation_keeps_original_leg_sizes_after_a_fill() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.cascade_signal = CascadeSignal {
+        dir: 1,
+        phase: MovementPhase::Building,
+        speed_pct_per_min: Some(0.8),
+        potential_move_pct: Some(5.0),
+        ..Default::default()
+    };
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
+
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 100.0,
+                pnl: 0.0,
+                qty: 1.0,
+            }),
+            short: None,
+        },
+    );
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 1.0,
+    };
+
+    let initial = run(&new_position, &mut state);
+    assert_eq!(
+        initial
+            .place_orders
+            .iter()
+            .map(|order| order.qty.unwrap())
+            .collect::<Vec<_>>(),
+        vec![0.4, 0.3, 0.3]
+    );
+
+    let mut fill = input(
+        104.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 60.0,
+                pnl: 2.4,
+                qty: 0.6,
+            }),
+            short: None,
+        },
+    );
+    fill.event = ModuleEvent::OrderUpdate {
+        direction: Direction::Long,
+        order_side: ModuleExchangeOrderSide::Sell,
+        role: OrderRole::TakeProfit,
+        status: ModuleOrderStatus::Filled,
+        fill_price: 104.0,
+        filled_qty: 0.4,
+        mark: Some("tp-long-1".to_string()),
+    };
+    run(&fill, &mut state);
+
+    // Force the same active plan through the regeneration path. The current
+    // position is 0.6, but TP2 and TP3 must remain 0.3 each rather than being
+    // recalculated as percentages of 0.6.
+    state.cascade_exit_orders = false;
+    let regenerated = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 60.0,
+                    pnl: 0.0,
+                    qty: 0.6,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+    assert_eq!(
+        regenerated
+            .place_orders
+            .iter()
+            .map(|order| (order.mark.as_str(), order.qty.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![("tp-long-2", 0.3), ("tp-long-3", 0.3)]
+    );
+}
+
+#[test]
+fn cascade_tp_caps_replacement_orders_when_the_filled_leg_update_is_missing() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.cascade_signal = CascadeSignal {
+        dir: 1,
+        phase: MovementPhase::Building,
+        speed_pct_per_min: Some(0.8),
+        potential_move_pct: Some(5.0),
+        ..Default::default()
+    };
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
+
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 100.0,
+                pnl: 0.0,
+                qty: 1.0,
+            }),
+            short: None,
+        },
+    );
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 1.0,
+    };
+    run(&new_position, &mut state);
+
+    state.cascade_exit_orders = false;
+    let regenerated = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 60.0,
+                    pnl: 0.0,
+                    qty: 0.6,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+    let total: f64 = regenerated
+        .place_orders
+        .iter()
+        .map(|order| order.qty.unwrap_or(0.0))
+        .sum();
+    assert!((total - 0.6).abs() < 1e-9);
+    assert!(regenerated
+        .place_orders
+        .iter()
+        .all(|order| order.qty.unwrap() <= 0.6));
+}
+
+#[test]
+fn cascade_tp_merges_a_small_final_remainder_into_the_previous_leg() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+    state.cascade_signal = CascadeSignal {
+        dir: 1,
+        phase: MovementPhase::Building,
+        speed_pct_per_min: Some(0.8),
+        potential_move_pct: Some(5.0),
+        ..Default::default()
+    };
+    state.position.entry_reason = Some(mrc_reason(106.0, 97.0));
+
+    let mut new_position = input(
+        100.0,
+        ModulePositions {
+            long: Some(ModulePositionSummary {
+                entry_price: 100.0,
+                notional: 900.0,
+                pnl: 0.0,
+                qty: 9.0,
+            }),
+            short: None,
+        },
+    );
+    new_position.symbol_info.qty_step_size = 1.0;
+    new_position.symbol_info.min_order_qty = Some(3.0);
+    new_position.event = ModuleEvent::NewPosition {
+        direction: Direction::Long,
+        entry_price: 100.0,
+        qty: 9.0,
+    };
+
+    let output = run(&new_position, &mut state);
+    assert_eq!(
+        output
+            .place_orders
+            .iter()
+            .map(|order| (order.mark.as_str(), order.qty.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![("tp-long-1", 4.0), ("tp-long-2", 5.0)]
+    );
+    assert!(
+        (output
+            .place_orders
+            .iter()
+            .map(|order| order.qty.unwrap())
+            .sum::<f64>()
+            - 9.0)
+            .abs()
+            < 1e-9
+    );
 }
 
 #[test]
