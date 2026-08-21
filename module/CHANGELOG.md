@@ -2,6 +2,14 @@
 
 # Unreleased
 
+# 1.0.104
+
+Incremental MRC touch analysis and pattern cleanup.
+
+- Add EMA-based MRC touch, debounce, speed, angle, interest, and band-width pressure signals for staircase scoring.
+- Warm the touch analyzer from historical MRC samples and expose its diagnostics in realtime debug output.
+- Remove the standalone inner-pullback pattern from classification, state, reports, history, and documentation.
+
 # 1.0.103
 
 Take-profit allocation fix.
