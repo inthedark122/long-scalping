@@ -3,6 +3,8 @@ use long_scalping::detection::mrc_cross_analysis::{self, BarrierState};
 use long_scalping::detection::mrc_crossing::{self, MrcPrediction, MrcWaitReason};
 use long_scalping::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle};
 use long_scalping::detection::mrc_prediction::MrcPredictionContext;
+use long_scalping::detection::mrc_touch::MrcTouchSignal;
+use long_scalping::detection::mrc_touch_learning::MrcTouchLearningSignal;
 use long_scalping::detection::vlines::MrcCrossEvent;
 use long_scalping::model::EntryReason;
 use long_scalping::state::{
@@ -209,6 +211,49 @@ fn prediction_uses_observed_adjacent_transition_without_a_sample_gate() {
     assert_eq!(failed_moves, 0);
     assert_eq!(movement_success_rate, 1.0);
     assert_eq!(estimated_time_ms, 2_000.0);
+}
+
+#[test]
+fn live_learning_requires_a_current_touch_for_mrc_entry() {
+    let mut stale_model = learned_model(3);
+    let stale_learning = MrcTouchLearningSignal {
+        now_ms: 40_000,
+        ..Default::default()
+    };
+    let stale = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
+        &mut stale_model,
+        &[event(5, 40_000)],
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+        lines()[5],
+        40_000,
+        MrcPredictionContext::default(),
+        MrcTouchSignal::default(),
+        stale_learning,
+    );
+    assert!(stale.entry.is_none());
+    assert_eq!(stale.wait_reason, Some(MrcWaitReason::Touch));
+
+    let mut touched_model = learned_model(3);
+    let touched = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
+        &mut touched_model,
+        &[event(5, 40_000)],
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+        lines()[5],
+        40_000,
+        MrcPredictionContext::default(),
+        MrcTouchSignal::default(),
+        MrcTouchLearningSignal {
+            current_line: Some(5),
+            exact_touch: true,
+            now_ms: 40_000,
+            ..Default::default()
+        },
+    );
+    assert!(touched.entry.is_some());
 }
 
 #[test]

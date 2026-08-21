@@ -64,6 +64,11 @@ pub fn wait_entry_gate(wait_reason: MrcWaitReason) -> EntryGate {
             vec![EntryWaitSolution::MrcCrossing],
             vec!["pattern history has no reliable directional prediction".to_string()],
         ),
+        MrcWaitReason::Touch => (
+            "pattern-wait-mrc-touch".to_string(),
+            vec![EntryWaitSolution::MrcCrossing],
+            vec!["waiting for a current touch or crossing of the selected MRC line".to_string()],
+        ),
     };
     EntryGate::Wait(EntryWait {
         reason,
@@ -175,6 +180,7 @@ pub enum MrcWaitReason {
     Crossing,
     NoDirectionalTarget,
     NoReliablePrediction,
+    Touch,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1061,6 +1067,10 @@ fn observe_events(
     let mut saw_crossing_barrier = false;
     let mut saw_untradeable_prediction = false;
     let mut saw_unreliable_prediction = false;
+    let mut saw_missing_touch = false;
+    if touch_learning.is_some_and(|learning| !learning.exact_touch) {
+        saw_missing_touch = true;
+    }
 
     for event in events {
         let source = event.line_idx as usize;
@@ -1089,26 +1099,32 @@ fn observe_events(
             );
             let direction_prediction =
                 direction_prediction(touch, touch_learning.unwrap_or_default(), &analysis);
-            let entry = (analysis.tradeable() && prediction_allows_entry(direction_prediction))
-                .then(|| {
-                    analysis
-                        .effective_entry_price
-                        .zip(analysis.target_price)
-                        .zip(analysis.stop_price)
-                        .map(|((entry_price, target_price), stop_price)| {
-                            entry_reason(
-                                event,
-                                &prediction,
-                                &analysis,
-                                entry_price,
-                                target_price,
-                                stop_price,
-                            )
-                        })
-                })
-                .flatten();
+            let touch_ready = touch_learning
+                .map(|learning| learning.current_touch_matches(analysis.line_idx))
+                .unwrap_or(true);
+            let entry = (analysis.tradeable()
+                && touch_ready
+                && prediction_allows_entry(direction_prediction))
+            .then(|| {
+                analysis
+                    .effective_entry_price
+                    .zip(analysis.target_price)
+                    .zip(analysis.stop_price)
+                    .map(|((entry_price, target_price), stop_price)| {
+                        entry_reason(
+                            event,
+                            &prediction,
+                            &analysis,
+                            entry_price,
+                            target_price,
+                            stop_price,
+                        )
+                    })
+            })
+            .flatten();
             if entry.is_none() {
                 saw_untradeable_prediction = true;
+                saw_missing_touch |= !touch_ready;
                 if analysis.barrier_state == mrc_cross_analysis::BarrierState::Approaching {
                     saw_crossing_barrier = true;
                 }
@@ -1144,13 +1160,18 @@ fn observe_events(
                     );
                     let direction_prediction =
                         direction_prediction(touch, touch_learning.unwrap_or_default(), &analysis);
+                    let touch_ready = touch_learning
+                        .map(|learning| learning.current_touch_matches(analysis.line_idx))
+                        .unwrap_or(true);
                     let forecast_allowed = (forecast_can_reach(&analysis)
                         || matches!(
                             prediction.pattern_kind,
                             MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
                         ))
                         && analysis.forecast_tradeable()
+                        && touch_ready
                         && prediction_allows_entry(direction_prediction);
+                    saw_missing_touch |= !touch_ready;
                     let entry = if forecast_allowed {
                         analysis
                             .effective_entry_price
@@ -1211,7 +1232,9 @@ fn observe_events(
         }
     }
     if observation.entry.is_none() {
-        observation.wait_reason = if saw_crossing_barrier {
+        observation.wait_reason = if saw_missing_touch {
+            Some(MrcWaitReason::Touch)
+        } else if saw_crossing_barrier {
             Some(MrcWaitReason::Crossing)
         } else if saw_prediction || saw_untradeable_prediction {
             Some(MrcWaitReason::NoDirectionalTarget)

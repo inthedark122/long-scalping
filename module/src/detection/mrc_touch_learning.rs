@@ -191,6 +191,13 @@ impl Default for MrcTouchLearningSignal {
 }
 
 impl MrcTouchLearningSignal {
+    /// A candidate may use this touch only when the current sample or a fresh
+    /// crossing event identifies the candidate's source line. Historical
+    /// routes are not allowed to resurrect an old MRC price as a new entry.
+    pub fn current_touch_matches(self, source_line: u8) -> bool {
+        self.exact_touch && self.current_line == Some(source_line)
+    }
+
     pub fn summary(self) -> String {
         format!(
             "line={} exact={} ctx={}/{} learn={} next={} samples={} up={} down={} tf={} scope={} reliable={}",
