@@ -229,29 +229,6 @@ total travelled range.
 Prefer the drift direction. Treat movement toward the opposite edge as a
 pullback candidate rather than immediately reversing the strategy.
 
-## 6. `PULLBACK_TO_INNER`
-
-### Meaning
-
-Price first expands away from the mean and then crosses back toward an inner MRC line before
-the expected continuation is confirmed:
-
-```text
-up_inner -> up_small -> up_inner
-down_inner -> down_small -> down_inner
-```
-
-### Detection
-
-Record the expanded line, returned inner line, elapsed time, favorable excursion
-of the expansion leg, and adverse excursion during the return.
-
-### Prediction
-
-Reduce continuation confidence. The returned inner line can become a reversal
-or re-entry area. A later expansion should be treated as a new observation,
-not silently combined with the failed attempt.
-
 ## Learning and outcome labels
 
 The classifier and the outcome ledger are separate:
@@ -262,8 +239,8 @@ The classifier and the outcome ledger are separate:
   observation won or lost;
 - a target hit advances the continuation leg to the next unbroken MRC line,
   allowing the selected staircase pattern to keep trading the trend;
-- pullback classifications remain analysis evidence and never take entry
-  authority.
+- staircase pullback lifecycle data remains analysis evidence and never takes
+  entry authority.
 
 Movement success is not trade win rate. A movement can reach a favorable price
 but still produce a losing trade because of entry fill, stop placement, fees,

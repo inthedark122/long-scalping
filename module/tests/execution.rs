@@ -812,7 +812,7 @@ fn mrc_crossing_applies_minimum_tp_and_sl_to_short_exit() {
         estimated_time_ms: 1_000.0,
         source_line: 4,
         target_line: 3,
-        pattern_kind: "PULLBACK_TO_INNER".to_string(),
+        pattern_kind: "STAIRS_DOWN".to_string(),
         pattern: vec![4, 3],
         pattern_elapsed_ms: vec![0, 1_000],
         pattern_samples: 1,

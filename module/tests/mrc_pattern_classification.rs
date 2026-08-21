@@ -42,7 +42,7 @@ fn successful_movement() -> MrcMovementSnapshot {
 
 #[test]
 fn pattern_identifiers_are_stable_and_round_trip() {
-    assert_eq!(MRC_PATTERN_DEFINITIONS.len(), 6);
+    assert_eq!(MRC_PATTERN_DEFINITIONS.len(), 5);
 
     for pattern in MRC_PATTERN_DEFINITIONS {
         assert_eq!(
@@ -250,7 +250,7 @@ fn repeated_equal_zigzags_are_not_a_staircase() {
 }
 
 #[test]
-fn classification_prioritizes_break_return_and_pullback() {
+fn classification_prioritizes_break_return() {
     let mut fast_break = history(&[(5, 100.0), (6, 102.0), (5, 101.0)]);
     fast_break[1].now_ms = 5 * 60_000;
     fast_break[2].now_ms = 10 * 60_000;
@@ -258,12 +258,6 @@ fn classification_prioritizes_break_return_and_pullback() {
     assert_eq!(signal.kind, MrcPatternKind::FastBreakReturn);
     assert_eq!(signal.direction, -1);
     assert_eq!(signal.target_line, 4);
-
-    let signal =
-        classify(&history(&[(5, 100.0), (6, 102.0), (4, 101.0)])).expect("pullback to inner line");
-    assert_eq!(signal.kind, MrcPatternKind::PullbackToInner);
-    assert_eq!(signal.direction, -1);
-    assert_eq!(signal.target_line, 3);
 }
 
 #[test]

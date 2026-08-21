@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use long_scalping::detection::cascade::{CascadeTradeState, MovementPhase};
 use long_scalping::detection::mrc_pattern_classification::{
-    MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+    MrcPatternKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
 };
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
@@ -848,7 +848,7 @@ pub(crate) struct Analyzer {
     cascade_signal: cascade::CascadeSignal,
     events: Vec<CrossingEvent>,
     trades: VirtualTradeSimulator,
-    pattern_trades: [VirtualTradeSimulator; LINE_COUNT - 2],
+    pattern_trades: [VirtualTradeSimulator; MRC_PATTERN_COUNT],
     selected_completed_seen: usize,
     forecast_plan_keys: [Option<(u8, u8, u8)>; LINE_COUNT - 2],
     predictions: VirtualPredictionSimulator,
@@ -865,13 +865,13 @@ pub(crate) struct Analyzer {
     selected_market_busy: usize,
     selected_plan_suppressed: usize,
     forecast_plan_suppressed: usize,
-    candidate_counts: [usize; 6],
-    candidate_entry_counts: [usize; 6],
-    rejected_lifecycle: [usize; 6],
-    rejected_cascade: [usize; 6],
-    rejected_barrier: [usize; 6],
-    rejected_levels: [usize; 6],
-    rejected_other: [usize; 6],
+    candidate_counts: [usize; MRC_PATTERN_COUNT],
+    candidate_entry_counts: [usize; MRC_PATTERN_COUNT],
+    rejected_lifecycle: [usize; MRC_PATTERN_COUNT],
+    rejected_cascade: [usize; MRC_PATTERN_COUNT],
+    rejected_barrier: [usize; MRC_PATTERN_COUNT],
+    rejected_levels: [usize; MRC_PATTERN_COUNT],
+    rejected_other: [usize; MRC_PATTERN_COUNT],
     started_at: Instant,
 }
 
@@ -903,13 +903,13 @@ impl Analyzer {
             selected_market_busy: 0,
             selected_plan_suppressed: 0,
             forecast_plan_suppressed: 0,
-            candidate_counts: [0; 6],
-            candidate_entry_counts: [0; 6],
-            rejected_lifecycle: [0; 6],
-            rejected_cascade: [0; 6],
-            rejected_barrier: [0; 6],
-            rejected_levels: [0; 6],
-            rejected_other: [0; 6],
+            candidate_counts: [0; MRC_PATTERN_COUNT],
+            candidate_entry_counts: [0; MRC_PATTERN_COUNT],
+            rejected_lifecycle: [0; MRC_PATTERN_COUNT],
+            rejected_cascade: [0; MRC_PATTERN_COUNT],
+            rejected_barrier: [0; MRC_PATTERN_COUNT],
+            rejected_levels: [0; MRC_PATTERN_COUNT],
+            rejected_other: [0; MRC_PATTERN_COUNT],
             started_at: Instant::now(),
         };
         analyzer.model.trade_direction_lock = direction_lock;

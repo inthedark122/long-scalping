@@ -1,6 +1,6 @@
 use crate::detection::cascade::{CascadeSignal, CascadeState, CascadeTradeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
-use crate::detection::mrc_pattern_classification::MrcPatternKind;
+use crate::detection::mrc_pattern_classification::{MrcPatternKind, MRC_PATTERN_COUNT};
 use crate::detection::mrc_touch::MrcTouchState;
 use crate::model::{
     Config, EntryReason, ExitMemory, ExitMode, ExitType, IndicatorSnapshot, PositionState,
@@ -259,7 +259,7 @@ pub struct MrcCrossingModel {
     pub last_direction: i8,
     pub last_event_ms: u64,
     pub current_entry: Option<EntryReason>,
-    pub pattern_performance: [PatternPerformance; 6],
+    pub pattern_performance: [PatternPerformance; MRC_PATTERN_COUNT],
     pub active_pattern: Option<u8>,
     pub active_pattern_score: f64,
     pub active_pattern_since_ms: u64,
@@ -281,7 +281,7 @@ impl Default for MrcCrossingModel {
             last_direction: 0,
             last_event_ms: 0,
             current_entry: None,
-            pattern_performance: [PatternPerformance::default(); 6],
+            pattern_performance: [PatternPerformance::default(); MRC_PATTERN_COUNT],
             active_pattern: None,
             active_pattern_score: 0.0,
             active_pattern_since_ms: 0,
@@ -414,7 +414,7 @@ struct PersistedState {
     #[serde(default)]
     exit_memory: ExitMemory,
     #[serde(default)]
-    pattern_performance: [PatternPerformance; 6],
+    pattern_performance: [PatternPerformance; MRC_PATTERN_COUNT],
     #[serde(default)]
     active_pattern: Option<u8>,
     #[serde(default)]

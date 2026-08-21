@@ -26,19 +26,17 @@ pub enum MrcPatternKind {
     /// Price alternates between lower and upper MRC zones, but the net drift
     /// is large enough that the repeated crossings are part of a trend.
     TrendingCycle,
-    /// After an expanded line movement, price crosses back toward the inner
-    /// band before the expected continuation is completed.
-    PullbackToInner,
 }
 
+pub const MRC_PATTERN_COUNT: usize = 5;
+
 impl MrcPatternKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; MRC_PATTERN_COUNT] = [
         Self::StairsUp,
         Self::StairsDown,
         Self::FastBreakReturn,
         Self::RangeCycleSideway,
         Self::TrendingCycle,
-        Self::PullbackToInner,
     ];
 
     pub const fn index(self) -> usize {
@@ -48,7 +46,6 @@ impl MrcPatternKind {
             Self::FastBreakReturn => 2,
             Self::RangeCycleSideway => 3,
             Self::TrendingCycle => 4,
-            Self::PullbackToInner => 5,
         }
     }
 
@@ -60,7 +57,6 @@ impl MrcPatternKind {
             Self::FastBreakReturn => "FAST_BREAK_RETURN",
             Self::RangeCycleSideway => "RANGE_CYCLE_SIDEWAY",
             Self::TrendingCycle => "TRENDING_CYCLE",
-            Self::PullbackToInner => "PULLBACK_TO_INNER",
         }
     }
 
@@ -72,7 +68,6 @@ impl MrcPatternKind {
             "FAST_BREAK_RETURN" => Self::FastBreakReturn,
             "RANGE_CYCLE_SIDEWAY" => Self::RangeCycleSideway,
             "TRENDING_CYCLE" => Self::TrendingCycle,
-            "PULLBACK_TO_INNER" => Self::PullbackToInner,
             _ => return None,
         })
     }
@@ -168,7 +163,6 @@ pub struct MrcPatternSignal {
     pub staircase_extreme_line: Option<u8>,
 }
 
-const MEAN_LINE: u8 = 4;
 const LOWER_ZONE_MAX: u8 = 3;
 const UPPER_ZONE_MIN: u8 = 5;
 const MIN_CYCLE_EXTREME_VISITS: usize = 4;
@@ -249,10 +243,6 @@ fn zone(line: u8) -> Option<bool> {
     }
 }
 
-fn distance_from_mean(line: u8) -> u8 {
-    line.abs_diff(MEAN_LINE)
-}
-
 fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     let [source, crossed, returned] = history.get(history.len().checked_sub(3)?..)? else {
         return None;
@@ -275,41 +265,6 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         failed_break_direction: line_direction(source.line, crossed.line),
         steps: 1,
         elapsed_ms,
-        sequence: Vec::new(),
-        price_move_pct: 0.0,
-        favorable_move_pct: 0.0,
-        adverse_move_pct: 0.0,
-        staircase_lifecycle: None,
-        staircase_transition: None,
-        staircase_protected_line: None,
-        staircase_extreme_line: None,
-    })
-}
-
-fn pullback_to_inner(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
-    let [source, expanded, returned] = history.get(history.len().checked_sub(3)?..)? else {
-        return None;
-    };
-    let expansion_direction = line_direction(source.line, expanded.line);
-    let return_direction = line_direction(expanded.line, returned.line);
-    if expanded.line.abs_diff(source.line) != 1
-        || distance_from_mean(expanded.line) <= distance_from_mean(source.line)
-        || distance_from_mean(returned.line) >= distance_from_mean(expanded.line)
-        || returned.line == source.line
-        || expansion_direction == 0
-        || return_direction == 0
-    {
-        return None;
-    }
-    Some(MrcPatternSignal {
-        kind: MrcPatternKind::PullbackToInner,
-        source_line: returned.line,
-        target_line: adjacent_line(returned.line, return_direction)?,
-        direction: return_direction,
-        failed_break_line: None,
-        failed_break_direction: 0,
-        steps: 1,
-        elapsed_ms: returned.now_ms.saturating_sub(expanded.now_ms),
         sequence: Vec::new(),
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
@@ -623,21 +578,20 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
 
 /// Classifies the current local movement and returns the direction/line that
 /// the trading layer should follow. The precedence is intentional: a direct
-/// return or pullback is more specific than a staircase or a broad cycle.
+/// return is more specific than a staircase or a broad cycle.
 pub fn classify(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     classify_all(history).into_iter().next()
 }
 
 /// Evaluate every independent matcher. The result deliberately keeps
-/// overlapping matches: a staircase can coexist with a local pullback or a
-/// trending cycle.
+/// overlapping matches: a staircase can coexist with a fast break-return or
+/// a trending cycle.
 pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     if history.len() < 2 {
         return Vec::new();
     }
     let mut matches = Vec::new();
     matches.extend(fast_break_return(history));
-    matches.extend(pullback_to_inner(history));
     matches.extend(staircases(history));
     matches.extend(cycle(history));
     matches
@@ -646,7 +600,7 @@ pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
 /// The complete, stable catalogue. Keep this list small and behavior based;
 /// learned thresholds and outcome statistics belong in the external history
 /// files under `data/mrc-pattern-history/`.
-pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 6] = [
+pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 5] = [
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsUp,
         title: "MRC upward staircase",
@@ -681,13 +635,6 @@ pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 6] = [
         summary: "Price crosses lower and upper zones repeatedly while the whole range drifts directionally.",
         detection: "The same alternating zone behavior as a sideways cycle, but with materially larger net drift relative to total range.",
         prediction: "Prefer the drift direction and treat opposing edge touches as pullbacks instead of automatic reversals.",
-    },
-    MrcPatternDefinition {
-        kind: MrcPatternKind::PullbackToInner,
-        title: "Pullback to inner line",
-        summary: "After an expansion, price returns toward an inner MRC line before continuation is confirmed.",
-        detection: "An expansion followed by an inward transition, including the returned line, elapsed time, and adverse excursion.",
-        prediction: "Reduce continuation confidence and evaluate the returned inner line as a possible reversal or re-entry area.",
     },
 ];
 

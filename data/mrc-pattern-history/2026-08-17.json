@@ -54,10 +54,6 @@
         "TRENDING_CYCLE": {
           "candidate_blocks": 4,
           "trending_blocks": 2
-        },
-        "PULLBACK_TO_INNER": {
-          "observations": 62,
-          "movement_success_rate": 0.3387
         }
       }
     },
@@ -100,10 +96,6 @@
         "TRENDING_CYCLE": {
           "candidate_blocks": 6,
           "trending_blocks": 4
-        },
-        "PULLBACK_TO_INNER": {
-          "observations": 76,
-          "movement_success_rate": 0.2632
         }
       }
     }
