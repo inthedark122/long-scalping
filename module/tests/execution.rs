@@ -2,9 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use long_scalping::{
     detection::cascade::{CascadeSignal, MovementPhase},
+    detection::mrc_crossing,
+    detection::mrc_prediction::MrcPredictionContext,
     engine::run,
     model::{EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState},
-    state::{EngineState, PositionRuntime, TakeProfitAllocation},
+    state::{
+        EngineState, MrcCrossingModel, MrcHistoryEvent, MrcMovementSnapshot, PositionRuntime,
+        TakeProfitAllocation,
+    },
 };
 use lte_strategy_bridge::abi::ModuleSymbolInfo;
 use lte_strategy_bridge::{
@@ -118,6 +123,109 @@ fn staircase_snapshot() -> IndicatorSnapshot {
     };
     snapshot.tf5m = snapshot.tf1m;
     snapshot
+}
+
+fn active_mrc_route_fixture() -> (
+    EntryReason,
+    long_scalping::detection::mrc_cross_analysis::MrcCrossAnalysis,
+    MrcPredictionContext,
+) {
+    let lines = [90.0, 92.0, 94.0, 96.0, 100.0, 104.0, 106.0, 108.0, 110.0];
+    let movement = MrcMovementSnapshot {
+        start_line: 5,
+        start_price: 104.0,
+        market_start_price: 104.0,
+        target_price: 106.0,
+        target_low: 106.0,
+        target_high: 106.0,
+        mrc_low: 90.0,
+        mrc_high: 110.0,
+        high: 106.0,
+        low: 103.0,
+        extreme: 106.0,
+        direction: 1,
+        duration_ms: 2_000,
+    };
+    let mut model = MrcCrossingModel::default();
+    for sample in 0..3u64 {
+        let base = sample * 10_000;
+        for (offset, line) in [3, 4, 5, 6].into_iter().enumerate() {
+            model.history.push(MrcHistoryEvent {
+                line,
+                direction: 1,
+                now_ms: base + offset as u64 * 1_000,
+                market_price: lines[line as usize],
+                mrc_low: lines[0],
+                mrc_high: lines[8],
+                no_pullback_count: 0,
+                reverted_line: None,
+                completed_movement: (line == 6).then_some(movement),
+            });
+        }
+    }
+    let base = 30_000;
+    model
+        .history
+        .extend(
+            [3, 4, 3, 4]
+                .into_iter()
+                .enumerate()
+                .map(|(offset, line)| MrcHistoryEvent {
+                    line,
+                    direction: if offset % 2 == 0 { 1 } else { -1 },
+                    now_ms: base + offset as u64 * 1_000,
+                    market_price: lines[line as usize],
+                    mrc_low: lines[0],
+                    mrc_high: lines[8],
+                    no_pullback_count: 0,
+                    reverted_line: None,
+                    completed_movement: None,
+                }),
+        );
+    model.history.push(MrcHistoryEvent {
+        line: 5,
+        direction: 1,
+        now_ms: 40_000,
+        market_price: lines[5],
+        mrc_low: lines[0],
+        mrc_high: lines[8],
+        no_pullback_count: 0,
+        reverted_line: None,
+        completed_movement: None,
+    });
+    model.last_line = Some(5);
+    model.last_direction = 1;
+    let observation = mrc_crossing::observe_with_forecast(
+        &mut model,
+        &[],
+        lines,
+        &Default::default(),
+        (0.0, 0.0, 0.0, 0.0),
+        107.0,
+        50_000,
+    );
+    let reason = observation.entry.expect("fixture should produce an entry");
+    let mut analysis = observation
+        .forecast
+        .expect("fixture should produce a forecast");
+    analysis.line_stats[7] = long_scalping::state::MrcForecastStats {
+        count: 8,
+        movement_samples: 8,
+        duration_sum_ms: 8 * 240_000,
+        favorable_pct_sum: 36.0,
+        adverse_pct_sum: 8.0,
+        ..Default::default()
+    };
+    let context = MrcPredictionContext {
+        cascade_enabled: true,
+        cascade_direction: 1,
+        cascade_speed_pct_per_min: Some(1.0),
+        cascade_phase: MovementPhase::Building,
+        cascade_potential_move_pct: Some(5.0),
+        cascade_adverse_move_pct: Some(0.2),
+        ..Default::default()
+    };
+    (reason, analysis, context)
 }
 
 #[test]
@@ -560,6 +668,44 @@ fn trail_after_virtual_sl_reprices_single_tp_from_current_price() {
     assert_eq!(
         output.cancel_orders,
         vec!["tp-long-far", "tp-long-1", "tp-long-2", "tp-long-3"]
+    );
+}
+
+#[test]
+fn active_mrc_position_reprices_to_the_maximum_route_candidate() {
+    let (reason, analysis, context) = active_mrc_route_fixture();
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(staircase_snapshot());
+    state.active_mrc_analysis = Some(analysis);
+    state.active_mrc_context = context;
+    state.position = position(PositionState::Long, 100.0);
+    state.position.entry_price = 105.0;
+    state.position.take_profit = reason.price();
+    state.position.entry_reason = Some(reason);
+    state.exit_progress.begin(PositionState::Long, 1_000, 105.0);
+
+    let output = run(
+        &input(
+            105.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 105.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(output.place_orders.len(), 1);
+    assert_eq!(output.place_orders[0].mark, "tp-long");
+    assert!((output.place_orders[0].enter_price - 109.725).abs() < 1e-9);
+    assert_eq!(
+        state.position.take_profit,
+        output.place_orders[0].enter_price
     );
 }
 

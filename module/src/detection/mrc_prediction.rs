@@ -139,6 +139,9 @@ pub struct MrcLinePlan {
     /// fallback when cascade speed is available.
     pub historical_time_ms: f64,
     pub historical_samples: u32,
+    pub historical_favorable_pct: f64,
+    pub historical_adverse_pct: f64,
+    pub historical_movement_samples: u32,
     pub cascade_time_ms: f64,
     pub estimated_time_ms: f64,
     pub time_source: MrcLineTimeSource,
@@ -284,6 +287,7 @@ pub fn build_line_plans(
         let role = route_role(source_line, line_idx, direction, target_line);
         let (historical_time_ms, historical_samples, historical_source) =
             historical_estimate(source_line, line_idx, direction, stats);
+        let line_stats = stats[index];
         let cascade_time_ms = cascade_time_ms(distance_pct, context).unwrap_or(0.0);
         let (estimated_time_ms, time_source) = match historical_source {
             MrcLineTimeSource::Current => (0.0, MrcLineTimeSource::Current),
@@ -301,6 +305,9 @@ pub fn build_line_plans(
             stop_loss_set: stop_price.is_some_and(valid_price),
             historical_time_ms,
             historical_samples,
+            historical_favorable_pct: line_stats.average_favorable_pct().unwrap_or(0.0),
+            historical_adverse_pct: line_stats.average_adverse_pct().unwrap_or(0.0).abs(),
+            historical_movement_samples: line_stats.movement_samples,
             cascade_time_ms,
             estimated_time_ms,
             time_source,

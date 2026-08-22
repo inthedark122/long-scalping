@@ -6,7 +6,7 @@ use crate::detection::mrc_direction_prediction::{
 use crate::detection::mrc_pattern_classification::{
     self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
-use crate::detection::mrc_prediction;
+use crate::detection::mrc_prediction::{self, MrcLinePlan};
 use crate::detection::mrc_stair_entry;
 use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
 use crate::detection::mrc_touch_learning::MrcTouchLearningSignal;
@@ -1426,6 +1426,173 @@ fn forecast_can_reach(analysis: &MrcCrossAnalysis) -> bool {
         | mrc_cross_analysis::BarrierState::ConfirmedBreak
         | mrc_cross_analysis::BarrierState::Rejected => true,
     }
+}
+
+/// Select the maximum favorable movement that the active route can currently
+/// support. The line price describes the route; historical movement and live
+/// cascade context decide whether the route is usable.
+pub fn max_reachable_movement(
+    analysis: &MrcCrossAnalysis,
+    plans: &[MrcLinePlan; mrc_prediction::MRC_LINE_COUNT],
+    source_line: u8,
+    target_line: Option<u8>,
+    direction: i8,
+    context: mrc_prediction::MrcPredictionContext,
+) -> Option<(u8, f64)> {
+    if !matches!(direction, 1 | -1) {
+        return None;
+    }
+
+    let first_forward = mrc_cross_analysis::adjacent_line(source_line, direction)?;
+    let minimum_line = target_line
+        .filter(|line| {
+            if direction > 0 {
+                *line >= first_forward
+            } else {
+                *line <= first_forward
+            }
+        })
+        .unwrap_or(first_forward);
+    let fallback_move_pct = (analysis.stair_favorable_move_pct.is_finite()
+        && analysis.stair_favorable_move_pct > 0.0)
+        .then_some(analysis.stair_favorable_move_pct)
+        .or_else(|| {
+            analysis
+                .effective_move_pct
+                .filter(|value| value.is_finite() && *value > 0.0)
+        })
+        .or_else(|| {
+            analysis
+                .favorable_move_pct
+                .filter(|value| value.is_finite() && *value > 0.0)
+        });
+
+    let mut best: Option<(u8, f64, f64)> = None;
+    for plan in plans.iter() {
+        let is_forward = if direction > 0 {
+            plan.line_idx >= minimum_line
+        } else {
+            plan.line_idx <= minimum_line
+        };
+        if !is_forward
+            || !plan.move_pct.is_finite()
+            || plan.move_pct <= 0.0
+            || plan.distance_pct <= 0.0
+        {
+            continue;
+        }
+
+        let move_pct = if plan.historical_movement_samples > 0
+            && plan.historical_favorable_pct.is_finite()
+            && plan.historical_favorable_pct > 0.0
+        {
+            plan.historical_favorable_pct
+        } else if Some(plan.line_idx) == target_line {
+            let Some(fallback_move_pct) = fallback_move_pct else {
+                continue;
+            };
+            fallback_move_pct
+        } else {
+            continue;
+        };
+
+        if !move_pct.is_finite() || move_pct <= 0.0 {
+            continue;
+        }
+        if plan.historical_adverse_pct.is_finite()
+            && plan.historical_adverse_pct > 0.0
+            && plan.stop_loss_pct > 0.0
+            && plan.historical_adverse_pct > plan.stop_loss_pct + f64::EPSILON
+        {
+            continue;
+        }
+        if context.cascade_enabled {
+            if context.cascade_potential_move_pct.is_some_and(|potential| {
+                potential.is_finite() && potential + f64::EPSILON < move_pct
+            }) {
+                continue;
+            }
+            if context.cascade_adverse_move_pct.is_some_and(|adverse| {
+                adverse.is_finite()
+                    && plan.stop_loss_pct > 0.0
+                    && adverse > plan.stop_loss_pct + f64::EPSILON
+            }) {
+                continue;
+            }
+        }
+
+        let eta = if plan.estimated_time_ms.is_finite() && plan.estimated_time_ms > 0.0 {
+            plan.estimated_time_ms
+        } else {
+            f64::MAX
+        };
+        let better = best.is_none_or(|(_, best_move, best_eta)| {
+            move_pct > best_move + f64::EPSILON
+                || ((move_pct - best_move).abs() <= f64::EPSILON && eta < best_eta)
+        });
+        if better {
+            best = Some((plan.line_idx, move_pct, eta));
+        }
+    }
+
+    best.map(|(line, move_pct, _)| (line, move_pct))
+}
+
+/// Recalculate exits from the current active MRC route and actual fill price.
+/// For a movement target, the TP is selected by the imperative route model;
+/// the protective stop remains tied to the current MRC structure.
+pub fn imperative_exit_levels(
+    reason: &EntryReason,
+    analysis: &MrcCrossAnalysis,
+    lines: [f64; 9],
+    entry_price: f64,
+    context: mrc_prediction::MrcPredictionContext,
+) -> Option<(f64, f64)> {
+    let EntryReason::MrcCrossing {
+        source_line,
+        target_line,
+        pattern_kind,
+        ..
+    } = reason;
+    let direction = reason_direction(reason);
+    let stop_line = mrc_cross_analysis::mrc_stop_line(lines, *source_line, entry_price, direction)?;
+    let stop_price = lines.get(stop_line as usize).copied()?;
+    let plans = mrc_prediction::build_line_plans(
+        lines,
+        *source_line,
+        entry_price,
+        direction,
+        Some(stop_price),
+        Some(*target_line),
+        analysis.line_stats,
+        context,
+    );
+    let (_, move_pct) = max_reachable_movement(
+        analysis,
+        &plans,
+        *source_line,
+        Some(*target_line),
+        direction,
+        context,
+    )?;
+    let target_price = entry_price * (1.0 + direction as f64 * move_pct / 100.0);
+    let pattern = MrcPatternKind::from_str(pattern_kind);
+    let valid = if matches!(
+        pattern,
+        Some(MrcPatternKind::StairsUp) | Some(MrcPatternKind::StairsDown)
+    ) {
+        valid_movement_price_levels(direction, entry_price, target_price, stop_price, None)
+    } else {
+        valid_price_levels_for_pattern(
+            direction,
+            entry_price,
+            target_price,
+            stop_price,
+            None,
+            pattern,
+        )
+    };
+    valid.then_some((target_price, stop_price))
 }
 
 /// Recalculate exits from the current MRC stop and actual fill price. For a

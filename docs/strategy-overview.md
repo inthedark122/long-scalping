@@ -7,6 +7,8 @@ entry authority.
 
 ## Trading model
 
+The TP/SL source of truth is [TP/SL architecture](tp-sl-architecture.md).
+
 - Input timeframes: `1m` and `5m` MRC lines plus volume/NTPS; candle OHLC, live price, and cascade speed provide market context
 - Position policy: one open position at a time
 - Pattern policy: classify all matches, preserve overlaps, and score them independently

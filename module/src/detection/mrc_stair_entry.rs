@@ -357,28 +357,14 @@ pub fn apply(
         analysis.stair_entry_approved = false;
         return;
     };
-    let Some(move_pct) = analysis
-        .effective_move_pct
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .or_else(|| {
-            (analysis.stair_favorable_move_pct.is_finite()
-                && analysis.stair_favorable_move_pct > 0.0)
-                .then_some(analysis.stair_favorable_move_pct)
-        })
-    else {
-        analysis.stair_entry_approved = false;
-        return;
-    };
-    let target_price = entry_price * (1.0 + analysis.trade_direction as f64 * move_pct / 100.0);
-
     analysis.effective_entry_price = Some(entry_price);
     analysis.trade_target_line = target_line;
     analysis.take_profit_line = None;
     analysis.stop_loss_line = Some(stop_line);
-    analysis.target_price = Some(target_price);
+    analysis.target_price = None;
     analysis.target_is_movement = true;
-    analysis.effective_move_pct = Some(move_pct);
-    analysis.predicted_end_price = Some(target_price);
+    analysis.effective_move_pct = None;
+    analysis.predicted_end_price = None;
     analysis.stop_price = Some(stop_price);
     analysis.line_plans = crate::detection::mrc_prediction::build_line_plans(
         lines,
@@ -387,6 +373,32 @@ pub fn apply(
         analysis.trade_direction,
         Some(stop_price),
         target_line,
+        analysis.line_stats,
+        context,
+    );
+    let Some((selected_line, move_pct)) = crate::detection::mrc_crossing::max_reachable_movement(
+        analysis,
+        &analysis.line_plans,
+        entry_line,
+        target_line,
+        analysis.trade_direction,
+        context,
+    ) else {
+        analysis.stair_entry_approved = false;
+        return;
+    };
+    analysis.trade_target_line = Some(selected_line);
+    analysis.target_price =
+        Some(entry_price * (1.0 + analysis.trade_direction as f64 * move_pct / 100.0));
+    analysis.effective_move_pct = Some(move_pct);
+    analysis.predicted_end_price = analysis.target_price;
+    analysis.line_plans = crate::detection::mrc_prediction::build_line_plans(
+        lines,
+        entry_line,
+        entry_price,
+        analysis.trade_direction,
+        Some(stop_price),
+        Some(selected_line),
         analysis.line_stats,
         context,
     );

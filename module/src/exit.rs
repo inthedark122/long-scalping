@@ -142,11 +142,43 @@ fn position_exit_plan(
     let plan = match state.position.entry_reason.as_ref() {
         Some(reason @ EntryReason::MrcCrossing { .. }) => {
             let levels = if snapshot.tf1m.mrc.ordered() {
-                crate::detection::mrc_crossing::exit_levels(
-                    reason,
-                    snapshot.tf1m.mrc.lines(),
-                    reference_price,
-                )
+                let dynamic = state
+                    .active_mrc_analysis
+                    .as_ref()
+                    .filter(|_| {
+                        matches!(
+                            reason,
+                            EntryReason::MrcCrossing {
+                                target_is_movement: true,
+                                ..
+                            }
+                        )
+                    })
+                    .filter(|analysis| {
+                        matches!(
+                            analysis.pattern_kind,
+                            Some(
+                                crate::detection::mrc_pattern_classification::MrcPatternKind::StairsUp
+                                    | crate::detection::mrc_pattern_classification::MrcPatternKind::StairsDown
+                            )
+                        )
+                    })
+                    .and_then(|analysis| {
+                        crate::detection::mrc_crossing::imperative_exit_levels(
+                            reason,
+                            analysis,
+                            snapshot.tf1m.mrc.lines(),
+                            reference_price,
+                            state.active_mrc_context,
+                        )
+                    });
+                dynamic.or_else(|| {
+                    crate::detection::mrc_crossing::exit_levels(
+                        reason,
+                        snapshot.tf1m.mrc.lines(),
+                        reference_price,
+                    )
+                })
             } else {
                 match reason {
                     EntryReason::MrcCrossing {
@@ -691,6 +723,71 @@ fn ensure_trailing_exit_order(
             None,
         );
         return (tp_orders, Vec::new(), cancel_orders);
+    }
+
+    let dynamic_movement_entry = matches!(
+        state.position.entry_reason.as_ref(),
+        Some(crate::model::EntryReason::MrcCrossing {
+            target_is_movement: true,
+            ..
+        })
+    ) && state.active_mrc_analysis.is_some();
+    if dynamic_movement_entry && state.last_active_tp_recalc_bar != Some(state.bar_1m) {
+        state.last_active_tp_recalc_bar = Some(state.bar_1m);
+        if let Some(plan) = position_exit_plan(
+            state,
+            snapshot,
+            state.position.entry_price,
+            side,
+            ExitPlanContext::ActiveReprice,
+        ) {
+            let candidate_stop_loss = plan.stop_loss.price();
+            let favorable_stop = match side {
+                PositionState::Long => candidate_stop_loss > previous_stop_loss,
+                PositionState::Short => candidate_stop_loss < previous_stop_loss,
+                PositionState::Flat => false,
+            };
+            if favorable_stop {
+                set_stop_loss(state, plan.stop_loss);
+            }
+            state.position.exit_tp_reliable = plan.tp_reliable;
+            if (plan.take_profit.price() - state.position.take_profit).abs()
+                > tick_size(input).max(f64::EPSILON) * 0.5
+            {
+                let previous_tp = state.position.take_profit;
+                state.position.take_profit = plan.take_profit.price();
+                let tick = tick_size(input);
+                record_tp_reprice(
+                    state,
+                    input,
+                    side,
+                    previous_tp,
+                    plan.take_profit.price(),
+                    "maximum-route",
+                    "mrc-line-plan",
+                    false,
+                    format!(
+                        "mode={}|price={:.4}|sl={:.4}|mark={}",
+                        state.position.exit_mode.as_str(),
+                        input.price,
+                        state.position.stop_loss,
+                        mark
+                    ),
+                );
+                let note = tp_reprice_order_note(state, tick, "tp:maximum-route");
+                let (tp_orders, cancel_orders) = take_profit_orders(
+                    input,
+                    state,
+                    side,
+                    qty,
+                    state.position.entry_price,
+                    plan.take_profit.price(),
+                    Some(&note),
+                    None,
+                );
+                return (tp_orders, Vec::new(), cancel_orders);
+            }
+        }
     }
 
     if state.position.exit_mode == ExitMode::Fixed {

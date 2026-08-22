@@ -1,9 +1,11 @@
 use crate::detection::cascade::{CascadeSignal, CascadeState, CascadeTradeState};
 use crate::detection::decision::{DecisionComponents, DecisionState};
+use crate::detection::mrc_cross_analysis::MrcCrossAnalysis;
 use crate::detection::mrc_direction_prediction::MrcDirectionPrediction;
 use crate::detection::mrc_pattern_classification::{
     MrcPatternKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
 };
+use crate::detection::mrc_prediction::MrcPredictionContext;
 use crate::detection::mrc_touch::MrcTouchState;
 use crate::detection::mrc_touch_learning::MrcTouchLearningState;
 use crate::model::{
@@ -452,6 +454,10 @@ pub struct EngineState {
     pub allowed_direction: Direction,
     /// Last 1m bar for which the active-position TP was recalculated.
     pub last_active_tp_recalc_bar: Option<u64>,
+    /// Latest live staircase analysis used by the imperative active TP model.
+    pub active_mrc_analysis: Option<MrcCrossAnalysis>,
+    /// Latest live non-indicator/cascade context paired with the analysis.
+    pub active_mrc_context: MrcPredictionContext,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
     pub take_profit_allocation: TakeProfitAllocation,
@@ -493,6 +499,8 @@ impl Default for EngineState {
             cfg_loaded: false,
             allowed_direction: Direction::Both,
             last_active_tp_recalc_bar: None,
+            active_mrc_analysis: None,
+            active_mrc_context: MrcPredictionContext::default(),
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
             take_profit_allocation: TakeProfitAllocation::default(),
@@ -629,6 +637,7 @@ pub fn sync_position_state(
         state.take_profit_allocation.reset();
         state.exit_progress.reset();
         state.tp_reprice_history.reset();
+        state.active_mrc_analysis = None;
         state.pending_entry_bar = None;
     }
 

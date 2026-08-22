@@ -2,6 +2,28 @@
 
 # Unreleased
 
+Imperative active MRC route TP.
+
+- Build route-level favorable/adverse movement fields for every active 1m MRC
+  line plan.
+- Scan all supported forward lines and select the maximum currently reachable
+  movement using historical route evidence and live cascade interest.
+- Recalculate the selected movement from the latest live staircase analysis and
+  amend the existing reduce-only TP order while keeping the filled entry as
+  the price anchor.
+
+# 1.0.110
+
+Imperative active MRC route TP release.
+
+- Build route-level favorable/adverse movement fields for every active 1m MRC
+  line plan.
+- Scan all supported forward lines and select the maximum currently reachable
+  movement using historical route evidence and live cascade interest.
+- Recalculate the selected movement from the latest live staircase analysis and
+  amend the existing reduce-only TP order while keeping the filled entry as
+  the price anchor.
+
 # 1.0.109
 
 Entry-relative movement TP release.

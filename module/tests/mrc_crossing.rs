@@ -1020,3 +1020,46 @@ fn mrc_exit_levels_follow_current_lines_and_fill_price() {
         Some((107.01923076923076, 104.5))
     );
 }
+
+#[test]
+fn imperative_exit_selects_the_maximum_reachable_forward_route() {
+    let mut model = forecast_model();
+    let current_lines = lines();
+    let context = MrcPredictionContext {
+        cascade_enabled: true,
+        cascade_direction: 1,
+        cascade_speed_pct_per_min: Some(1.0),
+        cascade_phase: MovementPhase::Building,
+        cascade_potential_move_pct: Some(5.0),
+        cascade_adverse_move_pct: Some(0.2),
+        ..Default::default()
+    };
+    let observation = mrc_crossing::observe_with_forecast(
+        &mut model,
+        &[],
+        current_lines,
+        &Default::default(),
+        (0.0, 0.0, 0.0, 0.0),
+        107.0,
+        50_000,
+    );
+    let reason = observation.entry.expect("forecast should produce an entry");
+    let mut analysis = observation
+        .forecast
+        .expect("forecast analysis should be available");
+    analysis.line_stats[7] = MrcForecastStats {
+        count: 8,
+        movement_samples: 8,
+        duration_sum_ms: 8 * 240_000,
+        favorable_pct_sum: 36.0,
+        adverse_pct_sum: 8.0,
+        ..Default::default()
+    };
+
+    let levels =
+        mrc_crossing::imperative_exit_levels(&reason, &analysis, current_lines, 104.0, context)
+            .expect("a reachable forward route should produce exits");
+
+    assert!((levels.0 - 108.68).abs() < 1e-9);
+    assert_eq!(levels.1, 100.0);
+}

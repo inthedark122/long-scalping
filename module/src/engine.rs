@@ -200,6 +200,9 @@ fn handle_signal(
         state.mrc_touch.reset();
         state.cascade = crate::detection::cascade::CascadeState::default();
         state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
+        state.active_mrc_analysis = None;
+        state.active_mrc_context =
+            crate::detection::mrc_prediction::MrcPredictionContext::default();
         state.staircase_progress = crate::state::StaircaseProgress::default();
         state.exit_progress.reset();
         if let Some(now_ms) = input
@@ -770,6 +773,7 @@ fn process_realtime(
         higher_timeframe_bullish: snapshot.tf5m.mrc_signal.bullish_structure,
         higher_timeframe_bearish: snapshot.tf5m.mrc_signal.bearish_structure,
     };
+    state.active_mrc_context = prediction_context;
     let mrc_observation = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
         &mut state.mrc_crossing_model,
         &mrc_events,
@@ -795,6 +799,21 @@ fn process_realtime(
 
     state.direction_source = "pattern-selector".to_string();
     let selected_analysis = mrc_observation.selected_analysis();
+    if let Some(analysis) = selected_analysis.filter(|analysis| {
+        matches!(
+            analysis.pattern_kind,
+            Some(
+                mrc_pattern_classification::MrcPatternKind::StairsUp
+                    | mrc_pattern_classification::MrcPatternKind::StairsDown
+            )
+        ) && (state.position.side == crate::model::PositionState::Flat
+            || matches!(
+                (state.position.side, analysis.trade_direction),
+                (crate::model::PositionState::Long, 1) | (crate::model::PositionState::Short, -1)
+            ))
+    }) {
+        state.active_mrc_analysis = Some(analysis.clone());
+    }
     if let Some(analysis) = selected_analysis.filter(|analysis| {
         matches!(
             analysis.pattern_kind,

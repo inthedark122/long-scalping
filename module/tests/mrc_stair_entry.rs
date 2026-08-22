@@ -1,6 +1,6 @@
 use long_scalping::detection::cascade::MovementPhase;
 use long_scalping::detection::mrc_cross_analysis;
-use long_scalping::detection::mrc_crossing::MrcPrediction;
+use long_scalping::detection::mrc_crossing::{self, MrcPrediction};
 use long_scalping::detection::mrc_pattern_classification::{
     MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
@@ -192,6 +192,49 @@ fn stairs_up_pullback_uses_protected_line_without_cascade_direction() {
     assert_eq!(analysis.take_profit_line, None);
     assert_eq!(analysis.target_price, Some(107.12));
     assert!(analysis.tradeable());
+}
+
+#[test]
+fn maximum_profit_selector_scans_beyond_the_first_forward_line() {
+    let mut analysis = analysis(
+        5,
+        StaircaseLifecycle::Progressing,
+        StaircaseTransition::HigherExtreme,
+        6,
+        MovementPhase::Building,
+        0.8,
+        0.2,
+    );
+    analysis.line_stats[8] = MrcForecastStats {
+        count: 8,
+        movement_samples: 8,
+        duration_sum_ms: 8 * 240_000,
+        favorable_pct_sum: 36.0,
+        adverse_pct_sum: 8.0,
+        ..Default::default()
+    };
+    let context = context(MovementPhase::Building, 0.8, 0.2);
+    analysis.line_plans = long_scalping::detection::mrc_prediction::build_line_plans(
+        lines(),
+        5,
+        104.0,
+        1,
+        Some(100.0),
+        Some(7),
+        analysis.line_stats,
+        context,
+    );
+
+    let selected = mrc_crossing::max_reachable_movement(
+        &analysis,
+        &analysis.line_plans,
+        5,
+        Some(7),
+        1,
+        context,
+    );
+
+    assert_eq!(selected, Some((8, 4.5)));
 }
 
 #[test]
