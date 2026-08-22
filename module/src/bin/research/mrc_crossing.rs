@@ -240,6 +240,7 @@ pub(crate) struct CrossingEvent {
     pub(crate) predicted_line_price: Option<f64>,
     pub(crate) take_profit_line: Option<usize>,
     pub(crate) take_profit_name: Option<&'static str>,
+    pub(crate) target_is_movement: bool,
     pub(crate) stop_loss_line: Option<usize>,
     pub(crate) stop_loss_name: Option<&'static str>,
     pub(crate) trade_target_line: Option<usize>,
@@ -374,6 +375,7 @@ fn crossing_event_from_analysis(
         predicted_line_price: event.predicted_line_price,
         take_profit_line: event.take_profit_line.map(|line| line as usize),
         take_profit_name: event.take_profit_line.map(|line| LABELS[line as usize]),
+        target_is_movement: event.target_is_movement,
         stop_loss_line: event.stop_loss_line.map(|line| line as usize),
         stop_loss_name: event.stop_loss_line.map(|line| LABELS[line as usize]),
         trade_target_line: event.trade_target_line.map(|line| line as usize),
@@ -1249,18 +1251,29 @@ impl Analyzer {
         let target_price = prediction.target_price?;
         let stop_price = prediction.stop_price?;
         let entry_price = prediction.effective_entry_price?;
-        if !mrc_crossing::valid_price_levels_for_pattern(
-            prediction.trade_direction,
-            entry_price,
-            target_price,
-            stop_price,
-            None,
-            prediction.pattern_kind,
-        ) {
+        let valid = if prediction.target_is_movement {
+            mrc_crossing::valid_movement_price_levels(
+                prediction.trade_direction,
+                entry_price,
+                target_price,
+                stop_price,
+                None,
+            )
+        } else {
+            mrc_crossing::valid_price_levels_for_pattern(
+                prediction.trade_direction,
+                entry_price,
+                target_price,
+                stop_price,
+                None,
+                prediction.pattern_kind,
+            )
+        };
+        if !valid {
             return None;
         }
         let reason = format!(
-            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} tp_line={} tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
+            "mrc-prediction pattern={} pattern_steps={} pattern_elapsed_ms={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} source_line={} learned_line={}@{:.6} predicted_direction={} trade_direction={} barrier={}:{} resistance_line={}@{:.6} target_reference_line={} target_source={} target_move=+{:.4}% tp={:.6} sl_line={} sl={:.6} entry={:.6} volume_gain={:.4} volume_gain_min={:.4} volume_gain_max={:.4} buy_sell_gain={:.4} history_scope={} context_samples={} no_pullback={} reverted_line={} transition_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.4} expected_move_pct={:.4} favorable_move_pct={:.4} adverse_move_pct={:.4} eta_ms={} market_price={:.6} mrc_range={:.6}..{:.6} expected_price={:.6}..{:.6} projection={}",
             event.pattern_key,
             event.pattern_steps,
             duration_token(fmt_duration_ms(event.pattern_elapsed_ms)),
@@ -1317,8 +1330,15 @@ impl Analyzer {
             prediction.barrier_price.unwrap_or(0.0),
             prediction
                 .take_profit_line
+                .or(prediction.trade_target_line)
                 .map(|line| LABELS[line as usize])
                 .unwrap_or("na"),
+            if prediction.target_is_movement {
+                "entry-movement"
+            } else {
+                "mrc-line"
+            },
+            prediction.effective_move_pct.unwrap_or(0.0),
             target_price,
             prediction
                 .stop_loss_line

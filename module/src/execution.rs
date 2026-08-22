@@ -76,9 +76,11 @@ fn open_note(
                         expected_price_low,
                         expected_price_high,
                         estimated_time_ms,
+                        favorable_move_pct,
+                        target_is_movement,
                     ..
                 } => format!(
-                    "{} pattern={} line_price={:.4} market_price={:.4} mrc_range={:.4}..{:.4} source_line={} predicted_target_line={} target={:.4} stop={:.4} cycle={} context_samples={} no_pullback={} reverted_line={} elapsed={} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={} eta={}",
+                    "{} pattern={} line_price={:.4} market_price={:.4} mrc_range={:.4}..{:.4} source_line={} target_reference_line={} target_source={} target_move=+{:.3}% target={:.4} stop={:.4} cycle={} context_samples={} no_pullback={} reverted_line={} elapsed={} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={} eta={}",
                     reason.label(),
                     pattern_kind,
                     price,
@@ -87,6 +89,8 @@ fn open_note(
                     mrc_max,
                     crate::detection::mrc_crossing::LINE_LABELS[*source_line as usize],
                     crate::detection::mrc_crossing::LINE_LABELS[*target_line as usize],
+                    if *target_is_movement { "entry-movement" } else { "mrc-line" },
+                    favorable_move_pct,
                     target_price,
                     stop_price,
                     pattern
@@ -488,6 +492,7 @@ pub fn evaluate_with_mrc(
         target_price,
         stop_price,
         pattern_kind,
+        target_is_movement,
         ..
     }) = reason.as_ref()
     {
@@ -496,17 +501,29 @@ pub fn evaluate_with_mrc(
             PositionState::Short => -1,
             PositionState::Flat => 0,
         };
-        if !crate::detection::mrc_crossing::valid_price_levels_for_pattern(
-            direction,
-            reason
-                .as_ref()
-                .map(EntryReason::price)
-                .unwrap_or(input.price),
-            *target_price,
-            *stop_price,
-            Some(input.symbol_info.price_tick_size),
-            mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
-        ) {
+        let entry_price = reason
+            .as_ref()
+            .map(EntryReason::price)
+            .unwrap_or(input.price);
+        let valid = if *target_is_movement {
+            crate::detection::mrc_crossing::valid_movement_price_levels(
+                direction,
+                entry_price,
+                *target_price,
+                *stop_price,
+                Some(input.symbol_info.price_tick_size),
+            )
+        } else {
+            crate::detection::mrc_crossing::valid_price_levels_for_pattern(
+                direction,
+                entry_price,
+                *target_price,
+                *stop_price,
+                Some(input.symbol_info.price_tick_size),
+                mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
+            )
+        };
+        if !valid {
             return finish(ExecutionResult {
                 constraint: Some("mrc-invalid-exit-levels".to_string()),
                 ..Default::default()

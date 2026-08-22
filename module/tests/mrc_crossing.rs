@@ -431,7 +431,7 @@ fn line_plan_summary_reports_only_the_selected_route() {
 
     assert_eq!(
         mrc_crossing::line_plan_summary(&analysis),
-        "line_plans[e:ui tp:m+3.846% sl=us-1.923%]"
+        "line_plans[e:ui tp:move+2.000% sl=us-1.923%]"
     );
 }
 
@@ -448,7 +448,7 @@ fn staircase_entry_stays_at_the_crossed_line() {
     );
     assert_eq!(short.market_price, 96.0);
     assert_eq!(short.effective_entry_price, Some(96.0));
-    assert_eq!(short.target_price, Some(94.0));
+    assert_eq!(short.target_price, Some(94.08));
     assert_eq!(short.stop_price, Some(100.0));
     assert!(short.tradeable());
 
@@ -462,7 +462,7 @@ fn staircase_entry_stays_at_the_crossed_line() {
     );
     assert_eq!(long.market_price, 104.0);
     assert_eq!(long.effective_entry_price, Some(104.0));
-    assert_eq!(long.target_price, Some(106.0));
+    assert_eq!(long.target_price, Some(106.08));
     assert_eq!(long.stop_price, Some(100.0));
     assert!(long.tradeable());
 }
@@ -749,11 +749,11 @@ fn pattern_prediction_uses_exact_break_return_rejection() {
         event.pattern_kind.map(|kind| kind.as_str()),
         Some("FAST_BREAK_RETURN")
     );
-    assert_eq!(event.take_profit_line, Some(4));
+    assert_eq!(event.take_profit_line, None);
     assert_eq!(event.stop_loss_line, Some(6));
     assert_eq!(event.barrier_line, Some(6));
     assert_eq!(event.barrier_state, BarrierState::Rejected);
-    assert_eq!(event.target_price, Some(lines()[4]));
+    assert_eq!(event.target_price, Some(102.49038461538461));
     assert_eq!(event.stop_price, Some(lines()[6]));
     assert_eq!(event.next_line_crosses, 0);
     assert_eq!(event.support_resistance_moves, 4);
@@ -836,7 +836,7 @@ fn pattern_prediction_follows_exact_break_return_continuation() {
     assert!(observation.entry.is_none());
     assert_eq!(event.trade_direction, 1);
     assert_eq!(event.target_line, Some(6));
-    assert_eq!(event.take_profit_line, Some(6));
+    assert_eq!(event.take_profit_line, None);
     assert_eq!(event.stop_loss_line, Some(4));
     assert_eq!(event.barrier_line, Some(6));
     assert_eq!(event.barrier_state, BarrierState::Approaching);
@@ -972,7 +972,7 @@ fn forecast_enters_when_predicted_crossing_is_reached() {
 
     assert_eq!(price, 105.0);
     assert_eq!((source_line, target_line), (5, 6));
-    assert_eq!(target_price, 107.0);
+    assert_eq!(target_price, 107.01923076923076);
     assert_eq!(stop_price, 104.0);
     assert!(observation.forecast.is_some());
     assert!(observation.events.is_empty());
@@ -1017,6 +1017,6 @@ fn mrc_exit_levels_follow_current_lines_and_fill_price() {
     let live_lines = [90.0, 98.0, 99.0, 103.5, 104.5, 105.5, 107.5, 112.0, 114.0];
     assert_eq!(
         mrc_crossing::exit_levels(&reason, live_lines, 105.0),
-        Some((107.5, 104.5))
+        Some((107.01923076923076, 104.5))
     );
 }

@@ -170,7 +170,7 @@ fn print_summary(
     if !report.forecast.likely_destinations.is_empty() {
         for destination in &report.forecast.likely_destinations {
             println!(
-                "forecast pattern      : {} target={} time={}",
+                "forecast pattern      : {} target_ref={} time={}",
                 destination.pattern_kind,
                 destination.to_name,
                 format_minutes(destination.average_duration_ms),

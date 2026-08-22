@@ -2,6 +2,16 @@
 
 # Unreleased
 
+# 1.0.109
+
+Entry-relative movement TP release.
+
+- Calculate the primary TP from the selected entry price and learned favorable movement instead of targeting an MRC line.
+- Keep MRC target lines as route/reference analysis and keep the protective stop tied to the MRC structure.
+- Anchor live TP recalculation to the filled entry price so the movement target does not drift with the market.
+- Remove the automatic far structural MRC TP for movement-target entries.
+- Expose the movement target source in runtime debug output and research JSON/HTML reports.
+
 # 1.0.108
 
 Stair entry-quality release.

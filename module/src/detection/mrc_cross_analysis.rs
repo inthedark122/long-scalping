@@ -47,13 +47,16 @@ pub struct MrcCrossAnalysis {
     pub target_line: Option<u8>,
     pub predicted_line_price: Option<f64>,
     pub trade_target_line: Option<u8>,
-    /// The MRC line used as the actual take-profit level for the executed side.
-    /// This is separate from `target_line`, which is the learned destination.
+    /// Legacy structural take-profit line metadata. New entries leave this
+    /// empty because execution uses `target_price` as an entry-relative move.
     pub take_profit_line: Option<u8>,
-    /// The MRC line used as the actual stop-loss level for the executed side.
+    /// The MRC line used as the stop-loss level for the executed side.
     pub stop_loss_line: Option<u8>,
     pub target_price: Option<f64>,
     pub stop_price: Option<f64>,
+    /// When true, `target_price` is an entry-relative movement target and
+    /// the MRC target line is analysis context only.
+    pub target_is_movement: bool,
     pub predicted_direction: i8,
     pub trade_direction: i8,
     pub pattern_kind: Option<MrcPatternKind>,
@@ -130,14 +133,24 @@ impl MrcCrossAnalysis {
                 .zip(self.target_price)
                 .zip(self.stop_price)
                 .is_some_and(|((entry, target), stop)| {
-                    crate::detection::mrc_crossing::valid_price_levels_for_pattern(
-                        self.trade_direction,
-                        entry,
-                        target,
-                        stop,
-                        None,
-                        self.pattern_kind,
-                    )
+                    if self.target_is_movement {
+                        crate::detection::mrc_crossing::valid_movement_price_levels(
+                            self.trade_direction,
+                            entry,
+                            target,
+                            stop,
+                            None,
+                        )
+                    } else {
+                        crate::detection::mrc_crossing::valid_price_levels_for_pattern(
+                            self.trade_direction,
+                            entry,
+                            target,
+                            stop,
+                            None,
+                            self.pattern_kind,
+                        )
+                    }
                 })
     }
 
@@ -413,6 +426,7 @@ pub fn build_with_context(
         stop_loss_line: None,
         target_price: None,
         stop_price: None,
+        target_is_movement: false,
         predicted_direction: 0,
         trade_direction: 0,
         pattern_kind: None,
@@ -518,9 +532,8 @@ pub fn build_with_context(
     analysis.barrier_line = barrier_line;
     analysis.barrier_price = barrier_line.and_then(|line| lines.get(line as usize).copied());
     analysis.barrier_state = barrier_state;
-    let favorable_move_pct = prediction.stats.average_favorable_pct();
+    let statistical_favorable_move_pct = prediction.stats.average_favorable_pct();
     let adverse_move_pct = prediction.stats.average_adverse_pct();
-    let effective_move_pct = favorable_move_pct.filter(|value| value.is_finite() && *value > 0.0);
     // A staircase entry is anchored to the line that produced the
     // prediction. Do not shift it to the next inner line: that changes the
     // setup's entry identity (for example, down_outer becomes down_small)
@@ -535,17 +548,30 @@ pub fn build_with_context(
     } else {
         event.price
     };
-    let predicted_end_price = effective_move_pct
-        .map(|move_pct| entry_price * (1.0 + trade_direction as f64 * move_pct / 100.0));
-    // The learned movement is the trigger distance from the crossed line. If
-    // that distance already reaches the predicted line, that line is the
-    // entry barrier, not a profitable exit. Continue to the next line for
-    // the actual trade target; the original prediction remains visible as
-    // `target_line`.
+    // The learned line remains a structural reference. It is only used as a
+    // last-resort movement estimate when no completed movement sample exists;
+    // the executable target is still calculated from the entry price.
     let learned_line_price = lines
         .get(prediction.target_line as usize)
         .copied()
         .unwrap_or(0.0);
+    let effective_move_pct = statistical_favorable_move_pct
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| {
+            (prediction.stair_favorable_move_pct.is_finite()
+                && prediction.stair_favorable_move_pct > 0.0)
+                .then_some(prediction.stair_favorable_move_pct)
+        })
+        .or_else(|| {
+            (learned_line_price.is_finite()
+                && learned_line_price > 0.0
+                && entry_price > 0.0
+                && ((trade_direction > 0 && learned_line_price > entry_price)
+                    || (trade_direction < 0 && learned_line_price < entry_price)))
+                .then_some((learned_line_price - entry_price).abs() / entry_price * 100.0)
+        });
+    let predicted_end_price = effective_move_pct
+        .map(|move_pct| entry_price * (1.0 + trade_direction as f64 * move_pct / 100.0));
     let mut trade_target_line = Some(prediction.target_line);
     while trade_target_line.is_some_and(|line| {
         lines.get(line as usize).copied().is_some_and(|price| {
@@ -563,17 +589,14 @@ pub fn build_with_context(
     let (expected_price_low, expected_price_high) = projected_price_range(
         entry_price,
         trade_direction,
-        favorable_move_pct.unwrap_or(0.0),
+        effective_move_pct.unwrap_or(0.0),
         adverse_move_pct.unwrap_or(0.0),
     );
-    let predicted_target_price =
-        trade_target_line.and_then(|line| lines.get(line as usize).copied());
+    let predicted_target_price = effective_move_pct
+        .map(|move_pct| entry_price * (1.0 + trade_direction as f64 * move_pct / 100.0));
     let stop_loss_line = mrc_stop_line(lines, event.line_idx, entry_price, trade_direction);
     let predicted_stop_price = stop_loss_line.and_then(|line| lines.get(line as usize).copied());
-    let target_move_pct = predicted_target_price
-        .filter(|price| price.is_finite() && *price > 0.0 && entry_price > 0.0)
-        .map(|price| (price - entry_price).abs() / entry_price * 100.0)
-        .unwrap_or(0.0);
+    let target_move_pct = effective_move_pct.unwrap_or(0.0);
     let stop_move_pct = predicted_stop_price
         .filter(|price| price.is_finite() && *price > 0.0 && entry_price > 0.0)
         .map(|price| (price - entry_price).abs() / entry_price * 100.0)
@@ -589,10 +612,13 @@ pub fn build_with_context(
     analysis.target_line = Some(prediction.target_line);
     analysis.predicted_line_price = Some(learned_line_price);
     analysis.trade_target_line = trade_target_line;
-    analysis.take_profit_line = trade_target_line;
+    // The learned line remains a route/reference. The executable TP is the
+    // movement target calculated from the actual entry price below.
+    analysis.take_profit_line = None;
     analysis.stop_loss_line = stop_loss_line;
     analysis.target_price = predicted_target_price;
     analysis.stop_price = predicted_stop_price;
+    analysis.target_is_movement = predicted_target_price.is_some();
     analysis.predicted_direction = predicted_direction;
     analysis.trade_direction = trade_direction;
     analysis.pattern_kind = Some(prediction.pattern_kind);
@@ -612,7 +638,7 @@ pub fn build_with_context(
     analysis.staircase_extreme_line = prediction.staircase_extreme_line;
     analysis.cascade_trade_state = cascade_trade_state;
     analysis.estimated_time_ms = prediction.stats.average_duration_ms();
-    analysis.favorable_move_pct = favorable_move_pct;
+    analysis.favorable_move_pct = effective_move_pct;
     analysis.adverse_move_pct = adverse_move_pct;
     analysis.effective_move_pct = effective_move_pct;
     analysis.effective_entry_price = Some(entry_price);

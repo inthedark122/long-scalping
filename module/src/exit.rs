@@ -332,7 +332,16 @@ pub(crate) fn far_target_for_position(
     primary_target: f64,
 ) -> Option<f64> {
     let reason = state.position.entry_reason.as_ref()?;
-    let EntryReason::MrcCrossing { target_line, .. } = reason;
+    let EntryReason::MrcCrossing {
+        target_line,
+        target_is_movement,
+        ..
+    } = reason;
+    if *target_is_movement {
+        // The primary target is an entry-relative movement. Do not silently
+        // add a second executable TP derived from an MRC line.
+        return None;
+    }
     let side = state.position.side;
     let direction = mrc_crossing::reason_direction(reason);
     if !matches!(direction, 1 | -1)
@@ -758,7 +767,11 @@ fn ensure_trailing_exit_order(
         position_exit_plan(
             state,
             snapshot,
-            input.price,
+            if state.position.entry_price > 0.0 {
+                state.position.entry_price
+            } else {
+                input.price
+            },
             side,
             ExitPlanContext::ActiveReprice,
         )

@@ -266,6 +266,11 @@ pub enum EntryReason {
         stop_price: f64,
         source_line: u8,
         target_line: u8,
+        /// The execution TP is calculated from the filled entry and the
+        /// learned favorable movement. `target_line` remains a structural
+        /// reference for analysis and diagnostics.
+        #[serde(default)]
+        target_is_movement: bool,
         pattern_kind: String,
         pattern: Vec<u8>,
         pattern_elapsed_ms: Vec<u64>,

@@ -168,7 +168,8 @@ fn stairs_up_at_fresh_extreme_uses_retest_price() {
     assert_eq!(analysis.stair_entry_state, Some(StairEntryState::Retest));
     assert_eq!(analysis.stair_entry_line, Some(5));
     assert_eq!(analysis.effective_entry_price, Some(104.0));
-    assert_eq!(analysis.take_profit_line, Some(7));
+    assert_eq!(analysis.take_profit_line, None);
+    assert_eq!(analysis.target_price, Some(107.12));
     assert_eq!(analysis.stop_loss_line, Some(4));
     assert!(analysis.tradeable());
 }
@@ -188,7 +189,8 @@ fn stairs_up_pullback_uses_protected_line_without_cascade_direction() {
     assert_eq!(analysis.stair_entry_state, Some(StairEntryState::Pullback));
     assert_eq!(analysis.stair_entry_line, Some(5));
     assert_eq!(analysis.effective_entry_price, Some(104.0));
-    assert_eq!(analysis.take_profit_line, Some(7));
+    assert_eq!(analysis.take_profit_line, None);
+    assert_eq!(analysis.target_price, Some(107.12));
     assert!(analysis.tradeable());
 }
 

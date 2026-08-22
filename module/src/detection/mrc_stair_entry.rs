@@ -143,31 +143,15 @@ fn line_is_forward(entry_line: u8, target_line: u8, direction: i8) -> bool {
     }
 }
 
-fn line_distance(lines: [f64; 9], left: u8, right: u8) -> Option<f64> {
-    let left = lines.get(left as usize).copied()?;
-    let right = lines.get(right as usize).copied()?;
-    (left.is_finite() && right.is_finite() && left > 0.0 && right > 0.0)
-        .then_some((right - left).abs())
-}
-
-fn target_with_reward_risk(
+fn target_for_analysis(
     lines: [f64; 9],
     entry_line: u8,
     initial_target: Option<u8>,
-    stop_line: u8,
     direction: i8,
 ) -> Option<u8> {
-    let mut target = initial_target
+    initial_target
         .filter(|line| line_is_forward(entry_line, *line, direction))
-        .or_else(|| forward_line(lines, entry_line, direction))?;
-    loop {
-        let reward = line_distance(lines, entry_line, target)?;
-        let risk = line_distance(lines, entry_line, stop_line)?;
-        if reward + f64::EPSILON >= risk {
-            return Some(target);
-        }
-        target = forward_line(lines, target, direction)?;
-    }
+        .or_else(|| forward_line(lines, entry_line, direction))
 }
 
 fn plan_for_lines(
@@ -198,8 +182,7 @@ fn plan_for_lines(
             reason: "stop-line-unavailable",
         };
     };
-    let Some(target_line) =
-        target_with_reward_risk(lines, entry_line, initial_target, stop_line, direction)
+    let Some(target_line) = target_for_analysis(lines, entry_line, initial_target, direction)
     else {
         return StairEntryPlan {
             state: StairEntryState::Unsupported,
@@ -219,9 +202,11 @@ fn plan_for_lines(
 }
 
 /// Classify the current staircase entry location and, when appropriate,
-/// return a line-based plan. The plan is intentionally a small state machine:
+/// return a structural plan. The plan is intentionally a small state machine:
 /// pullbacks use the current support line, live continuation uses the current
 /// line, and an entry at the latest extreme is converted into a retest order.
+/// The target line is retained for analysis; execution uses the learned
+/// movement from the selected entry price.
 pub fn plan(
     analysis: &MrcCrossAnalysis,
     lines: [f64; 9],
@@ -360,16 +345,11 @@ pub fn apply(
     analysis.stair_entry_line = plan.entry_line;
     analysis.stair_entry_approved = plan.state.opens();
 
-    let (Some(entry_line), Some(target_line), Some(stop_line)) =
-        (plan.entry_line, plan.target_line, plan.stop_line)
-    else {
+    let (Some(entry_line), Some(stop_line)) = (plan.entry_line, plan.stop_line) else {
         return;
     };
+    let target_line = plan.target_line;
     let Some(entry_price) = lines.get(entry_line as usize).copied() else {
-        analysis.stair_entry_approved = false;
-        return;
-    };
-    let Some(target_price) = lines.get(target_line as usize).copied() else {
         analysis.stair_entry_approved = false;
         return;
     };
@@ -377,12 +357,28 @@ pub fn apply(
         analysis.stair_entry_approved = false;
         return;
     };
+    let Some(move_pct) = analysis
+        .effective_move_pct
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| {
+            (analysis.stair_favorable_move_pct.is_finite()
+                && analysis.stair_favorable_move_pct > 0.0)
+                .then_some(analysis.stair_favorable_move_pct)
+        })
+    else {
+        analysis.stair_entry_approved = false;
+        return;
+    };
+    let target_price = entry_price * (1.0 + analysis.trade_direction as f64 * move_pct / 100.0);
 
     analysis.effective_entry_price = Some(entry_price);
-    analysis.trade_target_line = Some(target_line);
-    analysis.take_profit_line = Some(target_line);
+    analysis.trade_target_line = target_line;
+    analysis.take_profit_line = None;
     analysis.stop_loss_line = Some(stop_line);
     analysis.target_price = Some(target_price);
+    analysis.target_is_movement = true;
+    analysis.effective_move_pct = Some(move_pct);
+    analysis.predicted_end_price = Some(target_price);
     analysis.stop_price = Some(stop_price);
     analysis.line_plans = crate::detection::mrc_prediction::build_line_plans(
         lines,
@@ -390,7 +386,7 @@ pub fn apply(
         entry_price,
         analysis.trade_direction,
         Some(stop_price),
-        Some(target_line),
+        target_line,
         analysis.line_stats,
         context,
     );

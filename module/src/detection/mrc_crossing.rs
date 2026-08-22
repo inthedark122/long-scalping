@@ -266,13 +266,27 @@ pub fn valid_price_levels(
     )
 }
 
-pub fn valid_price_levels_for_pattern(
+/// Validate only the direction of an entry-relative movement target and its
+/// protective stop. Movement targets intentionally do not require a one-to-one
+/// reward/risk ratio: the MRC stop can be much farther away than the learned
+/// short-horizon movement, and the time/stall logic is responsible for the
+/// follow-up action.
+pub fn valid_movement_price_levels(
     direction: i8,
     entry_price: f64,
     target_price: f64,
     stop_price: f64,
     tick_size: Option<f64>,
-    pattern_kind: Option<MrcPatternKind>,
+) -> bool {
+    directional_price_levels_valid(direction, entry_price, target_price, stop_price, tick_size)
+}
+
+fn directional_price_levels_valid(
+    direction: i8,
+    entry_price: f64,
+    target_price: f64,
+    stop_price: f64,
+    tick_size: Option<f64>,
 ) -> bool {
     if !matches!(direction, 1 | -1)
         || !entry_price.is_finite()
@@ -285,23 +299,32 @@ pub fn valid_price_levels_for_pattern(
         return false;
     }
 
-    let directionally_valid =
-        if let Some(tick_size) = tick_size.filter(|tick| tick.is_finite() && *tick > 0.0) {
-            let entry_ticks = (entry_price / tick_size).round();
-            let target_ticks = (target_price / tick_size).round();
-            let stop_ticks = (stop_price / tick_size).round();
-            if direction > 0 {
-                target_ticks > entry_ticks && stop_ticks < entry_ticks
-            } else {
-                target_ticks < entry_ticks && stop_ticks > entry_ticks
-            }
-        } else if direction > 0 {
-            target_price > entry_price && stop_price < entry_price
+    if let Some(tick_size) = tick_size.filter(|tick| tick.is_finite() && *tick > 0.0) {
+        let entry_ticks = (entry_price / tick_size).round();
+        let target_ticks = (target_price / tick_size).round();
+        let stop_ticks = (stop_price / tick_size).round();
+        if direction > 0 {
+            target_ticks > entry_ticks && stop_ticks < entry_ticks
         } else {
-            target_price < entry_price && stop_price > entry_price
-        };
+            target_ticks < entry_ticks && stop_ticks > entry_ticks
+        }
+    } else if direction > 0 {
+        target_price > entry_price && stop_price < entry_price
+    } else {
+        target_price < entry_price && stop_price > entry_price
+    }
+}
 
-    if !directionally_valid {
+pub fn valid_price_levels_for_pattern(
+    direction: i8,
+    entry_price: f64,
+    target_price: f64,
+    stop_price: f64,
+    tick_size: Option<f64>,
+    pattern_kind: Option<MrcPatternKind>,
+) -> bool {
+    if !directional_price_levels_valid(direction, entry_price, target_price, stop_price, tick_size)
+    {
         return false;
     }
 
@@ -858,11 +881,28 @@ pub fn line_plan_summary(analysis: &MrcCrossAnalysis) -> String {
         Some(8) => "ub",
         _ => "na",
     };
+    let target = if analysis.target_is_movement {
+        analysis
+            .effective_entry_price
+            .zip(analysis.target_price)
+            .map(|(entry, target)| {
+                format!(
+                    "move{:+.3}%",
+                    (target - entry).abs() / entry.max(f64::EPSILON) * 100.0
+                )
+            })
+            .unwrap_or_else(|| "move+na".to_string())
+    } else {
+        format!(
+            "{}{}",
+            line_label(target_line),
+            compact_plan_move(analysis, target_line)
+        )
+    };
     format!(
-        "line_plans[e:{} tp:{}{} sl={}{}]",
+        "line_plans[e:{} tp:{} sl={}{}]",
         line_label(analysis.stair_entry_line.or(Some(analysis.line_idx))),
-        line_label(target_line),
-        compact_plan_move(analysis, target_line),
+        target,
         line_label(analysis.stop_loss_line),
         compact_plan_move(analysis, analysis.stop_loss_line),
     )
@@ -1301,6 +1341,7 @@ fn entry_reason(
             .take_profit_line
             .or(analysis.trade_target_line)
             .unwrap_or(prediction.target_line),
+        target_is_movement: analysis.target_is_movement,
         pattern_kind: prediction.pattern_kind.as_str().to_string(),
         pattern: prediction.pattern.clone(),
         pattern_elapsed_ms: prediction.elapsed_ms.clone(),
@@ -1320,7 +1361,7 @@ fn entry_reason(
         expected_price_low: analysis.expected_price_low.unwrap_or(event.price),
         expected_price_high: analysis.expected_price_high.unwrap_or(event.price),
         estimated_time_ms: prediction.stats.average_duration_ms().unwrap_or(0.0),
-        favorable_move_pct: prediction.stats.average_favorable_pct().unwrap_or(0.0),
+        favorable_move_pct: analysis.effective_move_pct.unwrap_or(0.0),
         adverse_move_pct: prediction.stats.average_adverse_pct().unwrap_or(0.0),
     }
 }
@@ -1387,39 +1428,64 @@ fn forecast_can_reach(analysis: &MrcCrossAnalysis) -> bool {
     }
 }
 
-/// Recalculate MRC exits from the current levels and actual fill/reference
-/// price. The line identities in the reason remain the learned plan, while
-/// the prices follow moving MRC bands.
+/// Recalculate exits from the current MRC stop and actual fill price. For a
+/// movement target, the TP distance stays fixed from the fill while only the
+/// protective MRC stop follows the current bands. Legacy line targets retain
+/// their original line-based behavior.
 pub fn exit_levels(reason: &EntryReason, lines: [f64; 9], entry_price: f64) -> Option<(f64, f64)> {
     let EntryReason::MrcCrossing {
         source_line,
         target_line,
         pattern_kind,
+        target_is_movement,
+        favorable_move_pct,
+        price: planned_entry_price,
+        target_price: planned_target_price,
         ..
     } = reason;
     let direction = reason_direction(reason);
-    let mut target_line = *target_line;
-    let target_price = loop {
-        let price = lines.get(target_line as usize).copied()?;
-        if price.is_finite()
-            && price > 0.0
-            && ((direction > 0 && price > entry_price) || (direction < 0 && price < entry_price))
+    let target_price = if *target_is_movement {
+        let move_pct = if favorable_move_pct.is_finite() && *favorable_move_pct > 0.0 {
+            *favorable_move_pct
+        } else if planned_entry_price.is_finite()
+            && *planned_entry_price > 0.0
+            && planned_target_price.is_finite()
+            && *planned_target_price > 0.0
         {
-            break price;
+            (planned_target_price - planned_entry_price).abs() / *planned_entry_price * 100.0
+        } else {
+            return None;
+        };
+        entry_price * (1.0 + direction as f64 * move_pct / 100.0)
+    } else {
+        let mut target_line = *target_line;
+        loop {
+            let price = lines.get(target_line as usize).copied()?;
+            if price.is_finite()
+                && price > 0.0
+                && ((direction > 0 && price > entry_price)
+                    || (direction < 0 && price < entry_price))
+            {
+                break price;
+            }
+            target_line = mrc_cross_analysis::adjacent_line(target_line, direction)?;
         }
-        target_line = mrc_cross_analysis::adjacent_line(target_line, direction)?;
     };
     let stop_line = mrc_cross_analysis::mrc_stop_line(lines, *source_line, entry_price, direction)?;
     let stop_price = lines.get(stop_line as usize).copied()?;
-    valid_price_levels_for_pattern(
-        direction,
-        entry_price,
-        target_price,
-        stop_price,
-        None,
-        MrcPatternKind::from_str(pattern_kind),
-    )
-    .then_some((target_price, stop_price))
+    let valid = if *target_is_movement {
+        valid_movement_price_levels(direction, entry_price, target_price, stop_price, None)
+    } else {
+        valid_price_levels_for_pattern(
+            direction,
+            entry_price,
+            target_price,
+            stop_price,
+            None,
+            MrcPatternKind::from_str(pattern_kind),
+        )
+    };
+    valid.then_some((target_price, stop_price))
 }
 
 pub fn current_entry(state: &MrcCrossingModel) -> Option<EntryReason> {

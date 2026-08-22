@@ -750,7 +750,14 @@ const TEMPLATE: &str = r###"<!doctype html>
           '<td>' + Number(plan.historical_samples || 0) + '</td>' +
           '</tr>';
       }).join("");
-      const target = event.take_profit_name || event.target_name || "not selected";
+      const movementTarget = directionalMove(
+        event.effective_entry_price,
+        event.target_price,
+        event.trade_direction,
+      );
+      const target = event.target_is_movement
+        ? "entry movement " + (movementTarget == null ? "unavailable" : signedPercent(movementTarget))
+        : event.take_profit_name || event.target_name || "not selected";
       const expectedText = event.expected_price_low != null
         ? price(event.expected_price_low) + " .. " + price(event.expected_price_high)
         : "not available";
@@ -884,6 +891,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         ]],
         ["Execution levels", [
           ["Entry price", "entry"],
+          ["Take-profit source", "target_source"],
           ["Take-profit line / price", "tp_line", "tp", "level"],
           ["Stop-loss line / price", "sl_line", "sl", "level"],
         ]],

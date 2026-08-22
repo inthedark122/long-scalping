@@ -869,16 +869,27 @@ fn process_realtime(
                 target_price,
                 stop_price,
                 pattern_kind,
+                target_is_movement,
                 ..
             } = &reason;
-            let valid = mrc_crossing::valid_price_levels_for_pattern(
-                direction,
-                *price,
-                *target_price,
-                *stop_price,
-                Some(input.symbol_info.price_tick_size),
-                mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
-            );
+            let valid = if *target_is_movement {
+                mrc_crossing::valid_movement_price_levels(
+                    direction,
+                    *price,
+                    *target_price,
+                    *stop_price,
+                    Some(input.symbol_info.price_tick_size),
+                )
+            } else {
+                mrc_crossing::valid_price_levels_for_pattern(
+                    direction,
+                    *price,
+                    *target_price,
+                    *stop_price,
+                    Some(input.symbol_info.price_tick_size),
+                    mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
+                )
+            };
             if valid {
                 let analysis_note = selected_analysis.map(|event| {
                             format!(
@@ -969,10 +980,14 @@ fn process_realtime(
                                 event
                                     .predicted_direction,
                                 event.trade_direction,
-                                event
-                                    .take_profit_line
-                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                    .unwrap_or("na"),
+                                if event.target_is_movement {
+                                    "move"
+                                } else {
+                                    event
+                                        .take_profit_line
+                                        .map(|line| mrc_crossing::LINE_LABELS[line as usize])
+                                        .unwrap_or("na")
+                                },
                                 event.target_price.unwrap_or(0.0),
                                 event
                                     .stop_loss_line
