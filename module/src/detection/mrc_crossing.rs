@@ -4,7 +4,7 @@ use crate::detection::mrc_direction_prediction::{
     self, MrcDirectionContext, MrcDirectionPrediction,
 };
 use crate::detection::mrc_pattern_classification::{
-    self, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+    self, MrcPatternKind, MrcTransitionKind, StaircaseLifecycle, StaircaseTransition,
 };
 use crate::detection::mrc_prediction::{self, MrcLinePlan};
 use crate::detection::mrc_stair_entry;
@@ -154,6 +154,7 @@ const MAX_PREDICTION_HISTORY: usize = 10_080;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MrcPrediction {
     pub pattern_kind: MrcPatternKind,
+    pub transition: Option<MrcTransitionKind>,
     pub pattern_direction: i8,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
@@ -200,6 +201,7 @@ pub enum MrcWaitReason {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternCandidate {
     pub pattern_kind: MrcPatternKind,
+    pub transition: Option<MrcTransitionKind>,
     pub score: f64,
     pub analysis: MrcCrossAnalysis,
     pub direction_prediction: MrcDirectionPrediction,
@@ -648,6 +650,7 @@ fn select_candidate(
             market_price: candidate.analysis.market_price,
             staircase_lifecycle: candidate.analysis.staircase_lifecycle,
             staircase_transition: candidate.analysis.staircase_transition,
+            transition: candidate.transition,
         })
         .collect::<Vec<_>>();
     let result = state.decision_state.choose_with_direction_lock(
@@ -701,7 +704,28 @@ fn predict_for_pattern(
         context_samples,
         failed_break_line,
         failed_break_direction,
-    ) = if pattern.kind == MrcPatternKind::FastBreakReturn {
+    ) = if pattern.transition == Some(MrcTransitionKind::Reversal) {
+        let target = pattern.target_line;
+        if target == source || target as usize >= mrc_prediction::MRC_LINE_COUNT {
+            return None;
+        }
+        let stats = MrcForecastStats::default();
+        let mut line_stats = [MrcForecastStats::default(); mrc_prediction::MRC_LINE_COUNT];
+        line_stats[target as usize] = stats;
+        (
+            pattern.direction,
+            target,
+            0,
+            stats,
+            line_stats,
+            0,
+            0,
+            0,
+            0,
+            pattern.failed_break_line,
+            pattern.failed_break_direction,
+        )
+    } else if pattern.kind == MrcPatternKind::FastBreakReturn {
         let failed_break_line = pattern.failed_break_line?;
         let failed_break_direction = pattern.failed_break_direction;
         if !matches!(failed_break_direction, 1 | -1) {
@@ -794,6 +818,7 @@ fn predict_for_pattern(
     }
     Some(MrcPrediction {
         pattern_kind: pattern.kind,
+        transition: pattern.transition,
         pattern_direction,
         pattern_steps: pattern.steps,
         pattern_elapsed_ms: pattern.elapsed_ms,
@@ -1195,6 +1220,7 @@ fn observe_events(
             observation.events.push(analysis.clone());
             observation.candidates.push(PatternCandidate {
                 pattern_kind: prediction.pattern_kind,
+                transition: prediction.transition,
                 score: pattern_score(*performance, &prediction),
                 analysis,
                 direction_prediction,
@@ -1264,6 +1290,7 @@ fn observe_events(
                         .is_some_and(|state| !state.opens());
                     observation.candidates.push(PatternCandidate {
                         pattern_kind: prediction.pattern_kind,
+                        transition: prediction.transition,
                         score: pattern_score(*performance, &prediction),
                         analysis,
                         direction_prediction,

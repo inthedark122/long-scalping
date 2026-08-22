@@ -1,4 +1,6 @@
-use super::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle, StaircaseTransition};
+use super::mrc_pattern_classification::{
+    MrcPatternKind, MrcTransitionKind, StaircaseLifecycle, StaircaseTransition,
+};
 
 pub const PRIMARY_STAIRS: &str = "primary-stairs";
 pub const SUPPORT_FAST_BREAK_RETURN: &str = "support-fast-break-return";
@@ -224,6 +226,7 @@ pub struct CandidateView {
     pub market_price: f64,
     pub staircase_lifecycle: Option<StaircaseLifecycle>,
     pub staircase_transition: Option<StaircaseTransition>,
+    pub transition: Option<MrcTransitionKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -307,7 +310,7 @@ impl DecisionState {
             self.primary = None;
         }
 
-        let candidate = if let Some(current) = self.primary {
+        let primary_candidate = if let Some(current) = self.primary {
             candidates
                 .iter()
                 .filter(|candidate| candidate_allowed(candidate, components, direction_lock))
@@ -351,6 +354,13 @@ impl DecisionState {
                 })
                 .max_by(candidate_order)
         };
+        let candidate = primary_candidate.or_else(|| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate_allowed(candidate, components, direction_lock))
+                .filter(|candidate| candidate.transition.is_some())
+                .max_by(candidate_order)
+        });
 
         if let Some(candidate) = candidates.iter().find(|candidate| {
             primary_kind(candidate.pattern_kind) == Some(PrimaryKind::Stairs)
@@ -382,8 +392,24 @@ impl DecisionState {
             };
         };
 
-        let kind = primary_kind(candidate.pattern_kind).expect("primary candidate kind");
         let direction = candidate.direction;
+        if candidate.transition.is_some() {
+            self.support = support;
+            trace.primary_after = self.primary.map(|primary| primary.kind);
+            trace.selected_index = Some(candidate.index);
+            trace.selected_direction = direction;
+            trace.reason = "selected-transition-route".to_string();
+            self.trace = trace;
+            return DecisionResult {
+                selected_index: Some(candidate.index),
+                primary_kind: self.primary.map(|primary| primary.kind),
+                primary_direction: self.primary.map(|primary| primary.direction).unwrap_or(0),
+                primary_phase: self.primary.map(|primary| primary.phase),
+                support,
+            };
+        }
+
+        let kind = primary_kind(candidate.pattern_kind).expect("primary candidate kind");
         let replace_primary = self
             .primary
             .is_none_or(|primary| primary.kind != kind || primary.direction != direction);
@@ -513,12 +539,16 @@ fn candidate_allowed(
     components: DecisionComponents,
     direction_lock: Option<i8>,
 ) -> bool {
+    let primary_allowed =
+        primary_kind(candidate.pattern_kind).is_some_and(|kind| components.primary_enabled(kind));
+    let transition_allowed = candidate.transition.is_some() && components.primary_stairs;
     candidate.entry
-        && !matches!(
-            candidate.staircase_lifecycle,
-            Some(StaircaseLifecycle::Invalidated)
-        )
-        && primary_kind(candidate.pattern_kind).is_some_and(|kind| components.primary_enabled(kind))
+        && (candidate.transition.is_some()
+            || !matches!(
+                candidate.staircase_lifecycle,
+                Some(StaircaseLifecycle::Invalidated)
+            ))
+        && (primary_allowed || transition_allowed)
         && direction_lock.is_none_or(|direction| candidate.direction == direction)
 }
 

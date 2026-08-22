@@ -1,6 +1,6 @@
 [package]
 name = "long-scalping"
-version = "1.0.110"
+version = "1.0.111"
 edition = "2021"
 
 [features]

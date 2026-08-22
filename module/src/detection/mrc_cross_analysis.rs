@@ -1,10 +1,10 @@
 use crate::detection::cascade::{CascadeTradeState, MovementPhase};
 use crate::detection::mrc_crossing::MrcPrediction;
 use crate::detection::mrc_pattern_classification::{
-    MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+    MrcPatternKind, MrcTransitionKind, StaircaseLifecycle, StaircaseTransition,
 };
 use crate::detection::mrc_prediction::{self, MrcLinePlan, MrcPredictionContext};
-use crate::detection::mrc_stair_entry::StairEntryState;
+use crate::detection::mrc_stair_entry::{ReversalState, StairEntryState};
 use crate::detection::vlines::MrcCrossEvent;
 use crate::state::{MrcCrossingState, MrcForecastStats, MrcMovementSnapshot};
 
@@ -60,6 +60,7 @@ pub struct MrcCrossAnalysis {
     pub predicted_direction: i8,
     pub trade_direction: i8,
     pub pattern_kind: Option<MrcPatternKind>,
+    pub transition: Option<MrcTransitionKind>,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
     pub stair_sequence: Vec<u8>,
@@ -80,6 +81,8 @@ pub struct MrcCrossAnalysis {
     pub stair_entry_reason: Option<String>,
     pub stair_entry_line: Option<u8>,
     pub stair_entry_approved: bool,
+    pub reversal_state: ReversalState,
+    pub reversal_reason: Option<String>,
     pub cascade_enabled: bool,
     pub cascade_direction: i8,
     pub cascade_speed_pct_per_min: Option<f64>,
@@ -155,6 +158,9 @@ impl MrcCrossAnalysis {
     }
 
     pub fn tradeable(&self) -> bool {
+        if self.transition.is_some() {
+            return self.levels_tradeable();
+        }
         // Stairs is the execution pattern. Its structural direction and
         // directional levels are the entry authority; cascade remains
         // diagnostic context instead of suppressing nearly every valid leg.
@@ -190,6 +196,9 @@ impl MrcCrossAnalysis {
     /// anticipatory entry before the next line is crossed. Its entry is still
     /// validated against the current MRC target and stop levels.
     pub fn forecast_tradeable(&self) -> bool {
+        if self.transition.is_some() {
+            return self.levels_tradeable();
+        }
         if matches!(
             self.pattern_kind,
             Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
@@ -430,6 +439,7 @@ pub fn build_with_context(
         predicted_direction: 0,
         trade_direction: 0,
         pattern_kind: None,
+        transition: None,
         pattern_steps: 0,
         pattern_elapsed_ms: 0,
         stair_sequence: Vec::new(),
@@ -448,6 +458,8 @@ pub fn build_with_context(
         stair_entry_reason: None,
         stair_entry_line: None,
         stair_entry_approved: false,
+        reversal_state: ReversalState::None,
+        reversal_reason: None,
         cascade_enabled: context.cascade_enabled,
         cascade_direction: context.cascade_direction,
         cascade_speed_pct_per_min: context.cascade_speed_pct_per_min,
@@ -534,16 +546,17 @@ pub fn build_with_context(
     analysis.barrier_state = barrier_state;
     let statistical_favorable_move_pct = prediction.stats.average_favorable_pct();
     let adverse_move_pct = prediction.stats.average_adverse_pct();
-    // A staircase entry is anchored to the line that produced the
+    // A normal staircase entry is anchored to the line that produced the
     // prediction. Do not shift it to the next inner line: that changes the
     // setup's entry identity (for example, down_outer becomes down_small)
     // and can make the stop/target pair describe a different movement than
-    // the one being traded. Other patterns continue to use the live market
-    // price as their entry reference.
+    // the one being traded. A transition route keeps the live market-price
+    // anchor used by the former additive reversal route.
     let entry_price = if matches!(
         prediction.pattern_kind,
         MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
-    ) {
+    ) && prediction.transition.is_none()
+    {
         event.line
     } else {
         event.price
@@ -622,6 +635,31 @@ pub fn build_with_context(
     analysis.predicted_direction = predicted_direction;
     analysis.trade_direction = trade_direction;
     analysis.pattern_kind = Some(prediction.pattern_kind);
+    analysis.transition = prediction.transition;
+    if prediction.transition == Some(MrcTransitionKind::Reversal) {
+        if prediction.failed_break_line.is_some() {
+            analysis.reversal_state = ReversalState::Confirmed;
+            analysis.reversal_reason = Some("protected-swing-cross".to_string());
+            analysis.barrier_line = prediction.failed_break_line;
+            analysis.barrier_price = prediction
+                .failed_break_line
+                .and_then(|line| lines.get(line as usize).copied());
+            analysis.barrier_state = BarrierState::ConfirmedBreak;
+        } else {
+            analysis.reversal_state = ReversalState::Potential;
+            analysis.reversal_reason = Some(
+                if prediction.staircase_extreme_line.is_some_and(|line| {
+                    (prediction.pattern_direction < 0 && line == 8)
+                        || (prediction.pattern_direction > 0 && line == 0)
+                }) {
+                    "big-line-exhaustion"
+                } else {
+                    "stalled-after-no-new-extreme"
+                }
+                .to_string(),
+            );
+        }
+    }
     analysis.pattern_steps = prediction.pattern_steps;
     analysis.pattern_elapsed_ms = prediction.pattern_elapsed_ms;
     analysis.stair_sequence = prediction.stair_sequence.clone();
@@ -636,7 +674,11 @@ pub fn build_with_context(
     analysis.staircase_transition = prediction.staircase_transition;
     analysis.staircase_protected_line = prediction.staircase_protected_line;
     analysis.staircase_extreme_line = prediction.staircase_extreme_line;
-    analysis.cascade_trade_state = cascade_trade_state;
+    analysis.cascade_trade_state = if prediction.transition.is_some() {
+        CascadeTradeState::NotConfigured
+    } else {
+        cascade_trade_state
+    };
     analysis.estimated_time_ms = prediction.stats.average_duration_ms();
     analysis.favorable_move_pct = effective_move_pct;
     analysis.adverse_move_pct = adverse_move_pct;

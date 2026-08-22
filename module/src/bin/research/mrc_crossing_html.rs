@@ -821,6 +821,9 @@ const TEMPLATE: &str = r###"<!doctype html>
           " adverse=" + Number(event.stair_adverse_move_pct || 0).toFixed(3) + "%" +
           " lifecycle=" + (event.staircase_lifecycle || "na") +
           " transition=" + (event.staircase_transition || "na") +
+          " reversal_kind=" + (event.transition || "none") +
+          " reversal_state=" + (event.reversal_state || "none") +
+          " reversal_reason=" + (event.reversal_reason || "na") +
           " protected=" + (event.staircase_protected_line != null ? lineLabels[event.staircase_protected_line] : "na") +
           " extreme=" + (event.staircase_extreme_line != null ? lineLabels[event.staircase_extreme_line] : "na") +
           " cascade_state=" + (event.cascade_trade_state || "not_configured") +
@@ -1115,7 +1118,7 @@ const TEMPLATE: &str = r###"<!doctype html>
         : '<div class="subtle">No selected pattern performance</div>';
     };
 
-    const patternColors = ["#72a7ff", "#55d69b", "#ff7185", "#d7a6ff", "#ffbf69", "#6ee7e7", "#f08cae"];
+    const patternColors = ["#72a7ff", "#55d69b", "#ff7185", "#d7a6ff", "#ffbf69"];
     const buildParallelSeries = () => parallelPatternTrades
       .filter((group) => patternIsSelected(group.pattern))
       .map((group, groupIndex) => {

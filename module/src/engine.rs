@@ -912,7 +912,7 @@ fn process_realtime(
             if valid {
                 let analysis_note = selected_analysis.map(|event| {
                             format!(
-                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} stair_entry_state={} stair_entry_line={} stair_entry_reason={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
+                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} stair_entry_state={} stair_entry_line={} stair_entry_reason={} reversal_state={} reversal_reason={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
                                 mrc_observation.forecast.is_some(),
                                 event
                                     .pattern_kind
@@ -963,6 +963,11 @@ fn process_realtime(
                                     .unwrap_or("na"),
                                 event
                                     .stair_entry_reason
+                                    .as_deref()
+                                    .unwrap_or("na"),
+                                event.reversal_state.as_str(),
+                                event
+                                    .reversal_reason
                                     .as_deref()
                                     .unwrap_or("na"),
                                 event.cascade_enabled,

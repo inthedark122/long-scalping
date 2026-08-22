@@ -11,5 +11,5 @@ Start with [HANDOFF.md](/home/dev/strategies/long-scalping/HANDOFF.md) for the c
 For historical pattern classification and per-pattern trade reports, run:
 
 ```bash
-cargo run --manifest-path module/Cargo.toml --locked --features mrc-research,native-tools --bin mrc_crossing_research -- --symbol-key 'OKX#CAP-USDT-SWAP#SWAP' --symbol-key 'OKX#BEAT-USDT-SWAP#SWAP' --symbol-key 'OKX#ETH-USDT-SWAP#SWAP' --output tmp/reports/ --html tmp/reports/
+cargo run --manifest-path module/Cargo.toml --locked --features mrc-research,native-tools --bin mrc_crossing_research -- --symbol-key 'OKX#CAP-USDT-SWAP#SWAP' --symbol-key 'OKX#BEAT-USDT-SWAP#SWAP' --symbol-key 'OKX#ETH-USDT-SWAP#SWAP' --history 10000 --output tmp/reports/ --html tmp/reports/
 ```

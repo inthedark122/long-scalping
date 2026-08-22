@@ -548,7 +548,7 @@ struct PersistedState {
     #[serde(default)]
     exit_memory: ExitMemory,
     #[serde(default)]
-    pattern_performance: [PatternPerformance; MRC_PATTERN_COUNT],
+    pattern_performance: Vec<PatternPerformance>,
     #[serde(default)]
     active_pattern: Option<u8>,
     #[serde(default)]
@@ -573,7 +573,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         position: state.position.side,
         take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
-        pattern_performance: state.mrc_crossing_model.pattern_performance,
+        pattern_performance: state.mrc_crossing_model.pattern_performance.to_vec(),
         active_pattern: state.mrc_crossing_model.active_pattern,
         active_pattern_score: state.mrc_crossing_model.active_pattern_score,
         decision_state: state.mrc_crossing_model.decision_state.clone(),
@@ -603,7 +603,16 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.position.side = persisted.position;
     state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
-    state.mrc_crossing_model.pattern_performance = persisted.pattern_performance;
+    state.mrc_crossing_model.pattern_performance =
+        [PatternPerformance::default(); MRC_PATTERN_COUNT];
+    for (slot, performance) in persisted
+        .pattern_performance
+        .into_iter()
+        .enumerate()
+        .take(MRC_PATTERN_COUNT)
+    {
+        state.mrc_crossing_model.pattern_performance[slot] = performance;
+    }
     state.mrc_crossing_model.active_pattern = persisted
         .active_pattern
         .filter(|index| MrcPatternKind::ALL.get(*index as usize).is_some());

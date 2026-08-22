@@ -9,6 +9,23 @@
 
 use crate::state::MrcHistoryEvent;
 
+/// A transition layered on top of a primary pattern. Transitions are not
+/// pattern identities and must not receive a separate pattern-performance
+/// bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MrcTransitionKind {
+    Reversal,
+}
+
+impl MrcTransitionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reversal => "reversal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MrcPatternKind {
     /// An alternating upward zigzag whose successive upward legs penetrate
@@ -132,6 +149,7 @@ pub struct MrcPatternDefinition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MrcPatternSignal {
     pub kind: MrcPatternKind,
+    pub transition: Option<MrcTransitionKind>,
     pub source_line: u8,
     pub target_line: u8,
     pub direction: i8,
@@ -311,6 +329,7 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     let direction = line_direction(crossed.line, returned.line);
     Some(MrcPatternSignal {
         kind: MrcPatternKind::FastBreakReturn,
+        transition: None,
         source_line: returned.line,
         target_line: adjacent_line(returned.line, direction)?,
         direction,
@@ -534,6 +553,7 @@ fn staircase_for_direction(
     };
     Some(MrcPatternSignal {
         kind,
+        transition: None,
         source_line: current.line,
         target_line: adjacent_line(current.line, trend_direction)?,
         direction: trend_direction,
@@ -564,6 +584,86 @@ fn staircases(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     [1_i8, -1_i8]
         .into_iter()
         .filter_map(|direction| staircase_for_direction(history, &legs, direction))
+        .collect()
+}
+
+/// Build a transition route on top of a staircase when it starts to reverse. A
+/// first counter-leg after a stalled staircase or an outer/big-line extreme is
+/// a potential reversal. Crossing the protected swing upgrades the same route
+/// to a confirmed reversal; the signal keeps the underlying staircase kind.
+fn staircase_transitions(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
+    let Some(current) = history.last() else {
+        return Vec::new();
+    };
+    let Some(previous) = history.get(history.len().saturating_sub(2)) else {
+        return Vec::new();
+    };
+    let current_direction = line_direction(previous.line, current.line);
+    if !matches!(current_direction, 1 | -1) || current.line.abs_diff(previous.line) != 1 {
+        return Vec::new();
+    }
+
+    let current_stairs = staircases(history);
+    let previous_stairs = history
+        .get(..history.len().saturating_sub(1))
+        .map(staircases)
+        .unwrap_or_default();
+
+    current_stairs
+        .into_iter()
+        .filter_map(|stair| {
+            if current_direction != -stair.direction {
+                return None;
+            }
+            let protected = stair.staircase_protected_line?;
+            let crossed_protected = stair.staircase_lifecycle
+                == Some(StaircaseLifecycle::Invalidated)
+                && stair.staircase_transition == Some(StaircaseTransition::ProtectedSwingBroken)
+                && if current_direction > 0 {
+                    previous.line <= protected && current.line > protected
+                } else {
+                    previous.line >= protected && current.line < protected
+                };
+            let is_big_line = stair.staircase_extreme_line.is_some_and(|line| {
+                (stair.direction > 0 && line == 8) || (stair.direction < 0 && line == 0)
+            });
+            let stalled_before_counter_leg = previous_stairs.iter().any(|previous_stair| {
+                previous_stair.kind == stair.kind
+                    && previous_stair.direction == stair.direction
+                    && (previous_stair.staircase_lifecycle == Some(StaircaseLifecycle::Stalled)
+                        || previous_stair.staircase_transition
+                            == Some(StaircaseTransition::AttemptingExtreme))
+            });
+            if !crossed_protected && !is_big_line && !stalled_before_counter_leg {
+                return None;
+            }
+            let target_line = adjacent_line(current.line, current_direction)?;
+            Some(MrcPatternSignal {
+                kind: stair.kind,
+                transition: Some(MrcTransitionKind::Reversal),
+                source_line: current.line,
+                target_line,
+                direction: current_direction,
+                failed_break_line: crossed_protected.then_some(protected),
+                failed_break_direction: crossed_protected
+                    .then_some(current_direction)
+                    .unwrap_or_default(),
+                steps: stair.steps,
+                elapsed_ms: current.now_ms.saturating_sub(previous.now_ms),
+                sequence: stair.sequence,
+                price_move_pct: stair.price_move_pct,
+                favorable_move_pct: stair.favorable_move_pct,
+                adverse_move_pct: stair.adverse_move_pct,
+                favorable_extreme_price: stair.favorable_extreme_price,
+                favorable_extreme_time_ms: stair.favorable_extreme_time_ms,
+                adverse_extreme_price: stair.adverse_extreme_price,
+                adverse_extreme_time_ms: stair.adverse_extreme_time_ms,
+                staircase_lifecycle: stair.staircase_lifecycle,
+                staircase_transition: stair.staircase_transition,
+                staircase_protected_line: stair.staircase_protected_line,
+                staircase_extreme_line: stair.staircase_extreme_line,
+            })
+        })
         .collect()
 }
 
@@ -619,6 +719,7 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
     };
     Some(MrcPatternSignal {
         kind,
+        transition: None,
         source_line: current.line,
         target_line: if kind == MrcPatternKind::RangeCycleSideway {
             if direction > 0 {
@@ -666,6 +767,7 @@ pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
     let mut matches = Vec::new();
     matches.extend(fast_break_return(history));
     matches.extend(staircases(history));
+    matches.extend(staircase_transitions(history));
     matches.extend(cycle(history));
     matches
 }
@@ -673,7 +775,7 @@ pub fn classify_all(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
 /// The complete, stable catalogue. Keep this list small and behavior based;
 /// learned thresholds and outcome statistics belong in the external history
 /// files under `data/mrc-pattern-history/`.
-pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; 5] = [
+pub const MRC_PATTERN_DEFINITIONS: [MrcPatternDefinition; MRC_PATTERN_COUNT] = [
     MrcPatternDefinition {
         kind: MrcPatternKind::StairsUp,
         title: "MRC upward staircase",

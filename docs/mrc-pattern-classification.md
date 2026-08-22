@@ -1,6 +1,6 @@
 # MRC movement pattern classification
 
-This document defines the seven MRC movement classifications used by research.
+This document defines the five MRC movement classifications used by research.
 They describe local, reusable behavior around MRC lines. They are not a
 complete historical crossing path. The pattern engine runs every matcher on
 each observation, keeps overlapping matches, and evaluates each match as an
@@ -12,6 +12,9 @@ The live and research architecture has three separate stages:
 2. the predictor builds one candidate and score per matched pattern;
 3. the selector keeps the best pattern active until a challenger beats it by
    the switch margin.
+
+`REVERSAL` is a transition on a staircase candidate, not a separate pattern
+or performance ledger.
 
 Each pattern has its own performance ledger. A ledger starts with movement
 evidence, then learns from net realized trade PnL using an EMA. Research runs
@@ -35,8 +38,8 @@ The line order is fixed:
 ```
 
 Every plan still requires a directionally valid target and stop. The general
-reward-versus-risk floor is retained for reversal and barrier-driven patterns,
-but adjacent `STAIRS_UP` and `STAIRS_DOWN` legs may
+reward-versus-risk floor is retained for barrier-driven patterns, but adjacent
+`STAIRS_UP` and `STAIRS_DOWN` legs may
 continue when their next MRC target is valid. This keeps an MRC stop
 from suppressing the stair sequence itself.
 
@@ -136,6 +139,26 @@ candidate:
 
 A missed higher high or lower low is therefore not, by itself, a reversal.
 The protected swing is the structural finish condition.
+
+### Staircase transition: `REVERSAL`
+
+The staircase remains useful as a continuation route until one of two warning
+conditions appears:
+
+- the favorable extreme reaches the outer/big MRC line, where the next
+  retracement can span a much larger part of the range;
+- the favorable high or low stops updating, or the expected next line is not
+  reached during a continuation attempt.
+
+These conditions produce a `REVERSAL` transition alongside the normal
+staircase route. `REVERSAL` is not a third pattern: the candidate keeps its
+underlying `STAIRS_UP` or `STAIRS_DOWN` identity and is attributed to that
+pattern's performance ledger. A potential transition is emitted on the first
+counter-leg after the warning. The opposite route becomes tradeable after
+price crosses the staircase's protected swing; that transition is marked
+confirmed, with the crossed protected line as the confirmation barrier and the
+next MRC line as the first target. The normal staircase route is not filtered
+just because transition evidence exists.
 
 ## 3. `FAST_BREAK_RETURN`
 

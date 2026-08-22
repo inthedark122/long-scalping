@@ -3,12 +3,15 @@ use std::time::Instant;
 
 use long_scalping::detection::cascade::{CascadeTradeState, MovementPhase};
 use long_scalping::detection::mrc_pattern_classification::{
-    MrcPatternKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
+    MrcPatternKind, MrcTransitionKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
 };
 use long_scalping::detection::mrc_prediction::MrcLinePlan;
 use long_scalping::detection::{
-    cascade, decision::DecisionComponents, mrc_cross_analysis, mrc_crossing, mrc_prediction,
-    mrc_stair_entry::StairEntryState, mrc_touch, mrc_touch_learning, vlines,
+    cascade,
+    decision::DecisionComponents,
+    mrc_cross_analysis, mrc_crossing, mrc_prediction,
+    mrc_stair_entry::{ReversalState, StairEntryState},
+    mrc_touch, mrc_touch_learning, vlines,
 };
 use long_scalping::model::Candle;
 use long_scalping::state::{MrcCrossingModel, MrcCrossingState, VLineState};
@@ -216,6 +219,7 @@ pub(crate) struct CrossingEvent {
     pub(crate) barrier_state: String,
     pub(crate) history_scope: &'static str,
     pub(crate) pattern_kind: Option<&'static str>,
+    pub(crate) transition: Option<MrcTransitionKind>,
     pub(crate) pattern_steps: u32,
     pub(crate) pattern_elapsed_ms: u64,
     pub(crate) stair_sequence: Vec<usize>,
@@ -230,6 +234,8 @@ pub(crate) struct CrossingEvent {
     pub(crate) stair_entry_reason: Option<String>,
     pub(crate) stair_entry_line: Option<usize>,
     pub(crate) stair_entry_approved: bool,
+    pub(crate) reversal_state: ReversalState,
+    pub(crate) reversal_reason: Option<String>,
     pub(crate) cascade_enabled: bool,
     pub(crate) cascade_phase: MovementPhase,
     pub(crate) cascade_potential_move_pct: Option<f64>,
@@ -347,6 +353,7 @@ fn crossing_event_from_analysis(
         barrier_state: event.barrier_state.as_str().to_string(),
         history_scope: history_scope(event.context_samples, event.target_line.is_some()),
         pattern_kind: event.pattern_kind.map(|kind| kind.as_str()),
+        transition: event.transition,
         pattern_steps: event.pattern_steps,
         pattern_elapsed_ms: event.pattern_elapsed_ms,
         stair_sequence: event
@@ -365,6 +372,8 @@ fn crossing_event_from_analysis(
         stair_entry_reason: event.stair_entry_reason.clone(),
         stair_entry_line: event.stair_entry_line.map(|line| line as usize),
         stair_entry_approved: event.stair_entry_approved,
+        reversal_state: event.reversal_state,
+        reversal_reason: event.reversal_reason.clone(),
         cascade_enabled: event.cascade_enabled,
         cascade_phase: event.cascade_phase,
         cascade_potential_move_pct: event.cascade_potential_move_pct,

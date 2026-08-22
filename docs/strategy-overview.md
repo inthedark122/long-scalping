@@ -48,7 +48,7 @@ staircase is blocked by the live stairs gate.
 Each pattern tracks observations, trades, wins, total net PnL, average net PnL,
 and an exponential moving average of net PnL. New patterns use movement evidence
 as a prior; realized trades progressively dominate that prior. Research mirrors
-this process with seven virtual accounts so pattern quality can be compared
+this process with five virtual accounts so pattern quality can be compared
 without mixing outcomes between patterns.
 
 ## Risk model

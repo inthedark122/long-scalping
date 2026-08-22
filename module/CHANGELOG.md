@@ -2,6 +2,17 @@
 
 # Unreleased
 
+# 1.0.111
+
+Staircase transition identity release.
+
+- Remove reversal as a primary MRC pattern and carry it as a potential or
+  confirmed transition on the underlying `STAIRS_UP` or `STAIRS_DOWN` route.
+- Keep reversal routes additive without filtering valid staircase continuation
+  entries, while preserving their transition state and protected-swing barrier.
+- Attribute transition trades to the underlying staircase performance ledger
+  and expose the separation in research JSON/HTML reports.
+
 Imperative active MRC route TP.
 
 - Build route-level favorable/adverse movement fields for every active 1m MRC

@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 use long_scalping::detection::decision::{
     CandidateView, DecisionComponents, DecisionState, PrimaryKind, PrimaryPhase,
 };
-use long_scalping::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle};
+use long_scalping::detection::mrc_pattern_classification::{
+    MrcPatternKind, MrcTransitionKind, StaircaseLifecycle,
+};
 use long_scalping::engine::run;
 use long_scalping::state::EngineState;
 use lte_strategy_bridge::abi::{ModuleEvent, ModuleInput, ModulePositions, ModuleSymbolInfo};
@@ -26,6 +28,7 @@ fn candidate(
         market_price: 100.0,
         staircase_lifecycle: None,
         staircase_transition: None,
+        transition: None,
     }
 }
 
@@ -89,6 +92,49 @@ fn protected_swing_break_ends_stairs_and_blocks_rearming() {
     assert_eq!(result.selected_index, None);
     assert!(state.trace.ended_by_protected_swing);
     assert_eq!(state.trace.reason, "primary-ended-awaiting-rearm");
+}
+
+#[test]
+fn confirmed_reversal_replaces_an_invalidated_staircase_primary() {
+    let mut state = DecisionState::default();
+    let components = DecisionComponents::default();
+    let stairs = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    assert_eq!(
+        state.choose(components, &[stairs], 1_000).selected_index,
+        Some(0)
+    );
+
+    let mut invalidated = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    invalidated.staircase_lifecycle = Some(StaircaseLifecycle::Invalidated);
+    let mut reversal = candidate(1, MrcPatternKind::StairsDown, 0.0, -1);
+    reversal.transition = Some(MrcTransitionKind::Reversal);
+    let result = state.choose(components, &[invalidated, reversal], 2_000);
+
+    assert_eq!(result.selected_index, Some(1));
+    assert_eq!(result.primary_kind, None);
+    assert_eq!(result.primary_direction, 0);
+    assert!(state.trace.ended_by_protected_swing);
+    assert_eq!(state.trace.reason, "selected-transition-route");
+}
+
+#[test]
+fn reversal_transition_does_not_replace_an_active_staircase_primary() {
+    let mut state = DecisionState::default();
+    let components = DecisionComponents::default();
+    let stairs = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    assert_eq!(
+        state.choose(components, &[stairs], 1_000).selected_index,
+        Some(0)
+    );
+
+    let mut reversal = candidate(1, MrcPatternKind::StairsDown, 10.0, -1);
+    reversal.transition = Some(MrcTransitionKind::Reversal);
+    let result = state.choose(components, &[reversal], 2_000);
+
+    assert_eq!(result.selected_index, Some(1));
+    assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
+    assert_eq!(result.primary_direction, 1);
+    assert_eq!(state.trace.reason, "selected-transition-route");
 }
 
 #[test]

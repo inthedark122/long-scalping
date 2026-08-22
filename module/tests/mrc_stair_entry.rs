@@ -5,7 +5,7 @@ use long_scalping::detection::mrc_pattern_classification::{
     MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
 };
 use long_scalping::detection::mrc_prediction::MrcPredictionContext;
-use long_scalping::detection::mrc_stair_entry::{self, StairEntryState};
+use long_scalping::detection::mrc_stair_entry::{self, ReversalState, StairEntryState};
 use long_scalping::detection::mrc_touch::{MrcLineTouchEma, MrcTouchRegime, MrcTouchSignal};
 use long_scalping::detection::vlines::MrcCrossEvent;
 use long_scalping::state::{MrcCrossingState, MrcForecastStats};
@@ -50,6 +50,7 @@ fn prediction(
     };
     MrcPrediction {
         pattern_kind: MrcPatternKind::StairsUp,
+        transition: None,
         pattern_direction: 1,
         pattern_steps: 3,
         pattern_elapsed_ms: 10 * 60_000,
@@ -255,8 +256,65 @@ fn stairs_up_stops_at_extreme_when_movement_is_not_fresh() {
         analysis.stair_entry_reason.as_deref(),
         Some("latest-extreme-without-fresh-movement")
     );
+    assert_eq!(analysis.reversal_state, ReversalState::Potential);
+    assert_eq!(
+        analysis.reversal_reason.as_deref(),
+        Some("stalled-before-expected-line")
+    );
     assert!(!analysis.stair_entry_approved);
     assert!(!analysis.tradeable());
+}
+
+#[test]
+fn stairs_up_at_big_line_marks_a_potential_reversal() {
+    let analysis = analysis(
+        8,
+        StaircaseLifecycle::Progressing,
+        StaircaseTransition::HigherExtreme,
+        8,
+        MovementPhase::Building,
+        0.8,
+        0.2,
+    );
+
+    assert_eq!(analysis.stair_entry_state, Some(StairEntryState::Retest));
+    assert_eq!(analysis.reversal_state, ReversalState::Potential);
+    assert_eq!(
+        analysis.reversal_reason.as_deref(),
+        Some("big-line-exhaustion")
+    );
+    // The terminal big line has no forward same-direction route. The
+    // additive opposite route is evaluated by the reversal candidate.
+    assert!(!analysis.tradeable());
+}
+
+#[test]
+fn stalled_staircase_keeps_its_continuation_route_while_marking_reversal_evidence() {
+    let analysis = analysis(
+        5,
+        StaircaseLifecycle::Stalled,
+        StaircaseTransition::AttemptingExtreme,
+        6,
+        MovementPhase::Building,
+        0.8,
+        0.2,
+    );
+
+    assert_eq!(
+        analysis.stair_entry_state,
+        Some(StairEntryState::Continuation)
+    );
+    assert_eq!(
+        analysis.stair_entry_reason.as_deref(),
+        Some("active-movement-before-extreme")
+    );
+    assert_eq!(analysis.reversal_state, ReversalState::Potential);
+    assert_eq!(
+        analysis.reversal_reason.as_deref(),
+        Some("stalled-before-expected-line")
+    );
+    assert!(analysis.stair_entry_approved);
+    assert!(analysis.tradeable());
 }
 
 #[test]

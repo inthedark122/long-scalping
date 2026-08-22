@@ -1,8 +1,11 @@
 use long_scalping::detection::cascade::{CascadeTradeState, MovementPhase};
 use long_scalping::detection::mrc_cross_analysis::{self, BarrierState};
 use long_scalping::detection::mrc_crossing::{self, MrcPrediction, MrcWaitReason};
-use long_scalping::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseLifecycle};
+use long_scalping::detection::mrc_pattern_classification::{
+    MrcPatternKind, MrcTransitionKind, StaircaseLifecycle,
+};
 use long_scalping::detection::mrc_prediction::MrcPredictionContext;
+use long_scalping::detection::mrc_stair_entry::ReversalState;
 use long_scalping::detection::mrc_touch::MrcTouchSignal;
 use long_scalping::detection::mrc_touch_learning::MrcTouchLearningSignal;
 use long_scalping::detection::vlines::MrcCrossEvent;
@@ -361,6 +364,7 @@ fn crossing_observation_keeps_market_price_and_mrc_range() {
 fn stair_prediction(kind: MrcPatternKind, direction: i8, target_line: u8) -> MrcPrediction {
     MrcPrediction {
         pattern_kind: kind,
+        transition: None,
         pattern_direction: direction,
         pattern_steps: 3,
         pattern_elapsed_ms: 7 * 60_000,
@@ -465,6 +469,87 @@ fn staircase_entry_stays_at_the_crossed_line() {
     assert_eq!(long.target_price, Some(106.08));
     assert_eq!(long.stop_price, Some(100.0));
     assert!(long.tradeable());
+}
+
+#[test]
+fn confirmed_reversal_opens_the_opposite_route() {
+    let mut reversal = stair_prediction(MrcPatternKind::StairsDown, 1, 5);
+    reversal.transition = Some(MrcTransitionKind::Reversal);
+    reversal.pattern_direction = 1;
+    reversal.failed_break_line = Some(3);
+    reversal.failed_break_direction = 1;
+    reversal.stair_favorable_move_pct = 0.0;
+    reversal.stair_adverse_move_pct = 0.0;
+    reversal.stair_price_move_pct = 0.0;
+    reversal.staircase_lifecycle = None;
+    reversal.staircase_transition = None;
+    reversal.staircase_protected_line = Some(3);
+    reversal.staircase_extreme_line = Some(2);
+    reversal.stats = MrcForecastStats::default();
+    reversal.line_stats = [MrcForecastStats::default(); 9];
+
+    let mut crossing = event(4, 80_000);
+    crossing.direction = 1;
+    crossing.price = 100.0;
+    let analysis = mrc_cross_analysis::build(
+        &crossing,
+        Some(&reversal),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+
+    assert_eq!(analysis.pattern_kind, Some(MrcPatternKind::StairsDown));
+    assert_eq!(analysis.transition, Some(MrcTransitionKind::Reversal));
+    assert_eq!(analysis.reversal_state.as_str(), "confirmed");
+    assert_eq!(
+        analysis.reversal_reason.as_deref(),
+        Some("protected-swing-cross")
+    );
+    assert_eq!(analysis.trade_direction, 1);
+    assert_eq!(analysis.target_price, Some(104.0));
+    assert_eq!(analysis.stop_price, Some(96.0));
+    assert_eq!(analysis.barrier_state, BarrierState::ConfirmedBreak);
+    assert!(analysis.tradeable());
+}
+
+#[test]
+fn potential_reversal_adds_an_opposite_route_without_confirmation_barrier() {
+    let mut reversal = stair_prediction(MrcPatternKind::StairsUp, -1, 6);
+    reversal.transition = Some(MrcTransitionKind::Reversal);
+    reversal.pattern_direction = -1;
+    reversal.failed_break_line = None;
+    reversal.failed_break_direction = 0;
+    reversal.stair_favorable_move_pct = 0.0;
+    reversal.stair_adverse_move_pct = 0.0;
+    reversal.stair_price_move_pct = 0.0;
+    reversal.staircase_lifecycle = None;
+    reversal.staircase_transition = None;
+    reversal.staircase_protected_line = Some(4);
+    reversal.staircase_extreme_line = Some(8);
+    reversal.stats = MrcForecastStats::default();
+    reversal.line_stats = [MrcForecastStats::default(); 9];
+
+    let mut crossing = event(7, 90_000);
+    crossing.direction = -1;
+    crossing.price = 108.0;
+    let analysis = mrc_cross_analysis::build(
+        &crossing,
+        Some(&reversal),
+        lines(),
+        &MrcCrossingState::default(),
+        (0.0, 0.0, 0.0, 0.0),
+    );
+
+    assert_eq!(analysis.reversal_state, ReversalState::Potential);
+    assert_eq!(
+        analysis.reversal_reason.as_deref(),
+        Some("big-line-exhaustion")
+    );
+    assert_eq!(analysis.trade_direction, -1);
+    assert_eq!(analysis.target_price, Some(106.0));
+    assert_eq!(analysis.stop_price, Some(110.0));
+    assert!(analysis.tradeable());
 }
 
 #[test]

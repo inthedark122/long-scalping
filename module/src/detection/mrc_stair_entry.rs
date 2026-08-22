@@ -7,7 +7,9 @@
 
 use crate::detection::cascade::{CascadeTradeState, MovementPhase};
 use crate::detection::mrc_cross_analysis::{self, MrcCrossAnalysis};
-use crate::detection::mrc_pattern_classification::{MrcPatternKind, StaircaseTransition};
+use crate::detection::mrc_pattern_classification::{
+    MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
+};
 use crate::detection::mrc_prediction::MrcPredictionContext;
 use crate::detection::mrc_touch::{MrcTouchRegime, MrcTouchSignal};
 
@@ -40,6 +42,30 @@ impl StairEntryState {
 
     pub const fn opens(self) -> bool {
         matches!(self, Self::Pullback | Self::Continuation | Self::Retest)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReversalState {
+    None,
+    Potential,
+    Confirmed,
+}
+
+impl Default for ReversalState {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl ReversalState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Potential => "potential",
+            Self::Confirmed => "confirmed",
+        }
     }
 }
 
@@ -124,6 +150,54 @@ fn at_favorable_extreme(analysis: &MrcCrossAnalysis) -> bool {
     analysis
         .staircase_extreme_line
         .is_some_and(|line| line == analysis.line_idx)
+}
+
+fn line_is_beyond(line: u8, reference: u8, direction: i8) -> bool {
+    if direction > 0 {
+        line > reference
+    } else {
+        line < reference
+    }
+}
+
+/// A stall is diagnostic evidence for a potential reversal. It does not
+/// remove the staircase's own entry route; the confirmed opposite route is
+/// emitted separately when the protected swing is crossed. Reaching the
+/// outer/big line is also useful reversal evidence because the next move can
+/// retrace a much larger part of the range.
+pub fn potential_reversal_reason(analysis: &MrcCrossAnalysis) -> Option<&'static str> {
+    let direction = analysis.trade_direction;
+    if !matches!(
+        analysis.pattern_kind,
+        Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
+    ) || !matches!(direction, 1 | -1)
+        || analysis.staircase_lifecycle == Some(StaircaseLifecycle::Invalidated)
+    {
+        return None;
+    }
+
+    let at_big_line = analysis
+        .staircase_extreme_line
+        .is_some_and(|line| (direction > 0 && line == 8) || (direction < 0 && line == 0));
+    if at_big_line {
+        return Some("big-line-exhaustion");
+    }
+
+    let stalled = analysis.staircase_lifecycle == Some(StaircaseLifecycle::Stalled)
+        || analysis.staircase_transition == Some(StaircaseTransition::AttemptingExtreme);
+    if !stalled {
+        return None;
+    }
+
+    let expected_line_not_reached = analysis
+        .trade_target_line
+        .zip(analysis.staircase_extreme_line)
+        .is_some_and(|(target, extreme)| line_is_beyond(target, extreme, direction));
+    if expected_line_not_reached {
+        Some("stalled-before-expected-line")
+    } else {
+        Some("favorable-extreme-stalled")
+    }
 }
 
 fn forward_line(lines: [f64; 9], line: u8, direction: i8) -> Option<u8> {
@@ -333,11 +407,16 @@ pub fn apply(
     if !matches!(
         analysis.pattern_kind,
         Some(MrcPatternKind::StairsUp | MrcPatternKind::StairsDown)
-    ) || analysis.staircase_lifecycle.is_none()
+    ) || analysis.transition.is_some()
+        || analysis.staircase_lifecycle.is_none()
         || analysis.staircase_transition.is_none()
         || (!context.cascade_enabled && touch.now_ms == 0)
     {
         return;
+    }
+    if let Some(reason) = potential_reversal_reason(analysis) {
+        analysis.reversal_state = ReversalState::Potential;
+        analysis.reversal_reason = Some(reason.to_string());
     }
     let plan = plan(analysis, lines, touch, context);
     analysis.stair_entry_state = Some(plan.state);

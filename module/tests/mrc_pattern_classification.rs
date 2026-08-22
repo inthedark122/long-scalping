@@ -1,6 +1,6 @@
 use long_scalping::detection::mrc_pattern_classification::{
-    classify, classify_all, definition, MrcPatternKind, StaircaseLifecycle, StaircaseTransition,
-    MRC_PATTERN_DEFINITIONS,
+    classify, classify_all, definition, MrcPatternKind, MrcTransitionKind, StaircaseLifecycle,
+    StaircaseTransition, MRC_PATTERN_DEFINITIONS,
 };
 use long_scalping::state::{MrcHistoryEvent, MrcMovementSnapshot};
 
@@ -188,6 +188,73 @@ fn staircase_invalidates_only_after_the_protected_swing_breaks() {
     );
     assert_eq!(signal.staircase_protected_line, Some(5));
     assert_eq!(signal.staircase_extreme_line, Some(7));
+}
+
+#[test]
+fn protected_swing_break_emits_a_confirmed_opposite_reversal() {
+    let events = history(&[
+        (6, 100.0),
+        (7, 101.0),
+        (8, 102.0),
+        (7, 101.0),
+        (6, 100.0),
+        (5, 99.0),
+        (4, 98.0),
+        (3, 97.0),
+        (2, 96.0),
+        (3, 97.0),
+        (2, 96.0),
+        (1, 95.0),
+        (2, 96.0),
+        (3, 97.0),
+        (4, 98.0),
+    ]);
+    let reversal = classify_all(&events)
+        .into_iter()
+        .find(|signal| signal.transition == Some(MrcTransitionKind::Reversal))
+        .expect("protected swing break should confirm a reversal");
+
+    assert_eq!(reversal.direction, 1);
+    assert_eq!(reversal.source_line, 4);
+    assert_eq!(reversal.target_line, 5);
+    assert_eq!(reversal.failed_break_line, Some(3));
+    assert_eq!(reversal.staircase_protected_line, Some(3));
+    assert_eq!(reversal.kind, MrcPatternKind::StairsDown);
+}
+
+#[test]
+fn big_line_pullback_emits_an_additive_potential_reversal() {
+    let events = history(&[
+        (2, 100.0),
+        (3, 101.0),
+        (2, 100.0),
+        (3, 101.0),
+        (4, 102.0),
+        (3, 101.0),
+        (4, 102.0),
+        (5, 103.0),
+        (4, 102.0),
+        (5, 103.0),
+        (6, 104.0),
+        (5, 103.0),
+        (6, 104.0),
+        (7, 105.0),
+        (6, 104.0),
+        (7, 105.0),
+        (8, 106.0),
+        (7, 105.0),
+    ]);
+    let reversal = classify_all(&events)
+        .into_iter()
+        .find(|signal| signal.transition == Some(MrcTransitionKind::Reversal))
+        .expect("big-line pullback should produce a potential reversal route");
+
+    assert_eq!(reversal.direction, -1);
+    assert_eq!(reversal.source_line, 7);
+    assert_eq!(reversal.target_line, 6);
+    assert_eq!(reversal.failed_break_line, None);
+    assert_eq!(reversal.staircase_extreme_line, Some(8));
+    assert_eq!(reversal.kind, MrcPatternKind::StairsUp);
 }
 
 #[test]
