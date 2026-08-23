@@ -2,6 +2,19 @@
 
 # Unreleased
 
+# 1.0.112
+
+Exit diagnostics release.
+
+- Add concise active-position exit events for runtime rebuilds, missing or
+  invalid exit plans, TP submission, virtual-SL crossings, repricing, and
+  stalled/no-change decisions.
+- Label the internal protective level as `vsl` in runtime debug output and
+  include the server-position synchronization context when the in-memory
+  position runtime is rebuilt.
+- Keep strategy behavior unchanged; this release improves operational
+  observability only.
+
 # 1.0.111
 
 Staircase transition identity release.

@@ -470,6 +470,26 @@ fn handle_new_position(
         }
     }
 
+    let plan_result = if plan.is_some() {
+        format!(
+            "new-position-plan=ready live_qty={:.4} tp_orders={} cancel_orders={}",
+            input
+                .positions
+                .long
+                .as_ref()
+                .map(|position| position.qty)
+                .or_else(|| input.positions.short.as_ref().map(|position| position.qty))
+                .unwrap_or(0.0),
+            tp_orders.len(),
+            cancel_orders.len()
+        )
+    } else if state.position.entry_reason.is_none() {
+        "new-position-plan=none reason=missing-entry-reason".to_string()
+    } else {
+        "new-position-plan=none reason=no-valid-exit-plan".to_string()
+    };
+    exit::record_exit_event(state, plan_result);
+
     ModuleOutput {
         place_orders: tp_orders,
         cancel_orders,
@@ -478,7 +498,8 @@ fn handle_new_position(
             direction,
             plan.map(|plan| exit::describe(Some(plan)))
                 .unwrap_or_else(|| "tp=n/a sl=n/a".to_string())
-        ),
+        ) + " "
+            + &state.last_exit_event,
         ..Default::default()
     }
 }
@@ -498,6 +519,7 @@ fn handle_finish_position(
     if state.position.side == dir_to_position(direction) {
         state.position = PositionRuntime::default();
         state.take_profit_allocation.reset();
+        state.last_exit_event.clear();
         state.pending_entry_bar = None;
         state.mrc_crossing_model.last_plan_key = None;
     }

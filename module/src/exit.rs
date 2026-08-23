@@ -132,6 +132,15 @@ pub(crate) fn set_stop_loss(state: &mut EngineState, stop_loss: StopLoss) {
     state.position.stop_loss_reason = stop_loss.reason();
 }
 
+pub(crate) fn record_exit_event(state: &mut EngineState, event: impl Into<String>) {
+    let event = event.into();
+    state.last_exit_event = state
+        .pending_exit_context
+        .take()
+        .map(|context| format!("{context} {event}"))
+        .unwrap_or(event);
+}
+
 fn position_exit_plan(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
@@ -597,6 +606,10 @@ fn ensure_trailing_exit_order(
     let mark = tp_mark(direction);
     let qty = position_qty(input, side);
     if qty <= 0.0 {
+        record_exit_event(
+            state,
+            format!("active-exit=skip side={:?} reason=live-qty-zero", side),
+        );
         return (Vec::new(), Vec::new(), Vec::new());
     }
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
@@ -606,6 +619,18 @@ fn ensure_trailing_exit_order(
             input.price
         };
         let Some(plan) = entry_exit_plan(state, snapshot, reference_price, side) else {
+            let reason = if state.position.entry_reason.is_none() {
+                "missing-entry-reason"
+            } else {
+                "no-valid-exit-plan"
+            };
+            record_exit_event(
+                state,
+                format!(
+                    "active-exit=skip side={:?} reason={} reference={:.8}",
+                    side, reason, reference_price
+                ),
+            );
             return (Vec::new(), Vec::new(), Vec::new());
         };
         state.position.exit_mode = ExitMode::Fixed;
@@ -622,6 +647,15 @@ fn ensure_trailing_exit_order(
             Some(&plan.take_profit.order_note()),
             far_target_for_position(state, snapshot, reference_price, plan.take_profit.price()),
         );
+        record_exit_event(
+            state,
+            format!(
+                "active-exit=plan-ready side={:?} tp_orders={} cancel_orders={} vsl-set=true",
+                side,
+                tp_orders.len(),
+                cancel_orders.len()
+            ),
+        );
         return (tp_orders, Vec::new(), cancel_orders);
     }
 
@@ -634,6 +668,7 @@ fn ensure_trailing_exit_order(
             tick,
             recovery_ticks(state.position.exit_type),
         ) else {
+            record_exit_event(state, "virtual-exit=skip reason=invalid-recovery-price");
             return (Vec::new(), Vec::new(), Vec::new());
         };
 
@@ -642,6 +677,7 @@ fn ensure_trailing_exit_order(
         // price amends the existing recovery order instead of leaving it at
         // the price from the initial virtual-SL crossing.
         if (recovery_tp - previous_tp).abs() <= f64::EPSILON {
+            record_exit_event(state, "virtual-exit=hold reason=trailing-price-unchanged");
             return (Vec::new(), Vec::new(), Vec::new());
         }
         state.position.take_profit = recovery_tp;
@@ -675,6 +711,15 @@ fn ensure_trailing_exit_order(
             Some(&note),
             None,
         );
+        record_exit_event(
+            state,
+            format!(
+                "virtual-exit=reprice reason=after-virtual-sl recovery_tp={:.8} tp_orders={} cancel_orders={}",
+                recovery_tp,
+                tp_orders.len(),
+                cancel_orders.len()
+            ),
+        );
         return (tp_orders, Vec::new(), cancel_orders);
     }
 
@@ -688,6 +733,7 @@ fn ensure_trailing_exit_order(
             tick,
             recovery_ticks(state.position.exit_type),
         ) else {
+            record_exit_event(state, "virtual-sl-cross=skip reason=invalid-recovery-price");
             return (Vec::new(), Vec::new(), Vec::new());
         };
         state.position.take_profit = recovery_tp;
@@ -721,6 +767,17 @@ fn ensure_trailing_exit_order(
             recovery_tp,
             Some(&note),
             None,
+        );
+        record_exit_event(
+            state,
+            format!(
+                "virtual-sl-cross=triggered price={:.8} vsl={:.8} recovery_tp={:.8} tp_orders={} cancel_orders={}",
+                input.price,
+                previous_stop_loss,
+                recovery_tp,
+                tp_orders.len(),
+                cancel_orders.len()
+            ),
         );
         return (tp_orders, Vec::new(), cancel_orders);
     }
@@ -785,6 +842,14 @@ fn ensure_trailing_exit_order(
                     Some(&note),
                     None,
                 );
+                record_exit_event(
+                    state,
+                    format!(
+                        "active-exit=reprice reason=maximum-route tp_orders={} cancel_orders={}",
+                        tp_orders.len(),
+                        cancel_orders.len()
+                    ),
+                );
                 return (tp_orders, Vec::new(), cancel_orders);
             }
         }
@@ -811,9 +876,18 @@ fn ensure_trailing_exit_order(
                 Some("tp:stalled-partial"),
                 fallback,
             );
+            record_exit_event(
+                state,
+                format!(
+                    "active-exit=stalled-partial tp_orders={} cancel_orders={}",
+                    tp_orders.len(),
+                    cancel_orders.len()
+                ),
+            );
             return (tp_orders, Vec::new(), cancel_orders);
         }
         if state.exit_progress.mode == crate::state::ExitProgressMode::Stalled {
+            record_exit_event(state, "active-exit=hold reason=stalled");
             return (Vec::new(), Vec::new(), Vec::new());
         }
 
@@ -846,8 +920,17 @@ fn ensure_trailing_exit_order(
                 Some("tp:structure"),
                 far_target,
             );
+            record_exit_event(
+                state,
+                format!(
+                    "active-exit=structure tp_orders={} cancel_orders={}",
+                    tp_orders.len(),
+                    cancel_orders.len()
+                ),
+            );
             return (tp_orders, Vec::new(), cancel_orders);
         }
+        record_exit_event(state, "active-exit=hold reason=fixed-no-change");
         return (Vec::new(), Vec::new(), Vec::new());
     }
 
@@ -877,6 +960,7 @@ fn ensure_trailing_exit_order(
     };
 
     if !recalculate_virtual_sl && !recalculate_tp {
+        record_exit_event(state, "active-exit=hold reason=recalc-throttled");
         return (Vec::new(), Vec::new(), Vec::new());
     }
     if recalculate_tp {
@@ -939,9 +1023,18 @@ fn ensure_trailing_exit_order(
                     plan.take_profit.price(),
                 ),
             );
+            record_exit_event(
+                state,
+                format!(
+                    "active-exit=reprice reason=tp-plan tp_orders={} cancel_orders={}",
+                    tp_orders.len(),
+                    cancel_orders.len()
+                ),
+            );
             return (tp_orders, Vec::new(), cancel_orders);
         }
     }
+    record_exit_event(state, "active-exit=hold reason=plan-no-price-change");
     (Vec::new(), Vec::new(), Vec::new())
 }
 

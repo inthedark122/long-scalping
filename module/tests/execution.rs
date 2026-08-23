@@ -55,6 +55,35 @@ fn input(price: f64, positions: ModulePositions) -> ModuleInput {
     }
 }
 
+#[test]
+fn active_position_without_entry_reason_reports_exit_plan_diagnostic() {
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(IndicatorSnapshot::default());
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert!(output
+        .debug
+        .contains("active-exit=skip side=Long reason=missing-entry-reason"));
+    assert!(output
+        .debug
+        .contains("position-sync=runtime-rebuilt side=Long"));
+}
+
 fn position(side: PositionState, stop_loss: f64) -> PositionRuntime {
     PositionRuntime {
         side,

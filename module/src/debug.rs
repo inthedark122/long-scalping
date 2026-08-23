@@ -149,7 +149,7 @@ pub fn render(
         && !state.position.stop_loss_reason.is_empty()
     {
         parts.push(format!(
-            "sl={} reason={}",
+            "vsl={} reason={}",
             fmt_price_tick(state.position.stop_loss, tick_size),
             state.position.stop_loss_reason,
         ));
@@ -159,6 +159,9 @@ pub fn render(
             "exit={:?} mode={:?}",
             state.position.exit_type, state.position.exit_mode
         ));
+        if !state.last_exit_event.is_empty() {
+            parts.push(format!("exit-event=[{}]", state.last_exit_event));
+        }
     }
     if let Some(constraint) = constraint {
         parts.push(format!("constraint={constraint}"));

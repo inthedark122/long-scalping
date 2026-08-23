@@ -486,6 +486,11 @@ pub struct EngineState {
     pub tp_reprice_history: TpRepriceHistory,
     pub mrc_risk: MrcRiskManager,
     pub exit_memory: ExitMemory,
+    /// Last meaningful exit lifecycle event, kept in the runtime debug line.
+    pub last_exit_event: String,
+    /// One-shot context explaining why the in-memory position runtime was
+    /// rebuilt before the next exit evaluation.
+    pub pending_exit_context: Option<String>,
     pub last_error: Option<String>,
     pub last_snapshot: Option<IndicatorSnapshot>,
 }
@@ -523,6 +528,8 @@ impl Default for EngineState {
             tp_reprice_history: TpRepriceHistory::default(),
             mrc_risk: MrcRiskManager::default(),
             exit_memory: ExitMemory::default(),
+            last_exit_event: String::new(),
+            pending_exit_context: None,
             last_error: None,
             last_snapshot: None,
         }
@@ -646,6 +653,8 @@ pub fn sync_position_state(
         state.take_profit_allocation.reset();
         state.exit_progress.reset();
         state.tp_reprice_history.reset();
+        state.last_exit_event.clear();
+        state.pending_exit_context = None;
         state.active_mrc_analysis = None;
         state.pending_entry_bar = None;
     }
@@ -655,6 +664,12 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Long
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
+                state.pending_exit_context = Some(format!(
+                    "position-sync=runtime-rebuilt side=Long server_entry={:.8} previous_entry={:.8} previous_reason={}",
+                    entry,
+                    state.position.entry_price,
+                    state.position.entry_reason.is_some()
+                ));
                 state.position = PositionRuntime {
                     side: PositionState::Long,
                     entry_price: entry,
@@ -677,6 +692,12 @@ pub fn sync_position_state(
             if state.position.side != PositionState::Short
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
+                state.pending_exit_context = Some(format!(
+                    "position-sync=runtime-rebuilt side=Short server_entry={:.8} previous_entry={:.8} previous_reason={}",
+                    entry,
+                    state.position.entry_price,
+                    state.position.entry_reason.is_some()
+                ));
                 state.position = PositionRuntime {
                     side: PositionState::Short,
                     entry_price: entry,
