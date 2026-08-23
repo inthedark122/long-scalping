@@ -104,3 +104,62 @@ fn take_profit_allocation_is_restored_with_the_bot_state() {
         source.take_profit_allocation
     );
 }
+
+#[test]
+fn position_context_anchor_and_lifecycle_are_restored() {
+    let mut source = state::EngineState::default();
+    source.position_context.begin(
+        PositionState::Long,
+        100.0,
+        1_000,
+        None,
+        state::PositionLifetime::RecyclableStairs,
+        vec![4, 5, 6],
+    );
+    source.position_context.entry_anchor = Some(state::PositionPlanSnapshot {
+        take_profit: 106.0,
+        stop_loss: 97.0,
+        tp_reliable: true,
+    });
+    source.position_context.last_valid_plan = source.position_context.entry_anchor;
+    source.position_context.last_plan_source = state::PositionExitPlanSource::EntryAnchor;
+
+    let saved = state::save(&source).expect("state should serialize");
+    let mut restored = state::EngineState::default();
+    assert!(state::restore(&mut restored, Some(&saved)));
+
+    assert_eq!(restored.position_context.side, PositionState::Long);
+    assert_eq!(restored.position_context.entry_price, 100.0);
+    assert_eq!(
+        restored.position_context.entry_anchor,
+        source.position_context.entry_anchor
+    );
+    assert_eq!(
+        restored.position_context.last_plan_source,
+        state::PositionExitPlanSource::EntryAnchor
+    );
+    assert_eq!(
+        restored.position_context.lifetime,
+        state::PositionLifetime::RecyclableStairs
+    );
+}
+
+#[test]
+fn recyclable_position_retains_only_bounded_reentry_context_after_flat() {
+    let mut context = state::PositionContext::default();
+    context.begin(
+        PositionState::Long,
+        100.0,
+        1_000,
+        None,
+        state::PositionLifetime::RecyclableStairs,
+        vec![4, 5, 6],
+    );
+    context.on_flat("tp-filled");
+
+    assert_eq!(context.side, PositionState::Flat);
+    assert!(context.reentry_allowed);
+    assert_eq!(context.entry_price, 0.0);
+    assert!(context.entry_anchor.is_none());
+    assert!(context.last_valid_plan.is_none());
+}

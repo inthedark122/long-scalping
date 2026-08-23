@@ -33,6 +33,252 @@ pub struct PositionRuntime {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionLifetime {
+    #[default]
+    OneShot,
+    RecyclableStairs,
+}
+
+impl PositionLifetime {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OneShot => "one-shot",
+            Self::RecyclableStairs => "recyclable-stairs",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionExitPlanSource {
+    #[default]
+    None,
+    DynamicSameSide,
+    LastValidPositionPlan,
+    EntryAnchor,
+    EmergencyClose,
+}
+
+impl PositionExitPlanSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::DynamicSameSide => "dynamic",
+            Self::LastValidPositionPlan => "cached",
+            Self::EntryAnchor => "entry-anchor",
+            Self::EmergencyClose => "emergency-close",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionDecisionAction {
+    #[default]
+    Hold,
+    UpdateExit,
+    Close,
+}
+
+impl PositionDecisionAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::UpdateExit => "update-exit",
+            Self::Close => "close",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PositionPlanSnapshot {
+    pub take_profit: f64,
+    pub stop_loss: f64,
+    pub tp_reliable: bool,
+}
+
+impl PositionPlanSnapshot {
+    pub fn valid_for(self, side: PositionState, reference_price: f64) -> bool {
+        if !self.take_profit.is_finite()
+            || !self.stop_loss.is_finite()
+            || self.take_profit <= 0.0
+            || self.stop_loss <= 0.0
+            || reference_price <= 0.0
+        {
+            return false;
+        }
+        match side {
+            PositionState::Long => {
+                self.take_profit > reference_price && self.stop_loss < reference_price
+            }
+            PositionState::Short => {
+                self.take_profit < reference_price && self.stop_loss > reference_price
+            }
+            PositionState::Flat => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PositionContext {
+    pub side: PositionState,
+    pub entry_price: f64,
+    pub entry_time_ms: u64,
+    pub entry_reason: Option<EntryReason>,
+    pub entry_anchor: Option<PositionPlanSnapshot>,
+    pub last_valid_plan: Option<PositionPlanSnapshot>,
+    pub last_plan_source: PositionExitPlanSource,
+    pub last_action: PositionDecisionAction,
+    pub decision_reason: String,
+    pub lifetime: PositionLifetime,
+    pub cycle_started_ms: u64,
+    pub cycle_direction: i8,
+    pub cycle_pattern: Vec<u8>,
+    pub consecutive_entries: u32,
+    pub reentry_allowed: bool,
+    pub reentry_reason: String,
+}
+
+impl PositionContext {
+    pub const MAX_RECYCLABLE_ENTRIES: u32 = 8;
+    pub const MAX_CYCLE_AGE_MS: u64 = 6 * 60 * 60 * 1_000;
+
+    pub fn begin(
+        &mut self,
+        side: PositionState,
+        entry_price: f64,
+        entry_time_ms: u64,
+        entry_reason: Option<EntryReason>,
+        lifetime: PositionLifetime,
+        cycle_pattern: Vec<u8>,
+    ) {
+        let same_cycle = self.cycle_pattern.is_empty()
+            || cycle_pattern.is_empty()
+            || self.cycle_pattern == cycle_pattern;
+        let previous_entries = if self.lifetime == lifetime
+            && self.side == PositionState::Flat
+            && lifetime == PositionLifetime::RecyclableStairs
+            && self.cycle_is_valid(entry_time_ms)
+            && same_cycle
+        {
+            self.consecutive_entries
+        } else {
+            0
+        };
+        let cycle_started_ms = if previous_entries > 0 && self.cycle_started_ms > 0 {
+            self.cycle_started_ms
+        } else {
+            entry_time_ms
+        };
+        let cycle_direction = match side {
+            PositionState::Long => 1,
+            PositionState::Short => -1,
+            PositionState::Flat => 0,
+        };
+        *self = Self {
+            side,
+            entry_price,
+            entry_time_ms,
+            entry_reason,
+            entry_anchor: None,
+            last_valid_plan: None,
+            last_plan_source: PositionExitPlanSource::None,
+            last_action: PositionDecisionAction::Hold,
+            decision_reason: "position-started".to_string(),
+            lifetime,
+            cycle_started_ms,
+            cycle_direction,
+            cycle_pattern,
+            consecutive_entries: previous_entries.saturating_add(1),
+            reentry_allowed: lifetime == PositionLifetime::RecyclableStairs,
+            reentry_reason: if lifetime == PositionLifetime::RecyclableStairs {
+                "active-stairs-cycle".to_string()
+            } else {
+                "one-shot-position".to_string()
+            },
+        };
+    }
+
+    pub fn remember_plan(&mut self, plan: PositionPlanSnapshot, source: PositionExitPlanSource) {
+        if !plan.take_profit.is_finite() || !plan.stop_loss.is_finite() {
+            return;
+        }
+        self.last_valid_plan = Some(plan);
+        self.last_plan_source = source;
+        if self.entry_anchor.is_none() {
+            self.entry_anchor = Some(plan);
+        }
+    }
+
+    pub fn seed_entry_anchor_from_reason(&mut self, reason: Option<&EntryReason>) {
+        if self.entry_anchor.is_some() {
+            return;
+        }
+        let Some(EntryReason::MrcCrossing {
+            target_price,
+            stop_price,
+            ..
+        }) = reason
+        else {
+            return;
+        };
+        let plan = PositionPlanSnapshot {
+            take_profit: *target_price,
+            stop_loss: *stop_price,
+            tp_reliable: true,
+        };
+        if plan.take_profit.is_finite() && plan.stop_loss.is_finite() {
+            self.entry_anchor = Some(plan);
+        }
+    }
+
+    pub fn on_flat(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if self.lifetime == PositionLifetime::RecyclableStairs
+            && self.reentry_allowed
+            && self.consecutive_entries < Self::MAX_RECYCLABLE_ENTRIES
+        {
+            self.side = PositionState::Flat;
+            self.entry_price = 0.0;
+            self.entry_time_ms = 0;
+            self.entry_reason = None;
+            self.entry_anchor = None;
+            self.last_valid_plan = None;
+            self.last_plan_source = PositionExitPlanSource::None;
+            self.last_action = PositionDecisionAction::Hold;
+            self.decision_reason = "position-finished-reentry-context-retained".to_string();
+            self.reentry_reason = reason;
+        } else {
+            *self = Self {
+                side: PositionState::Flat,
+                reentry_allowed: false,
+                reentry_reason: reason,
+                ..Self::default()
+            };
+        }
+    }
+
+    pub fn disable_reentry(&mut self, reason: impl Into<String>) {
+        self.reentry_allowed = false;
+        self.reentry_reason = reason.into();
+    }
+
+    pub fn set_decision(&mut self, action: PositionDecisionAction, reason: impl Into<String>) {
+        self.last_action = action;
+        self.decision_reason = reason.into();
+    }
+
+    pub fn cycle_is_valid(&self, now_ms: u64) -> bool {
+        self.lifetime == PositionLifetime::RecyclableStairs
+            && self.reentry_allowed
+            && self.consecutive_entries < Self::MAX_RECYCLABLE_ENTRIES
+            && (self.cycle_started_ms == 0
+                || now_ms.saturating_sub(self.cycle_started_ms) <= Self::MAX_CYCLE_AGE_MS)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExitProgressMode {
     #[default]
     Primary,
@@ -454,12 +700,22 @@ pub struct EngineState {
     pub allowed_direction: Direction,
     /// Last 1m bar for which the active-position TP was recalculated.
     pub last_active_tp_recalc_bar: Option<u64>,
-    /// Latest live staircase analysis used by the imperative active TP model.
+    /// Latest same-side staircase analysis retained for the open position's
+    /// exit controller. It is intentionally not replaced by an opposite-side
+    /// market analysis.
     pub active_mrc_analysis: Option<MrcCrossAnalysis>,
-    /// Latest live non-indicator/cascade context paired with the analysis.
+    /// Latest same-side non-indicator/cascade context paired with the active
+    /// position analysis.
     pub active_mrc_context: MrcPredictionContext,
+    /// Latest selected market analysis, regardless of the held position side.
+    /// This context is used for future entries and transitions.
+    pub market_mrc_analysis: Option<MrcCrossAnalysis>,
+    /// Latest market context paired with `market_mrc_analysis`.
+    pub market_mrc_context: MrcPredictionContext,
     pub history: IndicatorHistory,
     pub position: PositionRuntime,
+    /// Immutable and cached decision context owned by the current position.
+    pub position_context: PositionContext,
     pub take_profit_allocation: TakeProfitAllocation,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
@@ -506,8 +762,11 @@ impl Default for EngineState {
             last_active_tp_recalc_bar: None,
             active_mrc_analysis: None,
             active_mrc_context: MrcPredictionContext::default(),
+            market_mrc_analysis: None,
+            market_mrc_context: MrcPredictionContext::default(),
             history: IndicatorHistory::default(),
             position: PositionRuntime::default(),
+            position_context: PositionContext::default(),
             take_profit_allocation: TakeProfitAllocation::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
@@ -551,6 +810,8 @@ struct PersistedState {
     #[serde(default)]
     position: PositionState,
     #[serde(default)]
+    position_context: PositionContext,
+    #[serde(default)]
     take_profit_allocation: TakeProfitAllocation,
     #[serde(default)]
     exit_memory: ExitMemory,
@@ -578,6 +839,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         cfg_loaded: state.cfg_loaded,
         trade_budget: state.trade_budget,
         position: state.position.side,
+        position_context: state.position_context.clone(),
         take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
         pattern_performance: state.mrc_crossing_model.pattern_performance.to_vec(),
@@ -608,6 +870,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.cfg_loaded = persisted.cfg_loaded;
     state.trade_budget = persisted.trade_budget;
     state.position.side = persisted.position;
+    state.position_context = persisted.position_context;
     state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
     state.mrc_crossing_model.pattern_performance =
@@ -649,6 +912,7 @@ pub fn sync_position_state(
             // position. Once the host reports flat, the primary selector may
             // offer a fresh same-direction route again.
             state.mrc_crossing_model.last_plan_key = None;
+            state.position_context.on_flat("server-confirmed-flat");
         }
         state.take_profit_allocation.reset();
         state.exit_progress.reset();
@@ -656,11 +920,17 @@ pub fn sync_position_state(
         state.last_exit_event.clear();
         state.pending_exit_context = None;
         state.active_mrc_analysis = None;
+        state.active_mrc_context = MrcPredictionContext::default();
         state.pending_entry_bar = None;
     }
 
     match (long, short) {
         (Some((entry, _)), None) => {
+            let entry_reason = state
+                .position
+                .entry_reason
+                .clone()
+                .or_else(|| state.position_context.entry_reason.clone());
             if state.position.side != PositionState::Long
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
@@ -681,14 +951,35 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Fixed,
                     exit_type: MRC_CROSSING_EXIT_TYPE,
-                    entry_reason: state.position.entry_reason.clone(),
+                    entry_reason: entry_reason.clone(),
                 };
+                if state.position_context.side != PositionState::Long
+                    || (state.position_context.entry_price - entry).abs() > f64::EPSILON
+                {
+                    state.position_context.begin(
+                        PositionState::Long,
+                        entry,
+                        state.position_context.entry_time_ms,
+                        entry_reason.clone(),
+                        PositionLifetime::OneShot,
+                        Vec::new(),
+                    );
+                }
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
                 state.position.trough_price = state.position.trough_price.min(price);
             }
+            state.position_context.entry_reason = entry_reason;
+            state
+                .position_context
+                .seed_entry_anchor_from_reason(state.position.entry_reason.as_ref());
         }
         (None, Some((entry, _))) => {
+            let entry_reason = state
+                .position
+                .entry_reason
+                .clone()
+                .or_else(|| state.position_context.entry_reason.clone());
             if state.position.side != PositionState::Short
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
@@ -709,12 +1000,28 @@ pub fn sync_position_state(
                     exit_tp_reliable: false,
                     exit_mode: ExitMode::Fixed,
                     exit_type: MRC_CROSSING_EXIT_TYPE,
-                    entry_reason: state.position.entry_reason.clone(),
+                    entry_reason: entry_reason.clone(),
                 };
+                if state.position_context.side != PositionState::Short
+                    || (state.position_context.entry_price - entry).abs() > f64::EPSILON
+                {
+                    state.position_context.begin(
+                        PositionState::Short,
+                        entry,
+                        state.position_context.entry_time_ms,
+                        entry_reason.clone(),
+                        PositionLifetime::OneShot,
+                        Vec::new(),
+                    );
+                }
             } else {
                 state.position.peak_price = state.position.peak_price.max(price);
                 state.position.trough_price = state.position.trough_price.min(price);
             }
+            state.position_context.entry_reason = entry_reason;
+            state
+                .position_context
+                .seed_entry_anchor_from_reason(state.position.entry_reason.as_ref());
         }
         _ => {
             state.position = PositionRuntime::default();

@@ -7,7 +7,8 @@ use long_scalping::{
     engine::run,
     model::{EntryReason, EntryType, ExitMode, ExitType, IndicatorSnapshot, PositionState},
     state::{
-        EngineState, MrcCrossingModel, MrcHistoryEvent, MrcMovementSnapshot, PositionRuntime,
+        EngineState, MrcCrossingModel, MrcHistoryEvent, MrcMovementSnapshot, PositionContext,
+        PositionExitPlanSource, PositionLifetime, PositionPlanSnapshot, PositionRuntime,
         TakeProfitAllocation,
     },
 };
@@ -78,7 +79,11 @@ fn active_position_without_entry_reason_reports_exit_plan_diagnostic() {
 
     assert!(output
         .debug
-        .contains("active-exit=skip side=Long reason=missing-entry-reason"));
+        .contains("active-exit=emergency-close side=Long reason=missing-entry-reason"));
+    assert_eq!(output.close_positions.len(), 1);
+    assert!(output.close_positions[0]
+        .reason
+        .contains("position-controller-emergency-no-exit-plan"));
     assert!(output
         .debug
         .contains("position-sync=runtime-rebuilt side=Long"));
@@ -736,6 +741,94 @@ fn active_mrc_position_reprices_to_the_maximum_route_candidate() {
         state.position.take_profit,
         output.place_orders[0].enter_price
     );
+}
+
+#[test]
+fn opposite_future_route_keeps_cached_position_protection() {
+    let (_, mut future_analysis, _) = active_mrc_route_fixture();
+    future_analysis.trade_direction = -1;
+
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(staircase_snapshot());
+    state.market_mrc_analysis = Some(future_analysis);
+    state.position = position(PositionState::Long, 0.0);
+    state.position.entry_reason = None;
+    state.position_context = PositionContext {
+        side: PositionState::Long,
+        entry_price: 100.0,
+        entry_anchor: Some(PositionPlanSnapshot {
+            take_profit: 106.0,
+            stop_loss: 97.0,
+            tp_reliable: true,
+        }),
+        last_valid_plan: Some(PositionPlanSnapshot {
+            take_profit: 106.0,
+            stop_loss: 97.0,
+            tp_reliable: true,
+        }),
+        lifetime: PositionLifetime::OneShot,
+        reentry_reason: "one-shot-position".to_string(),
+        ..Default::default()
+    };
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(output.close_positions.len(), 0);
+    assert_eq!(output.place_orders.len(), 1);
+    assert_eq!(output.place_orders[0].enter_price, 106.0);
+    assert_eq!(
+        state.position_context.last_plan_source,
+        PositionExitPlanSource::LastValidPositionPlan
+    );
+}
+
+#[test]
+fn invalidated_same_side_stairs_requests_position_close() {
+    let (_, mut analysis, _) = active_mrc_route_fixture();
+    analysis.staircase_lifecycle =
+        Some(long_scalping::detection::mrc_pattern_classification::StaircaseLifecycle::Invalidated);
+
+    let mut state = EngineState::default();
+    state.last_snapshot = Some(staircase_snapshot());
+    state.active_mrc_analysis = Some(analysis);
+    state.position = position(PositionState::Long, 97.0);
+
+    let output = run(
+        &input(
+            100.0,
+            ModulePositions {
+                long: Some(ModulePositionSummary {
+                    entry_price: 100.0,
+                    notional: 10.0,
+                    pnl: 0.0,
+                    qty: 0.1,
+                }),
+                short: None,
+            },
+        ),
+        &mut state,
+    );
+
+    assert_eq!(output.close_positions.len(), 1);
+    assert!(output.close_positions[0]
+        .reason
+        .contains("same-side-staircase-invalidated"));
+    assert!(output.cancel_orders.contains(&"tp-long".to_string()));
+    assert!(output.debug.contains("position-controller=close"));
 }
 
 #[test]

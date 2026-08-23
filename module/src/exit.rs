@@ -3,7 +3,9 @@ use crate::format::tick_size;
 use crate::guard;
 use crate::model::{EntryReason, ExitMode, ExitType, IndicatorSnapshot, PositionState};
 use crate::orders::{tp_limit_order, tp_mark};
-use crate::state::EngineState;
+use crate::state::{
+    EngineState, PositionDecisionAction, PositionExitPlanSource, PositionPlanSnapshot,
+};
 use crate::stop_loss;
 use lte_strategy_bridge::abi::{Direction, ModuleInput, ModulePlaceOrder, ModuleUpdatePosition};
 
@@ -148,7 +150,12 @@ fn position_exit_plan(
     side: PositionState,
     _context: ExitPlanContext,
 ) -> Option<ExitPlan> {
-    let plan = match state.position.entry_reason.as_ref() {
+    let entry_reason = state
+        .position
+        .entry_reason
+        .as_ref()
+        .or(state.position_context.entry_reason.as_ref());
+    let plan = match entry_reason {
         Some(reason @ EntryReason::MrcCrossing { .. }) => {
             let levels = if snapshot.tf1m.mrc.ordered() {
                 let dynamic = state
@@ -223,6 +230,84 @@ fn position_exit_plan(
             state.cfg.min_sl_percent(),
         )
     })
+}
+
+fn snapshot_exit_plan(
+    state: &EngineState,
+    reference_price: f64,
+    side: PositionState,
+    snapshot_plan: PositionPlanSnapshot,
+) -> Option<ExitPlan> {
+    if !snapshot_plan.valid_for(side, reference_price) {
+        return None;
+    }
+    guard::minimum_exit_distances::enforce_minimum_exit_distances(
+        ExitPlan {
+            take_profit: TakeProfit::Fixed {
+                price: snapshot_plan.take_profit,
+            },
+            stop_loss: StopLoss::Fixed {
+                price: snapshot_plan.stop_loss,
+            },
+            tp_reliable: snapshot_plan.tp_reliable,
+        },
+        reference_price,
+        side,
+        state.cfg.min_tp_percent(),
+        state.cfg.min_sl_percent(),
+    )
+}
+
+pub(crate) fn resolve_position_exit_plan(
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    reference_price: f64,
+    side: PositionState,
+) -> Option<(ExitPlan, PositionExitPlanSource)> {
+    if let Some(plan) = entry_exit_plan(state, snapshot, reference_price, side) {
+        let source = if state.active_mrc_analysis.is_some() {
+            PositionExitPlanSource::DynamicSameSide
+        } else {
+            PositionExitPlanSource::EntryAnchor
+        };
+        state.position_context.remember_plan(
+            PositionPlanSnapshot {
+                take_profit: plan.take_profit.price(),
+                stop_loss: plan.stop_loss.price(),
+                tp_reliable: plan.tp_reliable,
+            },
+            source,
+        );
+        return Some((plan, source));
+    }
+
+    for (source, candidate) in [
+        (
+            PositionExitPlanSource::LastValidPositionPlan,
+            state.position_context.last_valid_plan,
+        ),
+        (
+            PositionExitPlanSource::EntryAnchor,
+            state.position_context.entry_anchor,
+        ),
+    ] {
+        if let Some(candidate) = candidate
+            .and_then(|candidate| snapshot_exit_plan(state, reference_price, side, candidate))
+        {
+            state.position_context.last_valid_plan = Some(PositionPlanSnapshot {
+                take_profit: candidate.take_profit.price(),
+                stop_loss: candidate.stop_loss.price(),
+                tp_reliable: candidate.tp_reliable,
+            });
+            state.position_context.last_plan_source = source;
+            return Some((candidate, source));
+        }
+    }
+    state.position_context.last_plan_source = PositionExitPlanSource::EmergencyClose;
+    state
+        .position_context
+        .disable_reentry("no-valid-position-exit-plan");
+    None
 }
 
 type ActiveExitResult = (
@@ -372,7 +457,11 @@ pub(crate) fn far_target_for_position(
     entry_price: f64,
     primary_target: f64,
 ) -> Option<f64> {
-    let reason = state.position.entry_reason.as_ref()?;
+    let reason = state
+        .position
+        .entry_reason
+        .as_ref()
+        .or(state.position_context.entry_reason.as_ref())?;
     let EntryReason::MrcCrossing {
         target_line,
         target_is_movement,
@@ -429,6 +518,7 @@ fn expected_movement_time_ms(state: &EngineState) -> Option<u64> {
         .position
         .entry_reason
         .as_ref()
+        .or(state.position_context.entry_reason.as_ref())
         .and_then(|reason| match reason {
             EntryReason::MrcCrossing {
                 estimated_time_ms, ..
@@ -598,12 +688,43 @@ fn ensure_trailing_exit_order(
     snapshot: &IndicatorSnapshot,
     side: PositionState,
 ) -> ActiveExitResult {
+    state
+        .position_context
+        .set_decision(PositionDecisionAction::Hold, "position-protection");
     let direction = match side {
         PositionState::Long => Direction::Long,
         PositionState::Short => Direction::Short,
         PositionState::Flat => Direction::Both,
     };
     let mark = tp_mark(direction);
+    let direction_sign = match side {
+        PositionState::Long => 1,
+        PositionState::Short => -1,
+        PositionState::Flat => 0,
+    };
+    if state.active_mrc_analysis.as_ref().is_some_and(|analysis| {
+        analysis.trade_direction == direction_sign
+            && matches!(
+                analysis.staircase_lifecycle,
+                Some(crate::detection::mrc_pattern_classification::StaircaseLifecycle::Invalidated)
+            )
+    }) {
+        state.position_context.set_decision(
+            PositionDecisionAction::Close,
+            "same-side-staircase-invalidated",
+        );
+        state
+            .position_context
+            .disable_reentry("same-side-staircase-invalidated");
+        record_exit_event(
+            state,
+            format!(
+                "position-controller=close side={:?} reason=same-side-staircase-invalidated",
+                side
+            ),
+        );
+        return (Vec::new(), Vec::new(), all_tp_marks(direction));
+    }
     let qty = position_qty(input, side);
     if qty <= 0.0 {
         record_exit_event(
@@ -612,14 +733,34 @@ fn ensure_trailing_exit_order(
         );
         return (Vec::new(), Vec::new(), Vec::new());
     }
+    if state.position.take_profit > 0.0
+        && state.position.stop_loss > 0.0
+        && state.position_context.last_valid_plan.is_none()
+    {
+        state.position_context.remember_plan(
+            PositionPlanSnapshot {
+                take_profit: state.position.take_profit,
+                stop_loss: state.position.stop_loss,
+                tp_reliable: state.position.exit_tp_reliable,
+            },
+            PositionExitPlanSource::EntryAnchor,
+        );
+    }
     if state.position.take_profit <= 0.0 || state.position.stop_loss <= 0.0 {
         let reference_price = if state.position.entry_price > 0.0 {
             state.position.entry_price
         } else {
             input.price
         };
-        let Some(plan) = entry_exit_plan(state, snapshot, reference_price, side) else {
-            let reason = if state.position.entry_reason.is_none() {
+        let Some((plan, source)) =
+            resolve_position_exit_plan(state, snapshot, reference_price, side)
+        else {
+            state
+                .position_context
+                .set_decision(PositionDecisionAction::Close, "emergency-no-exit-plan");
+            let reason = if state.position.entry_reason.is_none()
+                && state.position_context.entry_reason.is_none()
+            {
                 "missing-entry-reason"
             } else {
                 "no-valid-exit-plan"
@@ -627,8 +768,11 @@ fn ensure_trailing_exit_order(
             record_exit_event(
                 state,
                 format!(
-                    "active-exit=skip side={:?} reason={} reference={:.8}",
-                    side, reason, reference_price
+                    "active-exit=emergency-close side={:?} reason={} source={} reference={:.8}",
+                    side,
+                    reason,
+                    PositionExitPlanSource::EmergencyClose.as_str(),
+                    reference_price
                 ),
             );
             return (Vec::new(), Vec::new(), Vec::new());
@@ -637,6 +781,9 @@ fn ensure_trailing_exit_order(
         state.position.take_profit = plan.take_profit.price();
         set_stop_loss(state, plan.stop_loss);
         state.position.exit_tp_reliable = plan.tp_reliable;
+        state
+            .position_context
+            .set_decision(PositionDecisionAction::UpdateExit, "exit-plan-ready");
         let (tp_orders, cancel_orders) = take_profit_orders(
             input,
             state,
@@ -654,6 +801,16 @@ fn ensure_trailing_exit_order(
                 side,
                 tp_orders.len(),
                 cancel_orders.len()
+            ),
+        );
+        record_exit_event(
+            state,
+            format!(
+                "position-plan source={} side={:?} tp={:.8} vsl={:.8}",
+                source.as_str(),
+                side,
+                plan.take_profit.price(),
+                plan.stop_loss.price()
             ),
         );
         return (tp_orders, Vec::new(), cancel_orders);
@@ -681,6 +838,10 @@ fn ensure_trailing_exit_order(
             return (Vec::new(), Vec::new(), Vec::new());
         }
         state.position.take_profit = recovery_tp;
+        state.position_context.set_decision(
+            PositionDecisionAction::UpdateExit,
+            "virtual-sl-recovery-reprice",
+        );
         record_tp_reprice(
             state,
             input,
@@ -738,6 +899,9 @@ fn ensure_trailing_exit_order(
         };
         state.position.take_profit = recovery_tp;
         state.position.exit_mode = ExitMode::TrailAfterVirtualSl;
+        state
+            .position_context
+            .set_decision(PositionDecisionAction::UpdateExit, "virtual-sl-cross");
         record_tp_reprice(
             state,
             input,
@@ -783,7 +947,11 @@ fn ensure_trailing_exit_order(
     }
 
     let dynamic_movement_entry = matches!(
-        state.position.entry_reason.as_ref(),
+        state
+            .position
+            .entry_reason
+            .as_ref()
+            .or(state.position_context.entry_reason.as_ref()),
         Some(crate::model::EntryReason::MrcCrossing {
             target_is_movement: true,
             ..
@@ -798,6 +966,14 @@ fn ensure_trailing_exit_order(
             side,
             ExitPlanContext::ActiveReprice,
         ) {
+            state.position_context.remember_plan(
+                PositionPlanSnapshot {
+                    take_profit: plan.take_profit.price(),
+                    stop_loss: plan.stop_loss.price(),
+                    tp_reliable: plan.tp_reliable,
+                },
+                PositionExitPlanSource::DynamicSameSide,
+            );
             let candidate_stop_loss = plan.stop_loss.price();
             let favorable_stop = match side {
                 PositionState::Long => candidate_stop_loss > previous_stop_loss,
@@ -813,6 +989,9 @@ fn ensure_trailing_exit_order(
             {
                 let previous_tp = state.position.take_profit;
                 state.position.take_profit = plan.take_profit.price();
+                state
+                    .position_context
+                    .set_decision(PositionDecisionAction::UpdateExit, "dynamic-tp-reprice");
                 let tick = tick_size(input);
                 record_tp_reprice(
                     state,
@@ -876,6 +1055,9 @@ fn ensure_trailing_exit_order(
                 Some("tp:stalled-partial"),
                 fallback,
             );
+            state
+                .position_context
+                .set_decision(PositionDecisionAction::UpdateExit, "stalled-partial");
             record_exit_event(
                 state,
                 format!(
@@ -920,6 +1102,9 @@ fn ensure_trailing_exit_order(
                 Some("tp:structure"),
                 far_target,
             );
+            state
+                .position_context
+                .set_decision(PositionDecisionAction::UpdateExit, "structure-tp");
             record_exit_event(
                 state,
                 format!(
@@ -968,6 +1153,14 @@ fn ensure_trailing_exit_order(
     }
 
     if let Some(plan) = active_plan {
+        state.position_context.remember_plan(
+            PositionPlanSnapshot {
+                take_profit: plan.take_profit.price(),
+                stop_loss: plan.stop_loss.price(),
+                tp_reliable: plan.tp_reliable,
+            },
+            PositionExitPlanSource::DynamicSameSide,
+        );
         let candidate_stop_loss = plan.stop_loss.price();
         let favorable = match side {
             PositionState::Long => candidate_stop_loss > previous_stop_loss,
@@ -983,6 +1176,9 @@ fn ensure_trailing_exit_order(
         {
             let previous_tp = state.position.take_profit;
             state.position.take_profit = plan.take_profit.price();
+            state
+                .position_context
+                .set_decision(PositionDecisionAction::UpdateExit, "active-tp-reprice");
             let tick = tick_size(input);
             record_tp_reprice(
                 state,

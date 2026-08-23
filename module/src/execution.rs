@@ -184,6 +184,54 @@ fn pre_entry_exit_plan(
     exit::entry_exit_plan(state, snapshot, reference_price, side)
 }
 
+fn active_position_result(
+    input: &ModuleInput,
+    state: &mut EngineState,
+    snapshot: &IndicatorSnapshot,
+    side: PositionState,
+) -> ExecutionResult {
+    let (tp_orders, update_positions, cancel_orders) =
+        exit::ensure_active_exit_order(input, state, snapshot, side);
+    let close_requested =
+        state.position_context.last_action == crate::state::PositionDecisionAction::Close;
+    let direction = match side {
+        PositionState::Long => Direction::Long,
+        PositionState::Short => Direction::Short,
+        PositionState::Flat => Direction::Both,
+    };
+    let close_positions = close_requested
+        .then(|| {
+            vec![close(
+                direction,
+                &close_reason(
+                    &format!(
+                        "position-controller-{}",
+                        state.position_context.decision_reason
+                    ),
+                    state,
+                    input.price,
+                    tick_size(input),
+                ),
+            )]
+        })
+        .unwrap_or_default();
+    ExecutionResult {
+        tp_orders,
+        update_positions,
+        cancel_orders: if close_requested {
+            let mut cancel_orders = cancel_orders;
+            cancel_orders.extend(exit::all_tp_marks(direction));
+            cancel_orders.sort();
+            cancel_orders.dedup();
+            cancel_orders
+        } else {
+            cancel_orders
+        },
+        close_positions,
+        ..Default::default()
+    }
+}
+
 fn close_reason(reason: &str, state: &EngineState, price: f64, tick_size: f64) -> String {
     format!(
         "close because {} price={} cap_init={:.2}% trading_amount={:.2}% budget={:.4}",
@@ -228,6 +276,58 @@ fn pending_limit_entry_expired(
     pending_position(input, side)
         .map(|position| !has_active_position(Some(position)))
         .unwrap_or(false)
+}
+
+fn recyclable_reentry_block_reason(
+    input: &ModuleInput,
+    state: &EngineState,
+    side: PositionState,
+) -> Option<String> {
+    if state.position_context.side != PositionState::Flat
+        || state.position_context.lifetime != crate::state::PositionLifetime::RecyclableStairs
+    {
+        return None;
+    }
+    let direction = match side {
+        PositionState::Long => 1,
+        PositionState::Short => -1,
+        PositionState::Flat => return None,
+    };
+    let now_ms = input
+        .sug_info
+        .as_ref()
+        .map(|info| info.time.max(0) as u64)
+        .unwrap_or_default();
+    if state.position_context.cycle_direction != direction
+        || state.position_context.cycle_is_valid(now_ms)
+    {
+        return None;
+    }
+    let same_cycle =
+        state.market_mrc_analysis.as_ref().is_some_and(|analysis| {
+            analysis.trade_direction == direction
+                && matches!(
+                analysis.pattern_kind,
+                Some(
+                    crate::detection::mrc_pattern_classification::MrcPatternKind::StairsUp
+                        | crate::detection::mrc_pattern_classification::MrcPatternKind::StairsDown
+                )
+            ) && matches!(
+                analysis.staircase_lifecycle,
+                Some(
+                    crate::detection::mrc_pattern_classification::StaircaseLifecycle::Progressing
+                        | crate::detection::mrc_pattern_classification::StaircaseLifecycle::Pullback
+                )
+            ) && !state.position_context.cycle_pattern.is_empty()
+                && analysis.stair_sequence == state.position_context.cycle_pattern
+        });
+    same_cycle.then(|| {
+        format!(
+            "reentry-blocked lifetime={} entries={} reason=cycle-limit",
+            state.position_context.lifetime.as_str(),
+            state.position_context.consecutive_entries
+        )
+    })
 }
 
 fn pending_position<'a>(
@@ -383,14 +483,12 @@ pub fn evaluate_with_mrc(
                 ..Default::default()
             });
         } else {
-            let (tp_orders, update_positions, cancel_orders) =
-                exit::ensure_active_exit_order(input, state, snapshot, PositionState::Long);
-            return finish(ExecutionResult {
-                tp_orders,
-                update_positions,
-                cancel_orders,
-                ..Default::default()
-            });
+            return finish(active_position_result(
+                input,
+                state,
+                snapshot,
+                PositionState::Long,
+            ));
         }
     }
 
@@ -417,14 +515,12 @@ pub fn evaluate_with_mrc(
                 ..Default::default()
             });
         } else {
-            let (tp_orders, update_positions, cancel_orders) =
-                exit::ensure_active_exit_order(input, state, snapshot, PositionState::Short);
-            return finish(ExecutionResult {
-                tp_orders,
-                update_positions,
-                cancel_orders,
-                ..Default::default()
-            });
+            return finish(active_position_result(
+                input,
+                state,
+                snapshot,
+                PositionState::Short,
+            ));
         }
     }
 
@@ -462,6 +558,12 @@ pub fn evaluate_with_mrc(
                     ..Default::default()
                 });
             }
+        }
+        if let Some(reason) = recyclable_reentry_block_reason(input, state, entry_side) {
+            return finish(ExecutionResult {
+                constraint: Some(reason),
+                ..Default::default()
+            });
         }
     }
 

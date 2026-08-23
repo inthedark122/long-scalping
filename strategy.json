@@ -18,12 +18,12 @@
       "direction": "BOTH",
       "max_open_amount": 500,
       "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-      "module_version": "1.0.112",
+      "module_version": "1.0.113",
       "name": "DynamicModule",
       "on_actions": [],
       "professional": {
         "dynamic_module": {
-          "module_version": "1.0.112"
+          "module_version": "1.0.113"
         }
       }
     }
@@ -32,7 +32,7 @@
     {
       "code": "start",
       "name": "Start",
-      "description": "Start the 1.0.112 state-machine pattern engine with empirical MRC-touch learning and structural exits. The predictor learns next-line direction from exact and crossing touches, tags history by 5m MRC slope and price-side context, and tracks fast, normal, and slow touch intervals; it remains neutral until matching evidence is available. Stairs are the only primary entry authority. REVERSAL is a staircase transition with potential or confirmed state, not a separate primary pattern. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade supplies movement timing and activity context only; it does not determine direction or create staged orders. Limit entries use one selected entry order. A position uses one primary reduce-only TP calculated from the filled entry and learned favorable movement; MRC target lines remain route/reference analysis and the MRC structure supplies the protective stop. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
+      "description": "Start the 1.0.113 state-machine pattern engine with empirical MRC-touch learning, structural exits, and separate market/open-position decision contexts. The predictor learns next-line direction from exact and crossing touches, tags history by 5m MRC slope and price-side context, and tracks fast, normal, and slow touch intervals; it remains neutral until matching evidence is available. Stairs are the only primary entry authority. REVERSAL is a staircase transition with potential or confirmed state, not a separate primary pattern. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade supplies movement timing and activity context only; it does not determine direction or create staged orders. Limit entries use one selected entry order. A position uses one primary reduce-only TP calculated from the filled entry and learned favorable movement; MRC target lines remain route/reference analysis and the MRC structure supplies the protective stop. An open position keeps its same-side exit context while the market context controls future entries. Position lifetimes distinguish one-shot positions from bounded recyclable staircase cycles. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
       "params": [
         {
           "code": "cap_init",

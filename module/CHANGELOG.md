@@ -2,6 +2,20 @@
 
 # Unreleased
 
+# 1.0.113
+
+Open-position decision controller release.
+
+- Keep the current market route for future entries separate from the same-side
+  route and exit plan owned by an open position.
+- Add one-shot and recyclable-stairs position lifetimes with bounded re-entry
+  state and persisted position context.
+- Reprice exits from the active position context, retain the last valid plan as
+  fallback, and close explicitly when the same-side staircase is invalidated or
+  no valid exit plan remains.
+- Expose compact position-control action, exit-source, future-route, lifetime,
+  re-entry, and reason diagnostics.
+
 # 1.0.112
 
 Exit diagnostics release.

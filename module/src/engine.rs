@@ -8,9 +8,11 @@ use crate::exit;
 use crate::market_data;
 use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
 use crate::order_manager;
+use crate::orders::close;
 use crate::risk;
 use crate::state::{
-    dir_to_position, direction_sign, sync_position_state, EngineState, PositionRuntime,
+    dir_to_position, direction_sign, sync_position_state, EngineState, PositionLifetime,
+    PositionRuntime,
 };
 use lte_strategy_bridge::abi::{
     Direction, ModuleEvent, ModuleInput, ModuleOrderStatus, ModuleOutput, OrderRole,
@@ -200,8 +202,13 @@ fn handle_signal(
         state.mrc_touch.reset();
         state.cascade = crate::detection::cascade::CascadeState::default();
         state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
-        state.active_mrc_analysis = None;
-        state.active_mrc_context =
+        if state.position.side == crate::model::PositionState::Flat {
+            state.active_mrc_analysis = None;
+            state.active_mrc_context =
+                crate::detection::mrc_prediction::MrcPredictionContext::default();
+        }
+        state.market_mrc_analysis = None;
+        state.market_mrc_context =
             crate::detection::mrc_prediction::MrcPredictionContext::default();
         state.staircase_progress = crate::state::StaircaseProgress::default();
         state.exit_progress.reset();
@@ -401,6 +408,18 @@ fn handle_new_position(
         .as_ref()
         .map(|info| info.time.max(0) as u64)
         .unwrap_or_default();
+    state.position_context.begin(
+        side,
+        entry_price,
+        entry_time_ms,
+        state.position.entry_reason.clone(),
+        position_lifetime_for_entry(state, side),
+        state
+            .market_mrc_analysis
+            .as_ref()
+            .map(|analysis| analysis.stair_sequence.clone())
+            .unwrap_or_default(),
+    );
     state.exit_progress.begin(side, entry_time_ms, entry_price);
     state.position = PositionRuntime {
         side,
@@ -436,10 +455,15 @@ fn handle_new_position(
             }
         }
     };
-    let plan = exit::entry_exit_plan(state, &snapshot, entry_price, side);
+    let resolved_plan = exit::resolve_position_exit_plan(state, &snapshot, entry_price, side);
+    let plan = resolved_plan.map(|(plan, _)| plan);
     let mut tp_orders = Vec::new();
     let mut cancel_orders = Vec::new();
     if let Some(plan) = plan {
+        state.position_context.set_decision(
+            crate::state::PositionDecisionAction::UpdateExit,
+            "entry-exit-plan-ready",
+        );
         state.position.exit_mode = ExitMode::Fixed;
         state.position.take_profit = plan.take_profit.price();
         exit::set_stop_loss(state, plan.stop_loss);
@@ -484,13 +508,33 @@ fn handle_new_position(
             cancel_orders.len()
         )
     } else if state.position.entry_reason.is_none() {
+        state.position_context.set_decision(
+            crate::state::PositionDecisionAction::Close,
+            "emergency-no-entry-reason",
+        );
         "new-position-plan=none reason=missing-entry-reason".to_string()
     } else {
+        state.position_context.set_decision(
+            crate::state::PositionDecisionAction::Close,
+            "emergency-no-exit-plan",
+        );
         "new-position-plan=none reason=no-valid-exit-plan".to_string()
     };
     exit::record_exit_event(state, plan_result);
 
+    let emergency_close = plan.is_none()
+        && state.position_context.last_plan_source
+            == crate::state::PositionExitPlanSource::EmergencyClose;
+
     ModuleOutput {
+        close_positions: emergency_close
+            .then(|| {
+                vec![close(
+                    direction,
+                    "close because position-controller-emergency-no-exit-plan",
+                )]
+            })
+            .unwrap_or_default(),
         place_orders: tp_orders,
         cancel_orders,
         debug: format!(
@@ -501,6 +545,40 @@ fn handle_new_position(
         ) + " "
             + &state.last_exit_event,
         ..Default::default()
+    }
+}
+
+fn position_lifetime_for_entry(
+    state: &EngineState,
+    side: crate::model::PositionState,
+) -> PositionLifetime {
+    let direction = match side {
+        crate::model::PositionState::Long => 1,
+        crate::model::PositionState::Short => -1,
+        crate::model::PositionState::Flat => 0,
+    };
+    let recyclable = state.market_mrc_analysis.as_ref().is_some_and(|analysis| {
+        analysis.trade_direction == direction
+            && matches!(
+                analysis.pattern_kind,
+                Some(
+                    mrc_pattern_classification::MrcPatternKind::StairsUp
+                        | mrc_pattern_classification::MrcPatternKind::StairsDown
+                )
+            )
+            && matches!(
+                analysis.staircase_lifecycle,
+                Some(
+                    mrc_pattern_classification::StaircaseLifecycle::Progressing
+                        | mrc_pattern_classification::StaircaseLifecycle::Pullback
+                )
+            )
+            && analysis.stair_entry_approved
+    });
+    if recyclable {
+        PositionLifetime::RecyclableStairs
+    } else {
+        PositionLifetime::OneShot
     }
 }
 
@@ -517,11 +595,16 @@ fn handle_finish_position(
     );
     risk::apply_close_pnl(input, state, pnl);
     if state.position.side == dir_to_position(direction) {
+        state
+            .position_context
+            .on_flat(format!("finish-confirmed direction={:?}", direction));
         state.position = PositionRuntime::default();
         state.take_profit_allocation.reset();
         state.last_exit_event.clear();
         state.pending_entry_bar = None;
         state.mrc_crossing_model.last_plan_key = None;
+        state.active_mrc_analysis = None;
+        state.active_mrc_context = mrc_prediction::MrcPredictionContext::default();
     }
     let cancel_orders = exit::all_tp_marks(direction);
     state.exit_progress.reset();
@@ -795,7 +878,7 @@ fn process_realtime(
         higher_timeframe_bullish: snapshot.tf5m.mrc_signal.bullish_structure,
         higher_timeframe_bearish: snapshot.tf5m.mrc_signal.bearish_structure,
     };
-    state.active_mrc_context = prediction_context;
+    state.market_mrc_context = prediction_context;
     let mrc_observation = mrc_crossing::observe_with_forecast_and_touch_and_learning_context(
         &mut state.mrc_crossing_model,
         &mrc_events,
@@ -828,13 +911,20 @@ fn process_realtime(
                 mrc_pattern_classification::MrcPatternKind::StairsUp
                     | mrc_pattern_classification::MrcPatternKind::StairsDown
             )
-        ) && (state.position.side == crate::model::PositionState::Flat
+        )
+    }) {
+        state.market_mrc_analysis = Some(analysis.clone());
+        if state.position.side == crate::model::PositionState::Flat
             || matches!(
                 (state.position.side, analysis.trade_direction),
                 (crate::model::PositionState::Long, 1) | (crate::model::PositionState::Short, -1)
-            ))
-    }) {
-        state.active_mrc_analysis = Some(analysis.clone());
+            )
+        {
+            state.active_mrc_analysis = Some(analysis.clone());
+            state.active_mrc_context = prediction_context;
+        }
+    } else {
+        state.market_mrc_analysis = None;
     }
     if let Some(analysis) = selected_analysis.filter(|analysis| {
         matches!(

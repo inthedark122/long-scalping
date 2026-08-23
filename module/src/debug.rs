@@ -144,6 +144,30 @@ pub fn render(
     if state.position.side != PositionState::Flat {
         parts.push(format!("tp={}", format_take_profit(state, tick_size)));
     }
+    if state.position.side != PositionState::Flat {
+        let future_route = state
+            .market_mrc_analysis
+            .as_ref()
+            .map(|analysis| match analysis.trade_direction {
+                1 => "long",
+                -1 => "short",
+                _ => "none",
+            })
+            .unwrap_or("none");
+        parts.push(format!(
+            "position-control=action={} exit-source={} future-route={} lifetime={} reentry={} reason={}",
+            state.position_context.last_action.as_str(),
+            state.position_context.last_plan_source.as_str(),
+            future_route,
+            state.position_context.lifetime.as_str(),
+            if state.position_context.reentry_allowed {
+                "allowed"
+            } else {
+                "blocked"
+            },
+            state.position_context.reentry_reason
+        ));
+    }
     if state.position.side != PositionState::Flat
         && state.position.stop_loss > 0.0
         && !state.position.stop_loss_reason.is_empty()
