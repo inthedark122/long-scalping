@@ -7,6 +7,28 @@
 - Run repository commands from `/home/dev/strategies/long-scalping` unless a command explicitly requires another working directory.
 - Run module binaries from the repository root using `--manifest-path module/Cargo.toml`; do not `cd` into `module/` for the standard workflow.
 
+## Code organization and implementation scope
+
+- Organize implementation by domain and feature. Keep each feature's types,
+  rules, and helpers in its own focused module or module directory instead of
+  expanding broad files such as `engine.rs` with feature logic. For example,
+  MRC line and level behavior belongs under
+  `module/src/detection/mrc_levels/`.
+- Keep orchestration code focused on routing events and coordinating feature
+  modules. Put domain decisions and calculations inside the module that owns
+  that behavior, with explicit inputs and outputs between modules.
+- Scope each implementation to one requested feature or one clearly defined
+  solution. Do not bundle unrelated fixes, cleanup, or behavior changes into
+  the same implementation.
+- Prioritize clear structure, readable code, and well-defined ownership over
+  adding or changing strategy behavior. Implement strategy behavior exactly as
+  specified; do not infer, broaden, or silently alter requirements.
+- Minimize side effects and hidden state changes. Keep mutations local to the
+  feature that owns the state and make state changes explicit at module
+  boundaries.
+- Keep comments sparse. Use them to explain non-obvious rationale or
+  constraints, not to restate what the code already expresses.
+
 ## Rust tests
 
 - Keep new Rust tests in the crate's separate `tests/` directory, not in
@@ -38,6 +60,7 @@
     --symbol-key 'OKX#CAP-USDT-SWAP#SWAP' \
     --symbol-key 'OKX#BEAT-USDT-SWAP#SWAP' \
     --symbol-key 'OKX#ETH-USDT-SWAP#SWAP' \
+    --history 10000 \
     --output tmp/reports/ \
     --html tmp/reports/
   ```

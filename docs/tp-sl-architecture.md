@@ -7,15 +7,15 @@ This is the design contract for MRC staircase TP/SL calculation.
 | Source | Responsibility |
 |---|---|
 | Current `1m` indicator snapshot | MRC lines, MRC signal, candle, volume and other indicator values. The core MRC plan always uses the current 1m structure. |
-| `sug_info` | Event time, NTPS, fast-time data, cascade timing and other non-indicator/live context. |
+| `market_decision` | Event time, NTPS, trade-delta time, cascade timing and other non-indicator/live context. |
 | Cascade state | Direction, movement phase, elapsed movement time, speed, price range/potential and adverse movement. |
 | Historical MRC movement records | Per-route favorable %, adverse %, duration and sample count. |
 | Execution state | Actual filled entry and current position price/quantity. |
 
 The cascade is updated from chronological 1m movement data using the time from
-`sug_info`. It measures current price/time interest in the movement. It is
-context for the MRC prediction; it does not independently choose the trade
-direction.
+the `MarketDecision` event. It measures current price/time interest in the
+movement. It is context for the MRC prediction; it does not independently
+choose the trade direction.
 
 ## 2. Active MRC line plan
 
@@ -78,11 +78,11 @@ The live state keeps:
 
 ## 4. Maximum-profit procedure
 
-Run this procedure on entry and on every new valid 1m indicator / `sug_info`
-update:
+Run this procedure on entry and on every new valid 1m indicator / market
+decision update:
 
 1. Refresh the current 1m MRC and indicator snapshot.
-2. Update cascade state from the chronological 1m movement and `sug_info`
+2. Update cascade state from the chronological 1m movement and market-decision
    time. Record its direction, phase, speed, elapsed time, potential price
    movement and adverse movement.
 3. Build the complete plan for all nine current MRC lines.
@@ -164,8 +164,8 @@ defined partial/fallback exit policy; do not extend TP automatically.
 ## 7. Non-negotiable invariants
 
 - Core indicator input is the current 1m snapshot.
-- `sug_info` supplies time and non-indicator/live context used by cascade and
-  activity measurement.
+- `market_decision` supplies time and non-indicator/live context used by
+  cascade and activity measurement.
 - All nine MRC line plans remain available for route and prediction decisions.
 - Every forward MRC line has movement-% and approximate-time information when
   the required data exists.
@@ -182,7 +182,7 @@ defined partial/fallback exit policy; do not extend TP automatically.
 Tests must prove that:
 
 1. the plan is built from current 1m MRC lines;
-2. `sug_info` time changes cascade elapsed time and speed context;
+2. Market-decision time changes cascade elapsed time and speed context;
 3. all nine line plans contain movement and time fields;
 4. historical and cascade time sources are selected correctly;
 5. the model scans all valid forward lines instead of stopping at the first;
