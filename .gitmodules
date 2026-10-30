@@ -1,0 +1,4 @@
+[submodule "module/ta-rs"]
+	path = module/ta-rs
+	url = https://github.com/LivTorgEx/ta-rs.git
+	branch = dev

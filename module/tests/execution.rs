@@ -14,24 +14,26 @@ use long_scalping::{
 };
 use lte_strategy_bridge::abi::ModuleSymbolInfo;
 use lte_strategy_bridge::{
-    AlgoSuggestionTradeStatus, Direction, ModuleEvent, ModuleInput, ModulePositionSummary,
-    ModulePositions, SuggestionInfo, SuggestionInfoCandle, SuggestionInfoIndicator,
+    Direction, ModuleEvent, ModuleInput, ModuleMarketCandle, ModuleMarketDecision,
+    ModulePositionSummary, ModulePositions,
 };
 
-fn sug_info(time: i64, price: f64) -> SuggestionInfo {
-    SuggestionInfo {
+fn market_decision(time: i64, price: f64) -> ModuleMarketDecision {
+    ModuleMarketDecision {
         time,
         system_time: time,
-        symbol: "TEST".to_string(),
-        symbol_id: 1,
-        symbol_key: "OKX#TEST-USDT-SWAP#SWAP".parse().expect("symbol key"),
-        status: AlgoSuggestionTradeStatus::Normal,
+        symbol_key: "OKX#TEST-USDT-SWAP#SWAP".to_string(),
         price,
-        candle: SuggestionInfoCandle::new(price),
-        klines: HashMap::new(),
-        fast_candle: None,
-        direction: Direction::Both,
-        indicator: SuggestionInfoIndicator::default(),
+        candle: ModuleMarketCandle {
+            min: price,
+            max: price,
+            enter: price,
+            exit: price,
+            ..Default::default()
+        },
+        fc: None,
+        ntp_5s: 0,
+        tdt: None,
         order_book: None,
         oi: None,
     }
@@ -39,7 +41,7 @@ fn sug_info(time: i64, price: f64) -> SuggestionInfo {
 
 fn input(price: f64, positions: ModulePositions) -> ModuleInput {
     ModuleInput {
-        event: ModuleEvent::SugInfo,
+        event: ModuleEvent::MarketDecision,
         price,
         symbol: "TEST".to_string(),
         max_amount: 100.0,
@@ -51,7 +53,7 @@ fn input(price: f64, positions: ModulePositions) -> ModuleInput {
         leverage: 10,
         indicators: BTreeMap::new(),
         positions,
-        sug_info: Some(sug_info(1_000, price)),
+        market_decision: Some(market_decision(1_000, price)),
         state: None,
     }
 }
@@ -488,7 +490,7 @@ fn cascade_values_do_not_switch_or_reprice_the_tp_structure() {
             short: None,
         },
     );
-    next.sug_info.as_mut().unwrap().time = 5_000;
+    next.market_decision.as_mut().unwrap().time = 5_000;
     state.cascade_signal = CascadeSignal::default();
     let output = run(&next, &mut state);
     assert!(output.place_orders.is_empty());
@@ -537,7 +539,7 @@ fn stalled_staircase_moves_only_the_far_partial_closer() {
             short: None,
         },
     );
-    current.sug_info.as_mut().unwrap().time = 20_000;
+    current.market_decision.as_mut().unwrap().time = 20_000;
     let output = run(&current, &mut state);
     assert_eq!(
         state.exit_progress.mode,

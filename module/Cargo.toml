@@ -1,6 +1,6 @@
 [package]
 name = "long-scalping"
-version = "1.0.113"
+version = "1.0.115"
 edition = "2021"
 
 [features]
@@ -19,6 +19,7 @@ required-features = ["mrc-research", "native-tools"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Pinned to the ABI that carries typed order updates and start-signal values.
+# Pinned to the ABI with module data requirements and raw kline snapshots.
 # Bump this rev (and `cargo update -p lte_strategy_bridge`) when fetching a new ABI.
-lte_strategy_bridge = { git = "https://github.com/LivTorgEx/lte_strategy_bridge.git", rev = "93f41563201cfc41a4d05269c139cd1db2efc53f" }
+lte_strategy_bridge = { git = "https://github.com/LivTorgEx/lte_strategy_bridge.git", rev = "b3087bbc48e82a9c7d489a09fce825eee9f75c8f" }
+ta = { path = "ta-rs" }

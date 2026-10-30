@@ -10,17 +10,18 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "long-scalping"
-version = "1.0.113"
+version = "1.0.115"
 dependencies = [
  "lte_strategy_bridge",
  "serde",
  "serde_json",
+ "ta",
 ]
 
 [[package]]
 name = "lte_strategy_bridge"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=93f41563201cfc41a4d05269c139cd1db2efc53f#93f41563201cfc41a4d05269c139cd1db2efc53f"
+source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=b3087bbc48e82a9c7d489a09fce825eee9f75c8f#b3087bbc48e82a9c7d489a09fce825eee9f75c8f"
 dependencies = [
  "serde",
  "serde_json",
@@ -103,6 +104,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "ta"
+version = "0.5.0"
 
 [[package]]
 name = "unicode-ident"

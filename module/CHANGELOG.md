@@ -2,6 +2,24 @@
 
 # Unreleased
 
+# 1.0.115
+
+ta-rs kline data pipeline release.
+
+- Request 1m and 5m kline history through ABI v2 `Requirements` and calculate
+  MRC-200 and Volume-50 locally from `KlineUpdate` data with ta-rs.
+- Ignore platform indicator events; keep kline history and calculated values
+  transient instead of serializing them into module output state.
+
+# 1.0.114
+
+Market-decision ABI compatibility release.
+
+- Migrate the strategy bridge from `SugInfo` to the public `MarketDecision`
+  contract, mapping `ntp_5s` and `tdt` into the existing activity context.
+- Persist the latest market-decision timestamp so position and order events
+  retain timing context when the ABI omits the snapshot from those events.
+
 # 1.0.113
 
 Open-position decision controller release.

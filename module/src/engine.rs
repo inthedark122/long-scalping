@@ -15,39 +15,16 @@ use crate::state::{
     PositionRuntime,
 };
 use lte_strategy_bridge::abi::{
-    Direction, ModuleEvent, ModuleInput, ModuleOrderStatus, ModuleOutput, OrderRole,
+    Direction, ModuleDataRequirements, ModuleEvent, ModuleInput, ModuleMarketDecision,
+    ModuleOrderStatus, ModuleOutput, OrderRole,
 };
-use lte_strategy_bridge::indicator_access::TimeframeSec;
-use lte_strategy_bridge::sug_info::SuggestionInfo;
+use lte_strategy_bridge::MODULE_ABI_VERSION;
+use std::collections::BTreeMap;
 
-const TF_1M: i64 = TimeframeSec::Tf1m.as_i64();
-const TF_5M: i64 = TimeframeSec::Tf5m.as_i64();
+const TF_1M: i32 = market_data::TF_1M;
+const TF_5M: i32 = market_data::TF_5M;
 
-fn snapshot_error(
-    event: &str,
-    context: &str,
-    raw: &market_data::RawIndicators,
-    error: String,
-) -> String {
-    if context.is_empty() {
-        format!(
-            "event={} {} {}",
-            event,
-            error,
-            market_data::render_raw_indicator_inventory(raw)
-        )
-    } else {
-        format!(
-            "event={} {} {} {}",
-            event,
-            context,
-            error,
-            market_data::render_raw_indicator_inventory(raw)
-        )
-    }
-}
-
-fn timeframes_context(timeframes: &[i64]) -> String {
+fn timeframes_context(timeframes: &[i32]) -> String {
     if timeframes.is_empty() {
         String::new()
     } else {
@@ -66,20 +43,71 @@ fn refresh_last_snapshot(state: &mut EngineState, snapshot: &crate::model::Indic
     state.last_snapshot = Some(snapshot.clone());
 }
 
+fn seed_mrc_from_kline_history(state: &mut EngineState, now_ms: u64) {
+    let Ok(history) = market_data::build_mrc_history(&state.klines) else {
+        return;
+    };
+    mrc_crossing::seed_from_history_with_touch(
+        &mut state.mrc_crossing_model,
+        &mut state.vlines,
+        &mut state.mrc_crossing,
+        &history,
+        now_ms,
+        &mut state.mrc_touch,
+    );
+}
+
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
+    if let Some(market_decision) = input.market_decision.as_ref() {
+        state.last_market_decision_time_ms = market_decision.time.max(0) as u64;
+    }
+
     match &input.event {
+        ModuleEvent::Requirements => ModuleOutput {
+            data_requirements: ModuleDataRequirements {
+                abi_version: MODULE_ABI_VERSION,
+                klines: market_data::kline_requirements(),
+                internal_indicators: BTreeMap::new(),
+            },
+            debug: format!(
+                "requirements klines=[60:{},300:{}] indicators=unsupported",
+                market_data::KLINE_HISTORY_COUNT,
+                market_data::KLINE_HISTORY_COUNT
+            ),
+            ..Default::default()
+        },
         ModuleEvent::Init => {
-            state.history.init(&input.indicators);
-            refresh_indicators(input, state, &[TF_1M, TF_5M], true)
+            state.last_snapshot = None;
+            state.klines.init(&input.klines);
+            refresh_klines(input, state, &[TF_1M, TF_5M], true, true)
         }
-        ModuleEvent::Indicators { timeframes } => {
-            state.history.update(&input.indicators, timeframes);
-            refresh_indicators(input, state, timeframes, false)
+        ModuleEvent::KlineUpdate { timeframes } => {
+            let previous_1m_time = state.klines.get_prev(TF_1M, 0).map(|kline| kline.time);
+            state.klines.update(&input.klines);
+            let current_1m_time = state.klines.get_prev(TF_1M, 0).map(|kline| kline.time);
+            let new_1m_bar = timeframes.contains(&TF_1M)
+                && current_1m_time.is_some_and(|time| previous_1m_time != Some(time));
+            refresh_klines(input, state, timeframes, false, new_1m_bar)
         }
-        ModuleEvent::SugInfo => match input.sug_info.as_ref() {
-            Some(sug_info) => process_realtime(input, state, sug_info),
+        ModuleEvent::Indicators { timeframes } => ModuleOutput {
+            debug: format!(
+                "unsupported-event=Indicators tfs=[{}]",
+                timeframes
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            ..Default::default()
+        },
+        ModuleEvent::InternalIndicators { timeframes } => ModuleOutput {
+            debug: format!("unsupported-event=InternalIndicators tfs={timeframes:?}"),
+            ..Default::default()
+        },
+        ModuleEvent::MarketDecision => match input.market_decision.as_ref() {
+            Some(market_decision) => process_realtime(input, state, market_decision),
             None => ModuleOutput {
-                debug: "sug-info missing".to_string(),
+                debug: "market-decision missing".to_string(),
                 ..Default::default()
             },
         },
@@ -87,7 +115,7 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             direction,
             code,
             values,
-        } => handle_signal(input, direction, code, values, state),
+        } => handle_signal(direction, code, values, state),
         ModuleEvent::Action { name, values } => handle_action(input, state, name, values),
         ModuleEvent::NewPosition {
             direction,
@@ -119,7 +147,6 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
 }
 
 fn handle_signal(
-    input: &ModuleInput,
     direction: &Direction,
     code: &str,
     values: &std::collections::HashMap<String, serde_json::Value>,
@@ -212,21 +239,9 @@ fn handle_signal(
             crate::detection::mrc_prediction::MrcPredictionContext::default();
         state.staircase_progress = crate::state::StaircaseProgress::default();
         state.exit_progress.reset();
-        if let Some(now_ms) = input
-            .sug_info
-            .as_ref()
-            .map(|sug_info| sug_info.time)
-            .filter(|time| *time > 0)
-            .map(|time| time as u64)
-        {
-            mrc_crossing::seed_from_history_with_touch(
-                &mut state.mrc_crossing_model,
-                &mut state.vlines,
-                &mut state.mrc_crossing,
-                &state.history,
-                now_ms,
-                &mut state.mrc_touch,
-            );
+        let now_ms = state.last_market_decision_time_ms;
+        if now_ms > 0 {
+            seed_mrc_from_kline_history(state, now_ms);
         }
         state.cfg_loaded = true;
         ModuleOutput {
@@ -403,11 +418,7 @@ fn handle_new_position(
             .unwrap_or(0.0),
     );
     state.take_profit_allocation.begin(side, allocation_qty);
-    let entry_time_ms = input
-        .sug_info
-        .as_ref()
-        .map(|info| info.time.max(0) as u64)
-        .unwrap_or_default();
+    let entry_time_ms = state.last_market_decision_time_ms;
     state.position_context.begin(
         side,
         entry_price,
@@ -437,16 +448,19 @@ fn handle_new_position(
     state.mrc_crossing_model.current_entry = None;
     state.pending_entry_bar = None;
 
-    let snapshot = match market_data::build_indicator_snapshot(&state.history, &input.indicators) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
+    let snapshot = match state.last_snapshot.clone() {
+        Some(snapshot) => snapshot,
+        None => {
             let is_mrc = state.position.entry_reason.as_ref().is_some_and(|reason| {
                 matches!(reason, crate::model::EntryReason::MrcCrossing { .. })
             });
             if is_mrc {
-                state.last_snapshot.unwrap_or_default()
+                crate::model::IndicatorSnapshot::default()
             } else {
-                let error = snapshot_error("Init", "tfs=[60,300]", &input.indicators, error);
+                let error = format!(
+                    "event=NewPosition missing-cached-snapshot {}",
+                    market_data::render_kline_history_inventory(&state.klines)
+                );
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
                     debug: error,
@@ -650,7 +664,7 @@ mod tests {
                 long: None,
                 short: None,
             },
-            sug_info: None,
+            market_decision: None,
             state: None,
         }
     }
@@ -683,13 +697,14 @@ mod tests {
     }
 }
 
-fn refresh_indicators(
+fn refresh_klines(
     input: &ModuleInput,
     state: &mut EngineState,
-    timeframes: &[i64],
+    timeframes: &[i32],
     is_init: bool,
+    new_1m_bar: bool,
 ) -> ModuleOutput {
-    if timeframes.contains(&TF_1M) {
+    if new_1m_bar {
         state.bar_1m = state.bar_1m.saturating_add(1);
     }
 
@@ -708,19 +723,15 @@ fn refresh_indicators(
         input.price,
     );
 
-    let snapshot = match market_data::merge_indicator_snapshot(
-        state.last_snapshot.as_ref(),
-        &state.history,
-        &input.indicators,
-        timeframes,
-    ) {
+    let snapshot = match market_data::build_indicator_snapshot(&state.klines) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            let error = snapshot_error(
-                "Indicators",
-                &timeframes_context(timeframes),
-                &input.indicators,
+            let error = format!(
+                "event={} {} {} {}",
+                if is_init { "Init" } else { "KlineUpdate" },
+                timeframes_context(timeframes),
                 error,
+                market_data::render_kline_history_inventory(&state.klines)
             );
             state.last_error = Some(error.clone());
             return ModuleOutput {
@@ -739,12 +750,13 @@ fn refresh_indicators(
     refresh_last_snapshot(state, &snapshot);
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
-    if is_init || timeframes.contains(&TF_1M) {
-        let now_ms = input
-            .sug_info
-            .as_ref()
-            .map(|sug_info| sug_info.time.max(0) as u64)
-            .unwrap_or_default();
+    if is_init || new_1m_bar {
+        let now_ms = state
+            .klines
+            .get_prev(TF_1M, 0)
+            .map(|kline| kline.time.saturating_add(i64::from(TF_1M) * 1_000).max(0) as u64)
+            .filter(|time| *time > 0)
+            .unwrap_or(state.last_market_decision_time_ms);
         state.cascade_signal = cascade::update_at(&mut state.cascade, &snapshot.tf1m, now_ms);
         state.volume_gain.observe(
             state.bar_1m,
@@ -759,7 +771,14 @@ fn refresh_indicators(
         state.mrc_crossing.candle_cross_mask = 0;
     }
     ModuleOutput {
-        debug: String::new(),
+        debug: if is_init {
+            format!(
+                "event=Init ta-rs snapshot ready {}",
+                market_data::render_kline_history_inventory(&state.klines)
+            )
+        } else {
+            String::new()
+        },
         ..Default::default()
     }
 }
@@ -767,7 +786,7 @@ fn refresh_indicators(
 fn process_realtime(
     input: &ModuleInput,
     state: &mut EngineState,
-    sug_info: &SuggestionInfo,
+    market_decision: &ModuleMarketDecision,
 ) -> ModuleOutput {
     sync_position_state(
         state,
@@ -784,7 +803,7 @@ fn process_realtime(
         input.price,
     );
 
-    let now_ms = sug_info.time.max(0) as u64;
+    let now_ms = market_decision.time.max(0) as u64;
     if state.position.side != crate::model::PositionState::Flat
         && state.exit_progress.side != state.position.side
     {
@@ -795,10 +814,10 @@ fn process_realtime(
 
     let Some(snapshot) = state.last_snapshot.clone() else {
         let error = format!(
-            "event=SugInfo time={} symbol={} missing-cached-snapshot {}",
-            sug_info.time,
-            sug_info.symbol_key,
-            market_data::render_raw_indicator_inventory(&input.indicators)
+            "event=MarketDecision time={} symbol={} missing-cached-snapshot {}",
+            market_decision.time,
+            market_decision.symbol_key,
+            market_data::render_kline_history_inventory(&state.klines)
         );
         state.last_error = Some(error.clone());
         return ModuleOutput {
@@ -809,14 +828,7 @@ fn process_realtime(
     state.last_error = None;
     state.ticks = state.ticks.saturating_add(1);
     if !state.mrc_crossing_model.seeded_from_history {
-        mrc_crossing::seed_from_history_with_touch(
-            &mut state.mrc_crossing_model,
-            &mut state.vlines,
-            &mut state.mrc_crossing,
-            &state.history,
-            sug_info.time.max(0) as u64,
-            &mut state.mrc_touch,
-        );
+        seed_mrc_from_kline_history(state, market_decision.time.max(0) as u64);
     }
     let mrc_events = vlines::update_with_events(
         &mut state.vlines,
@@ -824,12 +836,12 @@ fn process_realtime(
         snapshot.tf1m.mrc.lines(),
         input.price,
         state.ticks,
-        sug_info.time as u64,
+        market_decision.time as u64,
     );
     state.mrc_touch.update(
         snapshot.tf1m.mrc.lines(),
         input.price,
-        sug_info.time.max(0) as u64,
+        market_decision.time.max(0) as u64,
     );
     let touched_lines = mrc_events
         .iter()
@@ -838,7 +850,7 @@ fn process_realtime(
     state.mrc_touch_learning.update_with_events(
         snapshot.tf1m.mrc.lines(),
         input.price,
-        sug_info.time.max(0) as u64,
+        market_decision.time.max(0) as u64,
         snapshot.tf5m.mrc.lines(),
         snapshot.tf5m.mrc_signal.slope_sign,
         &touched_lines,
@@ -858,15 +870,15 @@ fn process_realtime(
     );
     state
         .mrc_risk
-        .observe(&snapshot, input.price, sug_info.time as u64);
+        .observe(&snapshot, input.price, market_decision.time as u64);
     state
         .exit_progress
-        .observe_activity(sug_info.indicator.ntps, snapshot.tf1m.volume_gain);
+        .observe_activity(market_decision.ntp_5s, snapshot.tf1m.volume_gain);
 
     let prediction_context = mrc_prediction::MrcPredictionContext {
         cascade_enabled: true,
-        ntps: sug_info.indicator.ntps,
-        ntps_fast_time_ms: sug_info.indicator.ntps_fast_time,
+        ntps: market_decision.ntp_5s,
+        ntps_fast_time_ms: market_decision.tdt,
         cascade_direction: state.cascade_signal.dir,
         cascade_speed_pct_per_min: state.cascade_signal.speed_pct_per_min,
         cascade_strength: state.cascade_signal.strength,
@@ -891,7 +903,7 @@ fn process_realtime(
             snapshot.tf1m.buy_sell_gain,
         ),
         input.price,
-        sug_info.time as u64,
+        market_decision.time as u64,
         prediction_context,
         state.mrc_touch.signal,
         state.mrc_touch_learning.signal,

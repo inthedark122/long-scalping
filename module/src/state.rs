@@ -15,7 +15,7 @@ use crate::model::{
 use crate::observer::{TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
 use lte_strategy_bridge::abi::Direction;
-use lte_strategy_bridge::indicator_access::IndicatorHistory;
+use lte_strategy_bridge::kline_access::KlineHistory;
 
 #[derive(Debug, Clone, Default)]
 pub struct PositionRuntime {
@@ -694,6 +694,8 @@ impl Default for MrcCrossingState {
 pub struct EngineState {
     pub ticks: u64,
     pub bar_1m: u64,
+    /// Timestamp of the latest public market-decision event.
+    pub last_market_decision_time_ms: u64,
     pub cfg: Config,
     pub cfg_loaded: bool,
     /// Direction preference received by the start signal. Entry guard only.
@@ -712,7 +714,9 @@ pub struct EngineState {
     pub market_mrc_analysis: Option<MrcCrossAnalysis>,
     /// Latest market context paired with `market_mrc_analysis`.
     pub market_mrc_context: MrcPredictionContext,
-    pub history: IndicatorHistory,
+    /// Raw kline cache and ta-rs indicators are runtime-only. `save` does not
+    /// serialize this cache; the host resends the requested history on Init.
+    pub klines: KlineHistory,
     pub position: PositionRuntime,
     /// Immutable and cached decision context owned by the current position.
     pub position_context: PositionContext,
@@ -748,6 +752,7 @@ pub struct EngineState {
     /// rebuilt before the next exit evaluation.
     pub pending_exit_context: Option<String>,
     pub last_error: Option<String>,
+    /// Latest ta-rs calculation held only in process memory; omitted by `save`.
     pub last_snapshot: Option<IndicatorSnapshot>,
 }
 
@@ -756,6 +761,7 @@ impl Default for EngineState {
         Self {
             ticks: 0,
             bar_1m: 0,
+            last_market_decision_time_ms: 0,
             cfg: Config::default(),
             cfg_loaded: false,
             allowed_direction: Direction::Both,
@@ -764,7 +770,7 @@ impl Default for EngineState {
             active_mrc_context: MrcPredictionContext::default(),
             market_mrc_analysis: None,
             market_mrc_context: MrcPredictionContext::default(),
-            history: IndicatorHistory::default(),
+            klines: KlineHistory::new(&crate::market_data::kline_requirements()),
             position: PositionRuntime::default(),
             position_context: PositionContext::default(),
             take_profit_allocation: TakeProfitAllocation::default(),
@@ -802,6 +808,8 @@ struct PersistedState {
     #[serde(default)]
     bar_1m: u64,
     #[serde(default)]
+    last_market_decision_time_ms: u64,
+    #[serde(default)]
     cfg: Config,
     #[serde(default)]
     cfg_loaded: bool,
@@ -835,6 +843,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
     serde_json::to_value(PersistedState {
         ticks: state.ticks,
         bar_1m: state.bar_1m,
+        last_market_decision_time_ms: state.last_market_decision_time_ms,
         cfg: state.cfg.clone(),
         cfg_loaded: state.cfg_loaded,
         trade_budget: state.trade_budget,
@@ -863,6 +872,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
 
     state.ticks = persisted.ticks;
     state.bar_1m = persisted.bar_1m;
+    state.last_market_decision_time_ms = persisted.last_market_decision_time_ms;
     state.cfg = persisted.cfg;
     state.cfg.decision_components = DecisionComponents::from_names(&state.cfg.decision_components)
         .0

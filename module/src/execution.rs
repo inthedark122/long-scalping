@@ -278,11 +278,7 @@ fn pending_limit_entry_expired(
         .unwrap_or(false)
 }
 
-fn recyclable_reentry_block_reason(
-    input: &ModuleInput,
-    state: &EngineState,
-    side: PositionState,
-) -> Option<String> {
+fn recyclable_reentry_block_reason(state: &EngineState, side: PositionState) -> Option<String> {
     if state.position_context.side != PositionState::Flat
         || state.position_context.lifetime != crate::state::PositionLifetime::RecyclableStairs
     {
@@ -293,11 +289,7 @@ fn recyclable_reentry_block_reason(
         PositionState::Short => -1,
         PositionState::Flat => return None,
     };
-    let now_ms = input
-        .sug_info
-        .as_ref()
-        .map(|info| info.time.max(0) as u64)
-        .unwrap_or_default();
+    let now_ms = state.last_market_decision_time_ms;
     if state.position_context.cycle_direction != direction
         || state.position_context.cycle_is_valid(now_ms)
     {
@@ -559,7 +551,7 @@ pub fn evaluate_with_mrc(
                 });
             }
         }
-        if let Some(reason) = recyclable_reentry_block_reason(input, state, entry_side) {
+        if let Some(reason) = recyclable_reentry_block_reason(state, entry_side) {
             return finish(ExecutionResult {
                 constraint: Some(reason),
                 ..Default::default()

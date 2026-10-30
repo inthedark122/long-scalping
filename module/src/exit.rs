@@ -102,9 +102,10 @@ fn record_tp_reprice(
     virtual_sl_hit: bool,
     extra: String,
 ) {
-    let Some(detected_at_ms) = input.sug_info.as_ref().map(|sug_info| sug_info.time as u64) else {
+    let detected_at_ms = state.last_market_decision_time_ms;
+    if detected_at_ms == 0 {
         return;
-    };
+    }
     state.tp_reprice_history.observe(
         detected_at_ms,
         input.price,
@@ -1035,11 +1036,7 @@ fn ensure_trailing_exit_order(
     }
 
     if state.position.exit_mode == ExitMode::Fixed {
-        let now_ms = input
-            .sug_info
-            .as_ref()
-            .map(|info| info.time.max(0) as u64)
-            .unwrap_or_default();
+        let now_ms = state.last_market_decision_time_ms;
         let allocation_has_plan = state.take_profit_allocation.has_plan(side);
         let stalled = movement_is_stalled(state, now_ms);
         if stalled && state.exit_progress.mode != crate::state::ExitProgressMode::Stalled {

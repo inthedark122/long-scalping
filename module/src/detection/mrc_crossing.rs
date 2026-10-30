@@ -11,16 +11,13 @@ use crate::detection::mrc_stair_entry;
 use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
 use crate::detection::mrc_touch_learning::MrcTouchLearningSignal;
 use crate::detection::vlines::MrcCrossEvent;
+use crate::market_data::MrcHistorySample;
 use crate::model::{
     EntryGate, EntryOpenReason, EntryReason, EntryWait, EntryWaitSolution, MarketState,
 };
 use crate::state::{
     MrcCrossingModel, MrcCrossingState, MrcForecastStats, MrcHistoryEvent, MrcMovementSnapshot,
     PatternPerformance,
-};
-use lte_strategy_bridge::abi::ModuleIndicatorValue;
-use lte_strategy_bridge::indicator_access::{
-    IndicatorField, IndicatorFieldKey, IndicatorHistory, IndicatorKey, TimeframeSec,
 };
 
 pub const LINE_LABELS: [&str; 9] = [
@@ -1736,31 +1733,11 @@ pub fn reason_direction(reason: &EntryReason) -> i8 {
     }
 }
 
-fn history_float(
-    history: &IndicatorHistory,
-    indicator: IndicatorKey,
-    field: IndicatorField,
-    offset: usize,
-) -> Option<f64> {
-    match history.get_prev(
-        IndicatorFieldKey {
-            timeframe: TimeframeSec::Tf1m,
-            indicator,
-            field,
-        },
-        offset,
-    ) {
-        Some(ModuleIndicatorValue::Float(value)) => Some(*value),
-        Some(ModuleIndicatorValue::String(value)) => value.parse().ok(),
-        _ => None,
-    }
-}
-
 pub fn seed_from_history(
     state: &mut MrcCrossingModel,
     vlines: &mut [crate::state::VLineState; 9],
     crossing: &mut MrcCrossingState,
-    history: &IndicatorHistory,
+    history: &[MrcHistorySample],
     now_ms: u64,
 ) {
     seed_from_history_impl(state, vlines, crossing, history, now_ms, None);
@@ -1774,7 +1751,7 @@ pub fn seed_from_history_with_touch(
     state: &mut MrcCrossingModel,
     vlines: &mut [crate::state::VLineState; 9],
     crossing: &mut MrcCrossingState,
-    history: &IndicatorHistory,
+    history: &[MrcHistorySample],
     now_ms: u64,
     touch: &mut MrcTouchState,
 ) {
@@ -1785,51 +1762,34 @@ fn seed_from_history_impl(
     state: &mut MrcCrossingModel,
     vlines: &mut [crate::state::VLineState; 9],
     crossing: &mut MrcCrossingState,
-    history: &IndicatorHistory,
+    history: &[MrcHistorySample],
     now_ms: u64,
     mut touch: Option<&mut MrcTouchState>,
 ) {
     const HISTORY_LIMIT: usize = 10_080;
-    if now_ms == 0 {
+    if history.is_empty() {
         return;
     }
-    let seed_start = now_ms.saturating_sub((HISTORY_LIMIT as u64 - 1) * 60_000);
-    for offset in (0..HISTORY_LIMIT).rev() {
-        let fields = [
-            IndicatorField::DownBig,
-            IndicatorField::DownOuter,
-            IndicatorField::DownSmall,
-            IndicatorField::DownInner,
-            IndicatorField::MeanLine,
-            IndicatorField::UpInner,
-            IndicatorField::UpSmall,
-            IndicatorField::UpOuter,
-            IndicatorField::UpBig,
-        ];
-        let Some(lines) = fields
-            .map(|field| history_float(history, IndicatorKey::Mrc200, field, offset))
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .and_then(|values| values.try_into().ok())
-        else {
-            continue;
+    let start = history.len().saturating_sub(HISTORY_LIMIT);
+    let samples = &history[start..];
+    for (index, sample) in samples.iter().enumerate() {
+        let fallback_time =
+            now_ms.saturating_sub((samples.len().saturating_sub(index + 1) as u64) * 60_000);
+        let now = if sample.time_ms == 0 {
+            fallback_time
+        } else {
+            sample.time_ms
         };
-        let Some(price) =
-            history_float(history, IndicatorKey::Candle, IndicatorField::Close, offset)
-        else {
-            continue;
-        };
-        let now = seed_start.saturating_add((HISTORY_LIMIT - 1 - offset) as u64 * 60_000);
         let events = crate::detection::vlines::update_with_events(
             vlines,
             crossing,
-            lines,
-            price,
-            (HISTORY_LIMIT - offset) as u64,
+            sample.lines,
+            sample.close,
+            (index + 1) as u64,
             now,
         );
         if let Some(touch) = touch.as_deref_mut() {
-            touch.update(lines, price, now);
+            touch.update(sample.lines, sample.close, now);
         }
         for event in events {
             append_history_event(state, &event);
