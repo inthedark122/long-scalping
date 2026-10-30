@@ -22,3 +22,6 @@ tmp/
 
 # bug reports for the dev team — kept local, shared out-of-band
 issues/
+
+# Ignore any research
+/research

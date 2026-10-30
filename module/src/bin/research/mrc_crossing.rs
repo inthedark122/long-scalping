@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -219,6 +220,15 @@ pub(crate) struct CrossingEvent {
     pub(crate) barrier_state: String,
     pub(crate) history_scope: &'static str,
     pub(crate) pattern_kind: Option<&'static str>,
+    /// The stateful primary staircase direction. This is separate from the
+    /// local pattern on the crossing because an overlapping pullback may
+    /// produce a diagnostic staircase in the opposite direction.
+    pub(crate) active_stair_pattern: Option<&'static str>,
+    pub(crate) active_stair_direction: i8,
+    pub(crate) active_stair_expected_line: Option<usize>,
+    pub(crate) active_stair_expected_price: Option<f64>,
+    pub(crate) active_stair_route_available: bool,
+    pub(crate) active_stair_wait_reason: Option<&'static str>,
     pub(crate) transition: Option<MrcTransitionKind>,
     pub(crate) pattern_steps: u32,
     pub(crate) pattern_elapsed_ms: u64,
@@ -309,6 +319,51 @@ fn format_pattern_key(event: &CrossingEvent) -> String {
     event.pattern_kind.unwrap_or("none").to_string()
 }
 
+fn attach_active_stair_context(
+    event: &mut CrossingEvent,
+    model: &MrcCrossingModel,
+    candidates: &[mrc_crossing::PatternCandidate],
+) {
+    let Some(primary) = model.decision_state.primary else {
+        return;
+    };
+    let Some(pattern) = (match primary.direction {
+        1 => Some(MrcPatternKind::StairsUp.as_str()),
+        -1 => Some(MrcPatternKind::StairsDown.as_str()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let route_available = candidates.iter().any(|candidate| {
+        !candidate.forecast
+            && candidate.entry.is_some()
+            && candidate.analysis.trade_direction == primary.direction
+            && !matches!(
+                candidate.analysis.staircase_lifecycle,
+                Some(StaircaseLifecycle::Invalidated)
+            )
+    });
+    event.active_stair_pattern = Some(pattern);
+    event.active_stair_direction = primary.direction;
+    let expected_line = if primary.direction > 0 {
+        event.line.checked_add(1)
+    } else {
+        event.line.checked_sub(1)
+    }
+    .filter(|line| *line < LINE_COUNT);
+    event.active_stair_expected_line = expected_line;
+    event.active_stair_expected_price = expected_line.and_then(|line| {
+        event
+            .line_plans
+            .iter()
+            .find(|plan| plan.line_idx as usize == line)
+            .map(|plan| plan.line_price)
+    });
+    event.active_stair_route_available = route_available;
+    event.active_stair_wait_reason =
+        (!route_available).then_some("primary-awaiting-same-direction-route");
+}
+
 fn prediction_result_move_pct(prediction: &VirtualPredictionResult) -> Option<f64> {
     let result_price = match prediction.outcome {
         "reached_and_followed" | "not_reached_but_followed" => prediction.target_price,
@@ -353,6 +408,12 @@ fn crossing_event_from_analysis(
         barrier_state: event.barrier_state.as_str().to_string(),
         history_scope: history_scope(event.context_samples, event.target_line.is_some()),
         pattern_kind: event.pattern_kind.map(|kind| kind.as_str()),
+        active_stair_pattern: None,
+        active_stair_direction: 0,
+        active_stair_expected_line: None,
+        active_stair_expected_price: None,
+        active_stair_route_available: false,
+        active_stair_wait_reason: None,
         transition: event.transition,
         pattern_steps: event.pattern_steps,
         pattern_elapsed_ms: event.pattern_elapsed_ms,
@@ -534,6 +595,11 @@ pub(crate) struct Forecast {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AnalysisReport {
+    pub(crate) bypass_entry_blockers: bool,
+    pub(crate) bypass_forced_candidates: usize,
+    pub(crate) bypass_forced_setups: usize,
+    pub(crate) bypass_forced_market_accepted: usize,
+    pub(crate) bypass_forced_market_busy: usize,
     pub(crate) crossing_count: usize,
     pub(crate) pattern_count: usize,
     pub(crate) patterns: Vec<PatternReport>,
@@ -885,6 +951,11 @@ pub(crate) struct Analyzer {
     selected_market_busy: usize,
     selected_plan_suppressed: usize,
     forecast_plan_suppressed: usize,
+    bypass_entry_blockers: bool,
+    bypass_forced_candidates: usize,
+    bypass_forced_setups: usize,
+    bypass_forced_market_accepted: usize,
+    bypass_forced_market_busy: usize,
     candidate_counts: [usize; MRC_PATTERN_COUNT],
     candidate_entry_counts: [usize; MRC_PATTERN_COUNT],
     rejected_lifecycle: [usize; MRC_PATTERN_COUNT],
@@ -901,6 +972,14 @@ pub(crate) struct Analyzer {
 
 impl Analyzer {
     pub(crate) fn new(direction_lock: Option<i8>, decision_components: DecisionComponents) -> Self {
+        Self::new_with_bypass_entry_blockers(direction_lock, decision_components, false)
+    }
+
+    pub(crate) fn new_with_bypass_entry_blockers(
+        direction_lock: Option<i8>,
+        decision_components: DecisionComponents,
+        bypass_entry_blockers: bool,
+    ) -> Self {
         let mut analyzer = Self {
             vlines: [VLineState::default(); LINE_COUNT],
             crossing: MrcCrossingState::default(),
@@ -928,6 +1007,11 @@ impl Analyzer {
             selected_market_busy: 0,
             selected_plan_suppressed: 0,
             forecast_plan_suppressed: 0,
+            bypass_entry_blockers,
+            bypass_forced_candidates: 0,
+            bypass_forced_setups: 0,
+            bypass_forced_market_accepted: 0,
+            bypass_forced_market_busy: 0,
             candidate_counts: [0; MRC_PATTERN_COUNT],
             candidate_entry_counts: [0; MRC_PATTERN_COUNT],
             rejected_lifecycle: [0; MRC_PATTERN_COUNT],
@@ -1075,17 +1159,77 @@ impl Analyzer {
             }
         }
         let actual_candidates = !crossed.is_empty();
+        let forced_selected_index = if self.bypass_entry_blockers && actual_candidates {
+            let active_direction = self
+                .model
+                .decision_state
+                .primary
+                .map(|primary| primary.direction);
+            let candidate_order =
+                |(left_index, left): &(usize, &mrc_crossing::PatternCandidate),
+                 (right_index, right): &(usize, &mrc_crossing::PatternCandidate)| {
+                    left.score
+                        .partial_cmp(&right.score)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| left_index.cmp(right_index))
+                };
+            let stair_candidates =
+                observation
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| {
+                        !candidate.forecast
+                            && matches!(
+                                candidate.pattern_kind,
+                                MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
+                            )
+                    });
+            if let Some(direction) = active_direction {
+                stair_candidates
+                    .filter(|(_, candidate)| {
+                        candidate.analysis.trade_direction == direction
+                            && !matches!(
+                                candidate.analysis.staircase_lifecycle,
+                                Some(StaircaseLifecycle::Invalidated)
+                            )
+                    })
+                    .max_by(candidate_order)
+                    .map(|(index, _)| index)
+            } else {
+                observation
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| {
+                        !candidate.forecast
+                            && matches!(
+                                candidate.pattern_kind,
+                                MrcPatternKind::StairsUp | MrcPatternKind::StairsDown
+                            )
+                    })
+                    .max_by(candidate_order)
+                    .map(|(index, _)| index)
+            }
+        } else {
+            None
+        };
         let mut selected_setup = None;
-        let selected_candidate = observation.selected_candidate().cloned();
+        let selected_candidate = forced_selected_index
+            .and_then(|index| observation.candidates.get(index).cloned())
+            .or_else(|| observation.selected_candidate().cloned());
         if selected_candidate.is_some() {
             self.selected_candidates = self.selected_candidates.saturating_add(1);
         }
-        if observation.entry.is_some() {
+        if observation.entry.is_some() || forced_selected_index.is_some() {
             self.selected_unique_entries = self.selected_unique_entries.saturating_add(1);
         } else if selected_candidate.is_some() {
             self.selected_plan_suppressed = self.selected_plan_suppressed.saturating_add(1);
         }
-        for candidate in &observation.candidates {
+        if forced_selected_index.is_some() {
+            self.bypass_forced_candidates = self.bypass_forced_candidates.saturating_add(1);
+        }
+        for (candidate_index, candidate) in observation.candidates.iter().enumerate() {
             let candidate_slot = candidate.pattern_kind.index();
             if candidate_slot < self.candidate_counts.len() {
                 self.candidate_counts[candidate_slot] =
@@ -1112,7 +1256,11 @@ impl Analyzer {
                         self.rejected_other[candidate_slot].saturating_add(1);
                 }
             }
-            let should_queue = if candidate.forecast {
+            let should_queue = if self.bypass_entry_blockers {
+                !candidate.forecast
+                    && actual_candidates
+                    && forced_selected_index == Some(candidate_index)
+            } else if candidate.forecast {
                 let key = candidate_key(candidate);
                 let slot = candidate.pattern_kind.index();
                 let fresh = key.is_some() && self.forecast_plan_keys[slot] != key;
@@ -1133,25 +1281,49 @@ impl Analyzer {
                 self.events.last().map(|previous| previous.time_ms),
                 self.vlines[candidate.analysis.line_idx as usize].cross_count,
             );
-            let Some(setup) = self.setup_from_candidate(row, &crossing_event, candidate) else {
+            let Some(setup) = self.setup_from_candidate(
+                row,
+                &crossing_event,
+                candidate,
+                self.bypass_entry_blockers,
+            ) else {
                 continue;
             };
             self.entry_setups = self.entry_setups.saturating_add(1);
             if candidate.entry.is_some() {
                 self.entry_candidates = self.entry_candidates.saturating_add(1);
             }
+            if self.bypass_entry_blockers && forced_selected_index == Some(candidate_index) {
+                self.bypass_forced_setups = self.bypass_forced_setups.saturating_add(1);
+            }
             self.pattern_trades[candidate.pattern_kind.index()].queue_next_candle(setup.clone());
             self.predictions.queue(setup.clone());
-            if selected_candidate.as_ref() == Some(candidate) {
+            let selected = forced_selected_index == Some(candidate_index)
+                || (forced_selected_index.is_none()
+                    && selected_candidate.as_ref() == Some(candidate));
+            if selected {
                 self.selected_setups = self.selected_setups.saturating_add(1);
-                selected_setup = self.market_setup_from_candidate(row, &crossing_event, candidate);
+                selected_setup = self.market_setup_from_candidate(
+                    row,
+                    &crossing_event,
+                    candidate,
+                    self.bypass_entry_blockers,
+                );
             }
         }
         if let Some(setup) = selected_setup {
             if self.trades.open_market(setup, row.close) {
                 self.selected_market_accepted = self.selected_market_accepted.saturating_add(1);
+                if self.bypass_entry_blockers {
+                    self.bypass_forced_market_accepted =
+                        self.bypass_forced_market_accepted.saturating_add(1);
+                }
             } else {
                 self.selected_market_busy = self.selected_market_busy.saturating_add(1);
+                if self.bypass_entry_blockers {
+                    self.bypass_forced_market_busy =
+                        self.bypass_forced_market_busy.saturating_add(1);
+                }
             }
         }
         for raw_event in &crossed {
@@ -1172,12 +1344,13 @@ impl Analyzer {
                         prediction_context,
                     )
                 });
-            let crossing_event = crossing_event_from_analysis(
+            let mut crossing_event = crossing_event_from_analysis(
                 &event,
                 &self.crossing,
                 self.events.last().map(|previous| previous.time_ms),
                 self.vlines[event.line_idx as usize].cross_count,
             );
+            attach_active_stair_context(&mut crossing_event, &self.model, &observation.candidates);
             self.events.push(crossing_event);
         }
         if self.rows_seen == 1 || self.rows_seen % 1_000 == 0 {
@@ -1211,7 +1384,8 @@ impl Analyzer {
             self.started_at.elapsed().as_millis()
         );
         eprintln!(
-            "[mrc-research][entry-gen] candidates={} setups={} selected={} unique_entries={} selected_setups={} market_accepted={} market_busy={} selected_plan_suppressed={} forecast_plan_suppressed={}",
+            "[mrc-research][entry-gen] bypass_entry_blockers={} candidates={} setups={} selected={} unique_entries={} selected_setups={} market_accepted={} market_busy={} selected_plan_suppressed={} forecast_plan_suppressed={} bypass_forced_candidates={} bypass_forced_setups={} bypass_market_accepted={} bypass_market_busy={}",
+            self.bypass_entry_blockers,
             self.entry_candidates,
             self.entry_setups,
             self.selected_candidates,
@@ -1221,6 +1395,10 @@ impl Analyzer {
             self.selected_market_busy,
             self.selected_plan_suppressed,
             self.forecast_plan_suppressed,
+            self.bypass_forced_candidates,
+            self.bypass_forced_setups,
+            self.bypass_forced_market_accepted,
+            self.bypass_forced_market_busy,
         );
         eprintln!(
             "[mrc-research][touch-learning] observations={} reliable={} learned_up={} learned_down={}",
@@ -1249,15 +1427,21 @@ impl Analyzer {
         row: &CandleRow,
         event: &CrossingEvent,
         candidate: &mrc_crossing::PatternCandidate,
+        bypass_entry_blockers: bool,
     ) -> Option<TradeSetup> {
         // A prediction can have directionally valid levels while still being
         // rejected by the live analysis gate (cascade, barrier, or lifecycle).
         // It must not be counted as an entry prediction unless the same gate
-        // already authorized the candidate.
-        candidate.entry.as_ref()?;
+        // already authorized the candidate, except in the explicit research
+        // counterfactual mode.
+        if !bypass_entry_blockers {
+            candidate.entry.as_ref()?;
+        }
         let prediction = &candidate.analysis;
-        let target_line = prediction.trade_target_line? as usize;
-        let target_price = prediction.target_price?;
+        let target_line = prediction.trade_target_line.or(prediction.target_line)? as usize;
+        let target_price = prediction
+            .target_price
+            .or(prediction.predicted_line_price)?;
         let stop_price = prediction.stop_price?;
         let entry_price = prediction.effective_entry_price?;
         let valid = if prediction.target_is_movement {
@@ -1391,6 +1575,11 @@ impl Analyzer {
                 prediction.expected_price_high.unwrap_or(prediction.market_price),
             ),
         );
+        let reason = if bypass_entry_blockers {
+            format!("{reason} research_bypass_entry_blockers=true")
+        } else {
+            reason
+        };
         Some(
             TradeSetup::with_levels(
                 prediction.trade_direction,
@@ -1414,8 +1603,42 @@ impl Analyzer {
         row: &CandleRow,
         event: &CrossingEvent,
         candidate: &mrc_crossing::PatternCandidate,
+        bypass_entry_blockers: bool,
     ) -> Option<TradeSetup> {
-        let mut setup = self.setup_from_candidate(row, event, candidate)?;
+        let mut setup = self.setup_from_candidate(row, event, candidate, bypass_entry_blockers)?;
+        if bypass_entry_blockers && candidate.entry.is_none() {
+            let planned_entry = setup.entry_price;
+            if !planned_entry.is_finite() || planned_entry <= 0.0 {
+                return None;
+            }
+            let target_move_pct =
+                (setup.target_price - planned_entry).abs() / planned_entry * 100.0;
+            let stop_move_pct = (setup.stop_price - planned_entry).abs() / planned_entry * 100.0;
+            if !target_move_pct.is_finite()
+                || !stop_move_pct.is_finite()
+                || target_move_pct <= 0.0
+                || stop_move_pct <= 0.0
+            {
+                return None;
+            }
+            setup.entry_price = row.close;
+            setup.target_price = row.close * (1.0 + setup.side as f64 * target_move_pct / 100.0);
+            setup.stop_price = row.close * (1.0 - setup.side as f64 * stop_move_pct / 100.0);
+            if !mrc_crossing::valid_movement_price_levels(
+                setup.side,
+                setup.entry_price,
+                setup.target_price,
+                setup.stop_price,
+                None,
+            ) {
+                return None;
+            }
+            setup.reason = format!(
+                "{} market_bypass_fill={:.6} planned_entry={:.6}",
+                setup.reason, row.close, planned_entry
+            );
+            return Some(setup);
+        }
         let reason = candidate.entry.as_ref()?;
         let (target_price, stop_price) =
             mrc_crossing::exit_levels(reason, row.mrc.lines(), row.close)?;
@@ -1495,6 +1718,11 @@ impl Analyzer {
         let stair_statistics = stair_statistics(&events, &predictions, &trades);
         let pattern_win_rates = pattern_win_rate_reports(&trades, &predictions);
         AnalysisReport {
+            bypass_entry_blockers: self.bypass_entry_blockers,
+            bypass_forced_candidates: self.bypass_forced_candidates,
+            bypass_forced_setups: self.bypass_forced_setups,
+            bypass_forced_market_accepted: self.bypass_forced_market_accepted,
+            bypass_forced_market_busy: self.bypass_forced_market_busy,
             crossing_count: events.len(),
             pattern_count: patterns.len(),
             patterns,

@@ -9,16 +9,20 @@ mod research;
 
 use long_scalping::detection::decision::DecisionComponents;
 use long_scalping::fmt_duration_f64;
-use research::data::{fetch_history_for_timeframe_cached, CacheSettings, CacheStatus};
+use research::data::{
+    compute_mrc, fetch_history_for_timeframe_cached, CacheSettings, CacheStatus, CandleRow,
+    MRC_PERIOD,
+};
 use research::mrc_crossing::{AnalysisReport, Analyzer};
 use research::mrc_crossing_html;
 use serde_json::json;
 
 const DEFAULT_SYMBOL_KEY: &str = "OKX#ETH-USDT-SWAP#SWAP";
+const INPUT_SOURCE_DESCRIPTION: &str = "LivTorgEx universal klines; MRC-200 computed locally with ta-rs dev. gain=asset_buy+asset_sell; buy_sell_gain=asset_buy-asset_sell; NTPS unavailable (0).";
 
 fn usage() {
     eprintln!(
-        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--direction both|long|short] [--primary stairs] [--history N] [--end-time UNIX_MS] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
+        "mrc_crossing_research [--symbol-key KEY ...] [--symbols KEY1,KEY2] [--direction both|long|short] [--primary stairs] [--history N] [--end-time UNIX_MS] [--bypass-entry-blockers] [--no-cache] [--clear-cache] [--refresh-cache] [--output FILE|DIR] [--html FILE|DIR]"
     );
 }
 
@@ -141,7 +145,15 @@ fn print_summary(
     println!("symbol                 : {symbol_key}");
     println!("history                : 1m={minute_count}");
     println!("cache                  : 1m={minute_cache}");
+    println!("input                  : {INPUT_SOURCE_DESCRIPTION}");
     println!("crossings              : {}", report.crossing_count);
+    let open_positions = if report.open_trade.is_some() { 1 } else { 0 };
+    println!(
+        "simulated entries       : {} completed={} open={}",
+        report.trade_summary.trades + open_positions,
+        report.trade_summary.trades,
+        open_positions,
+    );
     println!(
         "positions              : {} wins={} losses={} win_rate={:.1}% gross={:+.3}% fees={:.3}% net={:+.3}% max_drawdown={:.3}%",
         report.trade_summary.trades,
@@ -243,15 +255,18 @@ fn analyze_symbol(
     end_time_ms: Option<i64>,
     direction_lock: Option<i8>,
     decision_components: DecisionComponents,
+    bypass_entry_blockers: bool,
     cache_settings: CacheSettings,
-) -> Result<(usize, CacheStatus, AnalysisReport), Box<dyn Error>> {
+) -> Result<(usize, CacheStatus, Vec<CandleRow>, AnalysisReport), Box<dyn Error>> {
     let started = Instant::now();
     eprintln!(
-        "[mrc-research][symbol] start symbol={} history={} end_time_ms={:?}",
-        symbol_key, history, end_time_ms
+        "[mrc-research][symbol] start symbol={} history={} end_time_ms={:?} bypass_entry_blockers={}",
+        symbol_key, history, end_time_ms, bypass_entry_blockers
     );
-    let (minute, minute_cache) =
-        fetch_history_for_timeframe_cached(symbol_key, 60, history, None, cache_settings)?;
+    let fetch_limit = history.saturating_add(MRC_PERIOD);
+    let (mut minute, minute_cache) =
+        fetch_history_for_timeframe_cached(symbol_key, 60, fetch_limit, None, cache_settings)?;
+    compute_mrc(&mut minute);
     eprintln!(
         "[mrc-research][symbol] loaded-1m symbol={} rows={} cache_status={} elapsed_ms={}",
         symbol_key,
@@ -263,7 +278,13 @@ fn analyze_symbol(
         .into_iter()
         .filter(|row| end_time_ms.is_none_or(|end| row.time_ms < end))
         .collect::<Vec<_>>();
-    let mut analyzer = Analyzer::new(direction_lock, decision_components);
+    let skip = minute.len().saturating_sub(history);
+    let minute = minute.into_iter().skip(skip).collect::<Vec<_>>();
+    let mut analyzer = Analyzer::new_with_bypass_entry_blockers(
+        direction_lock,
+        decision_components,
+        bypass_entry_blockers,
+    );
 
     for row in &minute {
         analyzer.observe(row);
@@ -272,18 +293,17 @@ fn analyze_symbol(
         analyzer.finish(last);
     }
 
-    Ok((minute.len(), minute_cache, {
-        let report = analyzer.report();
-        eprintln!(
-                "[mrc-research][symbol] complete symbol={} rows_1m={} crossings={} trades={} elapsed_ms={}",
-                symbol_key,
-                minute.len(),
-                report.crossing_count,
-                report.prediction_summary.predictions,
-                started.elapsed().as_millis()
-            );
-        report
-    }))
+    let minute_count = minute.len();
+    let report = analyzer.report();
+    eprintln!(
+        "[mrc-research][symbol] complete symbol={} rows_1m={} crossings={} trades={} elapsed_ms={}",
+        symbol_key,
+        minute_count,
+        report.crossing_count,
+        report.prediction_summary.predictions,
+        started.elapsed().as_millis()
+    );
+    Ok((minute_count, minute_cache, minute, report))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -293,6 +313,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut history = 500usize;
     let mut direction_lock = None::<i8>;
     let mut decision_components = DecisionComponents::default();
+    let mut bypass_entry_blockers = false;
     let mut end_time_ms = None::<i64>;
     let mut output = None::<String>;
     let mut html = None::<String>;
@@ -330,6 +351,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 end_time_ms = args[index + 1].parse().ok();
                 index += 2;
             }
+            "--bypass-entry-blockers" => {
+                bypass_entry_blockers = true;
+                index += 1;
+            }
             "--no-cache" => {
                 cache_settings.enabled = false;
                 index += 1;
@@ -363,7 +388,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     symbol_keys.dedup();
     eprintln!(
-        "[mrc-research] start cwd={} symbols={:?} direction={} primary={} history={} end_time_ms={:?} cache_enabled={} cache_clear={} cache_refresh={} output={:?} html={:?}",
+        "[mrc-research] start cwd={} symbols={:?} direction={} primary={} history={} end_time_ms={:?} bypass_entry_blockers={} cache_enabled={} cache_clear={} cache_refresh={} output={:?} html={:?}",
         std::env::current_dir()?.display(),
         symbol_keys,
         direction_lock
@@ -376,6 +401,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         history,
         end_time_ms,
+        bypass_entry_blockers,
         cache_settings.enabled,
         cache_settings.clear,
         cache_settings.refresh,
@@ -393,12 +419,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 symbol_keys.len()
             );
         }
-        let (minute_count, minute_cache, report) = analyze_symbol(
+        let (minute_count, minute_cache, minute, report) = analyze_symbol(
             symbol_key,
             history,
             end_time_ms,
             direction_lock,
             decision_components,
+            bypass_entry_blockers,
             cache_settings,
         )?;
         print_summary(
@@ -415,10 +442,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "direction": direction_lock.map(|direction| if direction > 0 { "long" } else { "short" }).unwrap_or("both"),
                 "primary": if decision_components.primary_stairs { "stairs" } else { "none" },
                 "decision_components": decision_components.names(),
+                "bypass_entry_blockers": bypass_entry_blockers,
                 "history_requested_1m": history,
                 "end_time_ms": end_time_ms,
+                "input_source": INPUT_SOURCE_DESCRIPTION,
                 "cache": {"1m": minute_cache.to_string()},
                 "history_loaded": {"1m": minute_count},
+                "simulation_counts": {
+                    "entries": report.trade_summary.trades + if report.open_trade.is_some() { 1 } else { 0 },
+                    "completed_positions": report.trade_summary.trades,
+                    "open_positions": if report.open_trade.is_some() { 1 } else { 0 },
+                    "active_predictions": report.active_predictions,
+                    "pending_predictions": report.pending_predictions
+                },
                 "trade_summary": report.trade_summary,
                 "trades": report.trades,
                 "open_trade": report.open_trade,
@@ -436,6 +472,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 history,
                 minute_count,
                 direction_lock,
+                &minute,
                 &report,
             )?;
             println!("html report            : {}", path.display());

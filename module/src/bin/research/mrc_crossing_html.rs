@@ -8,9 +8,11 @@ use super::virtual_trade::{
 };
 use serde::Serialize;
 
+use super::data::CandleRow;
 use super::mrc_crossing::AnalysisReport;
 
 const HTML_PREDICTION_LIMIT: usize = 500;
+const INPUT_SOURCE_DESCRIPTION: &str = "LivTorgEx universal klines; MRC-200 computed locally with ta-rs dev. gain=asset_buy+asset_sell; buy_sell_gain=asset_buy-asset_sell; NTPS unavailable (0).";
 
 #[derive(Debug, Serialize)]
 struct PatternDefinitions {
@@ -66,8 +68,17 @@ impl Default for PatternDefinitions {
 #[derive(Debug, Serialize)]
 struct HtmlReportData<'a> {
     symbol_key: &'a str,
+    input_source: &'static str,
     history_requested_1m: usize,
     history_loaded_1m: usize,
+    simulated_entries: usize,
+    completed_positions: usize,
+    open_positions: usize,
+    bypass_entry_blockers: bool,
+    bypass_forced_candidates: usize,
+    bypass_forced_setups: usize,
+    bypass_forced_market_accepted: usize,
+    bypass_forced_market_busy: usize,
     direction: Option<&'static str>,
     latest_event_time_ms: Option<i64>,
     trade_summary: &'a VirtualTradeSummary,
@@ -87,6 +98,7 @@ struct HtmlReportData<'a> {
     pattern_definitions: PatternDefinitions,
     events: &'a [super::mrc_crossing::CrossingEvent],
     forecast: &'a super::mrc_crossing::Forecast,
+    candles: &'a [CandleRow],
 }
 
 /// Serialize JSON directly into the report file while preserving the script
@@ -127,12 +139,23 @@ pub(crate) fn write_report(
     history_requested: usize,
     minute_count: usize,
     direction: Option<i8>,
+    minute: &[CandleRow],
     report: &AnalysisReport,
 ) -> Result<(), Box<dyn Error>> {
     let data = HtmlReportData {
         symbol_key,
+        input_source: INPUT_SOURCE_DESCRIPTION,
         history_requested_1m: history_requested,
         history_loaded_1m: minute_count,
+        simulated_entries: report.trade_summary.trades
+            + if report.open_trade.is_some() { 1 } else { 0 },
+        completed_positions: report.trade_summary.trades,
+        open_positions: if report.open_trade.is_some() { 1 } else { 0 },
+        bypass_entry_blockers: report.bypass_entry_blockers,
+        bypass_forced_candidates: report.bypass_forced_candidates,
+        bypass_forced_setups: report.bypass_forced_setups,
+        bypass_forced_market_accepted: report.bypass_forced_market_accepted,
+        bypass_forced_market_busy: report.bypass_forced_market_busy,
         direction: direction.map(|value| if value > 0 { "long" } else { "short" }),
         latest_event_time_ms: report.latest_event.as_ref().map(|event| event.time_ms),
         trade_summary: &report.trade_summary,
@@ -155,6 +178,7 @@ pub(crate) fn write_report(
         pattern_definitions: PatternDefinitions::default(),
         events: &report.events,
         forecast: &report.forecast,
+        candles: minute,
     };
     let (prefix, suffix) = TEMPLATE
         .split_once("__DATA__")
@@ -219,6 +243,11 @@ const TEMPLATE: &str = r###"<!doctype html>
     .panel { padding: 18px; margin-top: 16px; }
     .chart-wrap { height: 340px; position: relative; }
     .chart-wrap.tall { height: 430px; }
+    .stairs-chart-wrap {
+      height: 1040px; position: relative; overflow-x: auto; overflow-y: hidden;
+      scrollbar-gutter: stable;
+    }
+    .stairs-chart-scroll-note { margin-top: 8px; color: var(--muted); font-size: 12px; }
     canvas { width: 100%; height: 100%; display: block; }
     .chart-tooltip {
       position: absolute; z-index: 2; display: none; max-width: 420px;
@@ -226,9 +255,17 @@ const TEMPLATE: &str = r###"<!doctype html>
       border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
       pointer-events: none; font-size: 12px;
     }
+    #stairs-chart-tooltip { position: fixed; }
+    #stairs-chart-tooltip { pointer-events: auto; }
+    .copy-point { margin-top: 8px; }
     .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
     .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
     .legend-swatch { width: 12px; height: 3px; border-radius: 2px; }
+    .stairs-chart-summary {
+      display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px;
+      color: var(--muted); font-size: 12px;
+    }
+    .stairs-chart-summary strong { color: var(--text); }
     .pattern-filter-bar {
       display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
       margin: 18px 0; padding: 12px 14px; background: var(--panel);
@@ -247,11 +284,11 @@ const TEMPLATE: &str = r###"<!doctype html>
     .pattern-reason-group { margin: 10px 0; }
     .pattern-reason-group summary { cursor: pointer; color: var(--text); font-weight: 700; }
     .pattern-reason-group table { margin-top: 8px; }
-    .copy-id, .reason-toggle {
+    .copy-id, .copy-point, .reason-toggle {
       color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
       border-radius: 6px; padding: 3px 6px; cursor: pointer; font: inherit; font-size: 11px;
     }
-    .copy-id:hover, .reason-toggle:hover { color: var(--text); border-color: var(--blue); }
+    .copy-id:hover, .copy-point:hover, .reason-toggle:hover { color: var(--text); border-color: var(--blue); }
     .empty {
       position: absolute; inset: 0; display: grid; place-items: center;
       color: var(--muted); pointer-events: none;
@@ -347,6 +384,7 @@ const TEMPLATE: &str = r###"<!doctype html>
     @media (max-width: 700px) {
       .page { padding: 16px; }
       .chart-wrap { height: 260px; }
+      .stairs-chart-wrap { height: 860px; }
       .crossing-panel .table-wrap { overflow-x: auto; }
       .crossing-table { table-layout: auto; min-width: 1080px; }
     }
@@ -357,6 +395,8 @@ const TEMPLATE: &str = r###"<!doctype html>
     <section class="header">
       <h1>MRC Crossing PnL Report</h1>
       <div id="context" class="subtle"></div>
+      <div id="data-note" class="subtle"></div>
+      <div id="mode-note" class="subtle"></div>
     </section>
 
     <section class="pattern-filter-bar" aria-label="Pattern display selection">
@@ -388,6 +428,19 @@ const TEMPLATE: &str = r###"<!doctype html>
         <div id="patterns-pnl-tooltip" class="chart-tooltip"></div>
       </div>
       <div id="patterns-pnl-legend" class="chart-legend"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Stairs detection / expectation</h2>
+      <p class="subtle">This is the candle-level detector view across the full loaded one-minute history, with all nine MRC lines, staircase evidence, protected/extreme structure, and the expected destination. Colored markers identify detections; the projected band/arrow is the expectation recorded at that candle. Later check/X markers show whether the replay followed or broke that expectation. This is structural correctness, separate from trade PnL.</p>
+      <div class="stairs-chart-wrap" id="stairs-chart-wrap">
+        <canvas id="stairs-chart"></canvas>
+        <div id="stairs-chart-empty" class="empty">No selected staircase detections</div>
+        <div id="stairs-chart-tooltip" class="chart-tooltip"></div>
+      </div>
+      <div class="stairs-chart-scroll-note">The full history is rendered horizontally. Scroll the chart area to inspect earlier candles and staircase expectations.</div>
+      <div id="stairs-chart-summary" class="stairs-chart-summary"></div>
+      <div id="stairs-chart-legend" class="chart-legend"></div>
     </section>
 
     <section class="panel">
@@ -953,6 +1006,16 @@ const TEMPLATE: &str = r###"<!doctype html>
       DATA.symbol_key + " · 1m history " + DATA.history_loaded_1m +
       " · direction " + String(DATA.direction || "both").toUpperCase() +
       (DATA.latest_event_time_ms ? " · as of " + date(DATA.latest_event_time_ms) : "");
+    document.getElementById("data-note").textContent =
+      DATA.input_source || "MRC source unavailable in this report.";
+    if (DATA.bypass_entry_blockers) {
+      document.getElementById("mode-note").textContent =
+        "RESEARCH COUNTERFACTUAL: stair entry blockers bypassed; valid target/stop geometry retained. This is not live execution behavior. " +
+        "Forced candidates=" + DATA.bypass_forced_candidates +
+        ", setups=" + DATA.bypass_forced_setups +
+        ", market accepted=" + DATA.bypass_forced_market_accepted +
+        ", market busy=" + DATA.bypass_forced_market_busy + ".";
+    }
 
     const summarizeTrades = (rows) => {
       let net = 0, fees = 0, cumulative = 0, peak = 0, maxDrawdown = 0, durationSum = 0, durationCount = 0;
@@ -1320,6 +1383,610 @@ const TEMPLATE: &str = r###"<!doctype html>
       allPatternTooltip.style.top = Math.max(8, Math.min(mouseY + 14, rect.height - tooltipHeight - 8)) + "px";
     });
     allPatternChart.addEventListener("mouseleave", hidePatternTooltip);
+
+    const stairsChart = document.getElementById("stairs-chart");
+    const stairsChartWrap = document.getElementById("stairs-chart-wrap");
+    const stairsChartEmpty = document.getElementById("stairs-chart-empty");
+    const stairsChartTooltip = document.getElementById("stairs-chart-tooltip");
+    const stairsChartSummary = document.getElementById("stairs-chart-summary");
+    const stairsChartLegend = document.getElementById("stairs-chart-legend");
+    const candles = DATA.candles || [];
+    const stairsColors = { STAIRS_UP: "#72a7ff", STAIRS_DOWN: "#ffbf69" };
+    const mrcLineKeys = ["down_big", "down_outer", "down_small", "down_inner", "mean_line", "up_inner", "up_small", "up_outer", "up_big"];
+    const mrcLineColors = ["#536386", "#60739b", "#6d82aa", "#7d91b8", "#e8eefc", "#8b9fc5", "#7d91b8", "#6d82aa", "#60739b"];
+    let stairsChartState = null;
+    let stairsTooltipEvent = null;
+
+    const isStairsPattern = (pattern) => pattern === "STAIRS_UP" || pattern === "STAIRS_DOWN";
+    const stairsColor = (event) => stairsColors[event.pattern_key] || "#d7a6ff";
+    const stairsLineName = (line) => {
+      if (line == null || line === "") return "unavailable";
+      const numeric = Number(line);
+      return Number.isInteger(numeric) && lineLabels[numeric]
+        ? lineLabels[numeric] + " (#" + numeric + ")" : "unavailable";
+    };
+    const stairsSequence = (event) => (Array.isArray(event.stair_sequence) && event.stair_sequence.length
+      ? event.stair_sequence.map(stairsLineName).join(" → ") : "unavailable");
+    const activeStairSummary = (event) => {
+      if (!event.active_stair_pattern) return "none";
+      const direction = Number(event.active_stair_direction) > 0 ? "LONG" :
+        Number(event.active_stair_direction) < 0 ? "SHORT" : "—";
+      const route = event.active_stair_route_available ? "route available" :
+        "waiting for same-direction route";
+      const expected = event.active_stair_expected_line == null
+        ? "expectation unavailable"
+        : "next " + stairsLineName(event.active_stair_expected_line);
+      return event.active_stair_pattern + " · " + direction + " · " + expected + " · " + route;
+    };
+    const stairsOutcome = (event) => {
+      switch (event.prediction_outcome) {
+        case "reached_and_followed":
+          return { label: "followed (correct)", className: "positive", marker: "followed", price: event.target_price };
+        case "not_reached_but_followed":
+          return { label: "direction followed · entry missed", className: "positive", marker: "followed", price: event.target_price };
+        case "prediction_broken":
+          return { label: "broken (wrong)", className: "negative", marker: "broken", price: event.stop_price };
+        case "unresolved":
+          return { label: "unresolved", className: "", marker: "unresolved", price: event.market_price };
+        default:
+          return {
+            label: event.target_line == null ? "not evaluated" : "expectation only · not queued",
+            className: "",
+            marker: "not-queued",
+            price: event.market_price,
+          };
+      }
+    };
+    const stairDirection = (event) => Number(event.predicted_direction || event.trade_direction || 0) > 0
+      ? "LONG" : Number(event.predicted_direction || event.trade_direction || 0) < 0 ? "SHORT" : "—";
+    const finitePositive = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+    const hasPositionPnl = (event) => event.position_pnl_pct != null && event.position_pnl_pct !== "" &&
+      Number.isFinite(Number(event.position_pnl_pct));
+    const stairTradeIsSelected = (trade) => isStairsPattern(trade.pattern_key) &&
+      patternIsSelected(trade.pattern_key);
+    const positionTradeForEvent = (event) => trades.find((trade) =>
+      stairTradeIsSelected(trade) &&
+      Number(trade.signal_time_ms) === Number(event.time_ms) &&
+      Number(trade.source_line) === Number(event.line) &&
+      trade.pattern_key === event.pattern_key);
+    const eventCandle = (event) => {
+      let best = null;
+      let distance = Infinity;
+      candles.forEach((candle) => {
+        const candidateDistance = Math.abs(Number(candle.time_ms) - Number(event.time_ms));
+        if (Number.isFinite(candidateDistance) && candidateDistance < distance) {
+          best = candle;
+          distance = candidateDistance;
+        }
+      });
+      return best;
+    };
+
+    const drawArrow = (ctx, fromX, fromY, toX, toY, color) => {
+      if (![fromX, fromY, toX, toY].every(Number.isFinite)) return;
+      const angle = Math.atan2(toY - fromY, toX - fromX);
+      const head = 7;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(toX, toY); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(toX, toY);
+      ctx.lineTo(toX - head * Math.cos(angle - Math.PI / 6), toY - head * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(toX - head * Math.cos(angle + Math.PI / 6), toY - head * Math.sin(angle + Math.PI / 6));
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    };
+
+    const drawOutcomeMarker = (ctx, point) => {
+      const outcome = stairsOutcome(point.event);
+      if (!point.event.prediction_outcome || outcome.marker === "unresolved") return;
+      if (![point.outcomeX, point.outcomeY].every(Number.isFinite)) return;
+      ctx.save();
+      ctx.strokeStyle = outcome.marker === "broken" ? "#ff7185" : "#55d69b";
+      ctx.fillStyle = "#0b1020";
+      ctx.lineWidth = 2;
+      if (outcome.marker === "broken") {
+        ctx.beginPath(); ctx.moveTo(point.outcomeX - 6, point.outcomeY - 6); ctx.lineTo(point.outcomeX + 6, point.outcomeY + 6); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(point.outcomeX + 6, point.outcomeY - 6); ctx.lineTo(point.outcomeX - 6, point.outcomeY + 6); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.arc(point.outcomeX, point.outcomeY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(point.outcomeX - 3, point.outcomeY); ctx.lineTo(point.outcomeX - 1, point.outcomeY + 3); ctx.lineTo(point.outcomeX + 4, point.outcomeY - 3); ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    const renderStairsChartSummary = (allStairs, visibleStairs) => {
+      const followed = allStairs.filter((event) =>
+        event.prediction_outcome === "reached_and_followed" ||
+        event.prediction_outcome === "not_reached_but_followed").length;
+      const broken = allStairs.filter((event) => event.prediction_outcome === "prediction_broken").length;
+      const unresolved = allStairs.filter((event) => event.prediction_outcome === "unresolved").length;
+      const notQueued = allStairs.filter((event) => !event.prediction_outcome && event.target_line != null).length;
+      const notEvaluated = allStairs.filter((event) => !event.prediction_outcome && event.target_line == null).length;
+      const expected = allStairs.filter((event) => event.target_line != null).length;
+      const up = allStairs.filter((event) => event.pattern_key === "STAIRS_UP").length;
+      const down = allStairs.filter((event) => event.pattern_key === "STAIRS_DOWN").length;
+      const omitted = allStairs.length - visibleStairs.length;
+      const evaluated = followed + broken;
+      const followedRate = evaluated ? (followed / evaluated * 100).toFixed(1) + "%" : "—";
+      const completedStairPositions = trades.filter(stairTradeIsSelected);
+      const stairPnl = completedStairPositions.reduce((total, trade) =>
+        total + Number(trade.pnl_pct), 0);
+      const stairPnlClass = stairPnl >= 0 ? "positive" : "negative";
+      const stairPnlText = completedStairPositions.length
+        ? signedPercent(stairPnl) + " · " + completedStairPositions.length + " closed"
+        : "—";
+      const latest = allStairs[allStairs.length - 1];
+      const latestOutcome = latest && stairsOutcome(latest);
+      const latestText = latest
+        ? "<span><strong>Latest:</strong> " + esc(latest.pattern_key) + " at " +
+          esc(stairsLineName(latest.line)) + " → expected " +
+          esc(latest.target_line == null ? "unavailable" : stairsLineName(latest.target_line)) +
+          " · " + esc(latest.staircase_lifecycle || "lifecycle unavailable") +
+          " · <span class=\"" + (latestOutcome.className || "subtle") + "\">" +
+          esc(latestOutcome.label) + "</span></span>" : "";
+      stairsChartSummary.innerHTML = [
+        "<span><strong>Detections:</strong> " + allStairs.length + "</span>",
+        "<span><strong>Expected destination:</strong> " + expected + "</span>",
+        "<span class=\"positive\"><strong>Followed:</strong> " + followed + "</span>",
+        "<span class=\"negative\"><strong>Broken:</strong> " + broken + "</span>",
+        "<span><strong>Followed / evaluated:</strong> " + followedRate + "</span>",
+        "<span><strong>Queued but unresolved:</strong> " + unresolved + "</span>",
+        "<span><strong>Expectation only / not queued:</strong> " + notQueued + "</span>",
+        "<span><strong>No expectation:</strong> " + notEvaluated + "</span>",
+        "<span><strong>Up / down:</strong> " + up + " / " + down + "</span>",
+        "<span class=\"" + stairPnlClass + "\"><strong>Selected stair PnL:</strong> " + stairPnlText + "</span>",
+        latestText,
+        omitted > 0 ? "<span>Markers show the latest " + visibleStairs.length + " staircase detections.</span>" : "",
+      ].join("");
+    };
+
+    const drawStairsChart = () => {
+      const allSelectedStairs = selectedEvents.filter((event) => isStairsPattern(event.pattern_key));
+      const visibleCandles = candles;
+      const visibleStart = Number(visibleCandles[0]?.time_ms);
+      const visibleEnd = Number(visibleCandles[visibleCandles.length - 1]?.time_ms);
+      const visibleStairs = allSelectedStairs.filter((event) => {
+        const time = Number(event.time_ms);
+        return !Number.isFinite(visibleStart) || !Number.isFinite(visibleEnd) || (time >= visibleStart && time <= visibleEnd);
+      });
+      stairsChartEmpty.textContent = !candles.length
+        ? "No 1m candle data in this report"
+        : allSelectedStairs.length ? "No staircase detections in the loaded candle history" : "No selected staircase detections";
+      stairsChartEmpty.style.display = visibleCandles.length ? "none" : "grid";
+      renderStairsChartSummary(allSelectedStairs, visibleStairs);
+      stairsChartLegend.innerHTML =
+        '<span class="legend-item"><span class="legend-swatch" style="background:#55d69b"></span>bull candle</span>' +
+        '<span class="legend-item"><span class="legend-swatch" style="background:#ff7185"></span>bear candle</span>' +
+        '<span class="legend-item"><span class="legend-swatch" style="background:#e8eefc"></span>MRC mean</span>' +
+        '<span class="legend-item"><span class="legend-swatch" style="background:#72a7ff"></span>STAIRS_UP</span>' +
+        '<span class="legend-item"><span class="legend-swatch" style="background:#ffbf69"></span>STAIRS_DOWN</span>' +
+        '<span class="legend-item">outer ring = active stair primary</span>' +
+        '<span class="legend-item">dashed arrow/band = expectation</span>' +
+        '<span class="legend-item">protected/extreme ticks = stair structure</span>' +
+        '<span class="legend-item"><span class="legend-swatch" style="background:#d7a6ff"></span>selected stair PnL</span>' +
+        '<span class="legend-item positive">✓ followed</span>' +
+        '<span class="legend-item negative">× broken</span>';
+      stairsChartState = null;
+      if (!visibleCandles.length) {
+        stairsChart.getContext("2d").clearRect(0, 0, stairsChart.width, stairsChart.height);
+        return;
+      }
+      const ratio = window.devicePixelRatio || 1;
+      const viewportWidth = stairsChartWrap.clientWidth;
+      const desiredWidth = Math.max(viewportWidth, visibleCandles.length * 2.4 + 96);
+      const maxCanvasWidth = Math.max(viewportWidth, Math.floor(32767 / ratio));
+      stairsChart.style.width = Math.min(desiredWidth, maxCanvasWidth) + "px";
+      const rect = stairsChart.getBoundingClientRect();
+      stairsChart.width = Math.max(1, Math.floor(rect.width * ratio));
+      stairsChart.height = Math.max(1, Math.floor(rect.height * ratio));
+      const ctx = stairsChart.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      const width = rect.width, height = rect.height;
+      const pad = { left: 76, right: 20, top: 20, bottom: 34 };
+      const pnlHeight = Math.max(64, Math.min(110, height * 0.13));
+      const pnlTop = height - pad.bottom - pnlHeight;
+      const volumeHeight = Math.max(48, Math.min(92, height * 0.18));
+      const volumeBottom = pnlTop - 18;
+      const volumeTop = volumeBottom - volumeHeight;
+      const priceBottom = volumeTop - 20;
+      const priceHeight = Math.max(1, priceBottom - pad.top);
+      const plotWidth = Math.max(1, width - pad.left - pad.right);
+      const times = visibleCandles.map((candle) => Number(candle.time_ms)).filter(Number.isFinite);
+      const minTime = times.length ? times.reduce((minimum, time) => Math.min(minimum, time), Infinity) : 0;
+      const maxTime = times.length ? times.reduce((maximum, time) => Math.max(maximum, time), -Infinity) : 0;
+      const useTime = maxTime > minTime;
+      const xForIndex = (index) => pad.left + index / Math.max(1, visibleCandles.length - 1) * plotWidth;
+      const xForTime = (time) => {
+        const numeric = Number(time);
+        if (!Number.isFinite(numeric)) return null;
+        if (!useTime) return pad.left + plotWidth / 2;
+        return pad.left + Math.max(0, Math.min(1, (numeric - minTime) / (maxTime - minTime))) * plotWidth;
+      };
+      const rawPrices = [];
+      visibleCandles.forEach((candle) => {
+        [candle.open, candle.high, candle.low, candle.close].forEach((value) => {
+          if (finitePositive(value)) rawPrices.push(Number(value));
+        });
+        mrcLineKeys.forEach((key) => {
+          if (finitePositive(candle.mrc?.[key])) rawPrices.push(Number(candle.mrc[key]));
+        });
+      });
+      visibleStairs.forEach((event) => {
+        [event.market_price, event.predicted_line_price, event.target_price, event.stop_price,
+          event.expected_price_low, event.expected_price_high].forEach((value) => {
+          if (finitePositive(value)) rawPrices.push(Number(value));
+        });
+      });
+      if (!rawPrices.length) {
+        ctx.clearRect(0, 0, width, height);
+        return;
+      }
+      let minPrice = rawPrices.reduce((minimum, value) => Math.min(minimum, value), Infinity);
+      let maxPrice = rawPrices.reduce((maximum, value) => Math.max(maximum, value), -Infinity);
+      const span = Math.max(maxPrice - minPrice, minPrice * 0.001, 1e-9);
+      minPrice -= span * 0.06;
+      maxPrice += span * 0.06;
+      const yForPrice = (value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? pad.top + (maxPrice - numeric) / (maxPrice - minPrice) * priceHeight : null;
+      };
+      const candleWidth = Math.max(2, Math.min(12, plotWidth / Math.max(1, visibleCandles.length) * 0.62));
+      ctx.clearRect(0, 0, width, height);
+      ctx.font = "12px system-ui";
+      ctx.lineWidth = 1;
+      for (let index = 0; index <= 4; index++) {
+        const value = minPrice + (maxPrice - minPrice) * index / 4;
+        const lineY = yForPrice(value);
+        ctx.strokeStyle = "#2c3a5a";
+        ctx.beginPath(); ctx.moveTo(pad.left, lineY); ctx.lineTo(width - pad.right, lineY); ctx.stroke();
+        ctx.fillStyle = "#91a0bd";
+        ctx.textAlign = "right";
+        ctx.fillText(price(value), pad.left - 8, lineY + 4);
+      }
+      ctx.strokeStyle = "#2c3a5a";
+      ctx.beginPath(); ctx.moveTo(pad.left, volumeTop); ctx.lineTo(width - pad.right, volumeTop); ctx.stroke();
+      ctx.fillStyle = "#91a0bd";
+      ctx.textAlign = "left";
+      ctx.fillText("volume / buy-sell", pad.left, volumeTop + 14);
+
+      mrcLineKeys.forEach((key, lineIndex) => {
+        const points = visibleCandles.map((candle, index) => ({
+          x: useTime ? xForTime(candle.time_ms) : xForIndex(index),
+          y: yForPrice(candle.mrc?.[key]),
+        })).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+        if (!points.length) return;
+        ctx.save();
+        ctx.strokeStyle = mrcLineColors[lineIndex];
+        ctx.globalAlpha = lineIndex === 4 ? 0.95 : 0.55;
+        ctx.lineWidth = lineIndex === 4 ? 2 : 1;
+        ctx.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y); else ctx.lineTo(point.x, point.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      const gainValues = visibleCandles.map((candle) => Number(candle.gain)).filter(Number.isFinite);
+      const flowValues = visibleCandles.map((candle) => Number(candle.buy_sell_gain)).filter(Number.isFinite);
+      const volumeMax = Math.max(
+        1,
+        gainValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 0),
+        flowValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 0),
+      );
+      const volumeZero = volumeTop + (volumeBottom - volumeTop) / 2;
+      const volumeScale = (volumeBottom - volumeTop) / 2 * 0.82 / volumeMax;
+      visibleCandles.forEach((candle, index) => {
+        const x = useTime ? xForTime(candle.time_ms) : xForIndex(index);
+        const gain = Number(candle.gain);
+        const flow = Number(candle.buy_sell_gain);
+        [[gain, "#72a7ff", -candleWidth * 0.45], [flow, "#ffbf69", candleWidth * 0.05]].forEach(([value, color, offset]) => {
+          if (!Number.isFinite(value)) return;
+          const barHeight = Math.abs(value) * volumeScale;
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.72;
+          ctx.fillRect(x + offset, value >= 0 ? volumeZero - barHeight : volumeZero, candleWidth * 0.4, barHeight);
+          ctx.globalAlpha = 1;
+        });
+      });
+      ctx.strokeStyle = "#66789e";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(pad.left, volumeZero); ctx.lineTo(width - pad.right, volumeZero); ctx.stroke();
+      ctx.setLineDash([]);
+
+      visibleCandles.forEach((candle, index) => {
+        const x = useTime ? xForTime(candle.time_ms) : xForIndex(index);
+        const openY = yForPrice(candle.open), closeY = yForPrice(candle.close);
+        const highY = yForPrice(candle.high), lowY = yForPrice(candle.low);
+        if (![x, openY, closeY, highY, lowY].every(Number.isFinite)) return;
+        const color = Number(candle.close) >= Number(candle.open) ? "#55d69b" : "#ff7185";
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, highY); ctx.lineTo(x, lowY); ctx.stroke();
+        ctx.fillRect(x - candleWidth / 2, Math.min(openY, closeY), candleWidth,
+          Math.max(1, Math.abs(closeY - openY)));
+      });
+
+      const visibleReportEvents = visibleStairs.filter((event) => {
+        const time = Number(event.time_ms);
+        return Number.isFinite(time) && (!useTime || time >= minTime && time <= maxTime);
+      });
+      const pnlTrades = trades
+        .filter(stairTradeIsSelected)
+        .filter((trade) => {
+          const time = Number(trade.signal_time_ms);
+          return Number.isFinite(time) && (!useTime || time >= minTime && time <= maxTime);
+        })
+        .sort((left, right) => Number(left.signal_time_ms) - Number(right.signal_time_ms));
+      let cumulativeStairPnl = 0;
+      const pnlPoints = [{ time: minTime, value: 0, event: null }];
+      pnlTrades.forEach((trade) => {
+        cumulativeStairPnl += Number(trade.pnl_pct);
+        pnlPoints.push({
+          time: Number(trade.signal_time_ms),
+          value: cumulativeStairPnl,
+          trade,
+        });
+      });
+      const pnlValues = pnlPoints.map((point) => point.value);
+      const pnlMin = Math.min(0, ...pnlValues);
+      const pnlMax = Math.max(0, ...pnlValues);
+      const pnlSpan = Math.max(pnlMax - pnlMin, 0.01);
+      const pnlPlotTop = pnlTop + 22;
+      const pnlPlotBottom = height - pad.bottom - 4;
+      const yForPnl = (value) => pnlPlotTop + (pnlMax - Number(value)) / pnlSpan * (pnlPlotBottom - pnlPlotTop);
+      ctx.strokeStyle = "#2c3a5a";
+      ctx.beginPath(); ctx.moveTo(pad.left, pnlTop); ctx.lineTo(width - pad.right, pnlTop); ctx.stroke();
+      ctx.fillStyle = "#91a0bd";
+      ctx.textAlign = "left";
+      ctx.fillText("selected stair PnL", pad.left, pnlTop + 14);
+      ctx.textAlign = "right";
+      ctx.fillStyle = cumulativeStairPnl >= 0 ? "#55d69b" : "#ff7185";
+      ctx.fillText(
+        pnlTrades.length ? signedPercent(cumulativeStairPnl) : "no completed stair positions",
+        width - pad.right,
+        pnlTop + 14,
+      );
+      const pnlZeroY = yForPnl(0);
+      ctx.strokeStyle = "#66789e";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(pad.left, pnlZeroY); ctx.lineTo(width - pad.right, pnlZeroY); ctx.stroke();
+      ctx.setLineDash([]);
+      if (pnlTrades.length) {
+        ctx.save();
+        ctx.strokeStyle = cumulativeStairPnl >= 0 ? "#55d69b" : "#ff7185";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        pnlPoints.forEach((point, index) => {
+          const x = xForTime(point.time);
+          const y = yForPnl(point.value);
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        pnlPoints.slice(1).forEach((point) => {
+          const x = xForTime(point.time);
+          const y = yForPnl(point.value);
+          if (![x, y].every(Number.isFinite)) return;
+          ctx.fillStyle = Number(point.trade.pnl_pct) >= 0 ? "#55d69b" : "#ff7185";
+          ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+        });
+        ctx.restore();
+      }
+      const lastByPattern = {};
+      visibleReportEvents.forEach((event, index) => { lastByPattern[event.pattern_key] = index; });
+      const chartPoints = [];
+      const mrcLinePrice = (candle, line) => {
+        if (line == null || line === "") return null;
+        const numeric = Number(line);
+        const key = Number.isInteger(numeric) ? mrcLineKeys[numeric] : null;
+        return key && candle ? candle.mrc?.[key] : null;
+      };
+      const drawStructureTick = (ctx, x, y, color, label, direction) => {
+        if (![x, y].every(Number.isFinite)) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x - 9, y);
+        ctx.lineTo(x + 9, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = "10px system-ui";
+        ctx.textAlign = direction > 0 ? "left" : "right";
+        ctx.fillText(label, x + (direction > 0 ? 12 : -12), y + 3);
+        ctx.restore();
+      };
+      visibleReportEvents.forEach((event, eventIndex) => {
+        const x = xForTime(event.time_ms);
+        const candle = eventCandle(event);
+        const detectionPrice = finitePositive(event.market_price) ? event.market_price : candle?.close;
+        const detectionY = yForPrice(detectionPrice);
+        if (![x, detectionY].every(Number.isFinite)) return;
+        const color = stairsColor(event);
+        const structureDirection = stairDirection(event) === "SHORT" ? -1 : 1;
+        drawStructureTick(
+          ctx,
+          x,
+          yForPrice(mrcLinePrice(candle, event.staircase_protected_line)),
+          color,
+          "protected",
+          structureDirection,
+        );
+        drawStructureTick(
+          ctx,
+          x,
+          yForPrice(mrcLinePrice(candle, event.staircase_extreme_line)),
+          color,
+          "extreme",
+          structureDirection,
+        );
+        const targetPrice = finitePositive(event.predicted_line_price)
+          ? Number(event.predicted_line_price) : Number(event.target_price);
+        const targetY = yForPrice(targetPrice);
+        const activeOverride = event.active_stair_pattern && event.active_stair_pattern !== event.pattern_key;
+        const activeTargetPrice = finitePositive(event.active_stair_expected_price)
+          ? Number(event.active_stair_expected_price)
+          : mrcLinePrice(candle, event.active_stair_expected_line);
+        const activeTargetY = yForPrice(activeTargetPrice);
+        const latest = lastByPattern[event.pattern_key] === eventIndex;
+        const expectedLow = yForPrice(event.expected_price_low);
+        const expectedHigh = yForPrice(event.expected_price_high);
+        const outcome = stairsOutcome(event);
+        const outcomeX = event.prediction_resolved_at != null ? xForTime(event.prediction_resolved_at) : null;
+        const outcomeY = yForPrice(outcome.price);
+        const step = plotWidth / Math.max(1, visibleCandles.length - 1);
+        const projectionEnd = Number.isFinite(outcomeX)
+          ? Math.max(x + 18, outcomeX) : Math.min(width - pad.right, x + step * 12);
+        if (Number.isFinite(expectedLow) && Number.isFinite(expectedHigh)) {
+          ctx.save();
+          ctx.fillStyle = color;
+          ctx.globalAlpha = latest ? 0.12 : 0.05;
+          ctx.fillRect(x, Math.min(expectedLow, expectedHigh), Math.max(2, projectionEnd - x), Math.abs(expectedHigh - expectedLow));
+          ctx.restore();
+        }
+        if (Number.isFinite(targetY)) drawArrow(ctx, x, detectionY, projectionEnd, targetY, color);
+        if (activeOverride && Number.isFinite(activeTargetY)) {
+          drawArrow(
+            ctx,
+            x,
+            detectionY,
+            projectionEnd,
+            activeTargetY,
+            stairsColors[event.active_stair_pattern] || "#d7a6ff",
+          );
+        }
+        const point = { event, x, y: detectionY, targetX: projectionEnd, targetY, outcomeX, outcomeY };
+        chartPoints.push(point);
+        drawOutcomeMarker(ctx, point);
+        ctx.save();
+        if (event.active_stair_pattern && event.active_stair_pattern !== event.pattern_key) {
+          ctx.strokeStyle = stairsColors[event.active_stair_pattern] || "#d7a6ff";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, detectionY, latest ? 10 : 8, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#0b1020";
+        ctx.lineWidth = latest ? 2 : 1;
+        ctx.beginPath();
+        ctx.arc(x, detectionY, latest ? 6 : 4.5, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+      });
+      if (useTime) {
+        const latestCandleX = xForTime(visibleCandles[visibleCandles.length - 1].time_ms);
+        ctx.strokeStyle = "#91a0bd";
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath(); ctx.moveTo(latestCandleX, pad.top); ctx.lineTo(latestCandleX, height - pad.bottom); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = "#91a0bd";
+      ctx.textAlign = "center";
+      [minTime, (minTime + maxTime) / 2, maxTime].forEach((time) => {
+        const x = useTime ? xForTime(time) : pad.left;
+        ctx.fillText(shortDate(time), x, height - 10);
+      });
+      ctx.textAlign = "left";
+      stairsChartState = { points: chartPoints, rect };
+    };
+
+    let stairsTooltipHideTimer = null;
+    const hideStairsTooltip = () => {
+      clearTimeout(stairsTooltipHideTimer);
+      stairsTooltipHideTimer = setTimeout(() => {
+        if (!stairsChartTooltip.matches(":hover")) stairsChartTooltip.style.display = "none";
+      }, 100);
+    };
+    stairsChartTooltip.addEventListener("mouseenter", () => clearTimeout(stairsTooltipHideTimer));
+    stairsChartTooltip.addEventListener("mouseleave", hideStairsTooltip);
+    stairsChartTooltip.addEventListener("click", (event) => {
+      const button = event.target.closest(".copy-point");
+      if (!button || !stairsTooltipEvent) return;
+      const payload = JSON.stringify({
+        symbol_key: DATA.symbol_key,
+        copied_at: new Date().toISOString(),
+        point: stairsTooltipEvent,
+        nearest_candle: eventCandle(stairsTooltipEvent),
+      }, null, 2);
+      copyToClipboard(payload).then(() => {
+        const original = button.textContent;
+        button.textContent = "Copied point JSON";
+        setTimeout(() => { button.textContent = original; }, 1400);
+      });
+    });
+    stairsChartWrap.addEventListener("scroll", hideStairsTooltip);
+    stairsChart.addEventListener("mousemove", (event) => {
+      if (!stairsChartState) return;
+      const rect = stairsChart.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      const nearest = stairsChartState.points.reduce((best, point) => {
+        const candidates = [
+          { x: point.x, y: point.y },
+          Number.isFinite(point.targetY) ? { x: point.targetX, y: point.targetY } : null,
+          Number.isFinite(point.outcomeX) && Number.isFinite(point.outcomeY)
+            ? { x: point.outcomeX, y: point.outcomeY } : null,
+        ].filter(Boolean);
+        const distance = Math.min(...candidates.map((candidate) =>
+          Math.hypot(candidate.x - mouseX, candidate.y - mouseY)));
+        return !best || distance < best.distance ? { point, distance } : best;
+      }, null);
+      if (!nearest || nearest.distance > 20) { hideStairsTooltip(); return; }
+      const eventData = nearest.point.event;
+      stairsTooltipEvent = eventData;
+      const outcome = stairsOutcome(eventData);
+      const expected = eventData.target_line == null ? "not available" : stairsLineName(eventData.target_line);
+      const expectedPrice = eventData.expected_price_low != null
+        ? price(eventData.expected_price_low) + " .. " + price(eventData.expected_price_high)
+        : "not available";
+      const positionTrade = positionTradeForEvent(eventData);
+      const positionPnl = hasPositionPnl(eventData)
+        ? signedPercent(eventData.position_pnl_pct) + " · " + (eventData.position_exit_reason || "closed")
+        : positionTrade
+          ? signedPercent(positionTrade.pnl_pct) + " · " + (positionTrade.exit_reason || "closed")
+          : "no completed selected stair position";
+      const structure = [
+        eventData.staircase_lifecycle || "lifecycle unavailable",
+        eventData.staircase_transition || "transition unavailable",
+        "protected " + (eventData.staircase_protected_line == null ? "unavailable" : stairsLineName(eventData.staircase_protected_line)),
+        "extreme " + (eventData.staircase_extreme_line == null ? "unavailable" : stairsLineName(eventData.staircase_extreme_line)),
+      ].join(" · ");
+      stairsChartTooltip.innerHTML = '<b>' + esc(eventData.pattern_key) + '</b> · ' + esc(date(eventData.time_ms)) +
+        '<br><b>Detection:</b> ' + esc(stairDirection(eventData)) + ' at ' + esc(stairsLineName(eventData.line)) +
+        ' · steps=' + esc(eventData.pattern_steps) + ' · sequence=' + esc(stairsSequence(eventData)) +
+        '<br><b>Active stair primary:</b> ' + esc(activeStairSummary(eventData)) +
+        (eventData.active_stair_wait_reason ? ' · ' + esc(eventData.active_stair_wait_reason) : '') +
+        '<br><b>Active expectation:</b> ' + esc(eventData.active_stair_expected_line == null
+          ? 'unavailable' : stairsLineName(eventData.active_stair_expected_line)) +
+        (eventData.active_stair_route_available ? ' · route available' : ' · not executable yet') +
+        '<br><b>Expectation:</b> ' + esc(expected) + ' · price range ' + esc(expectedPrice) +
+        '<br><b>Structure:</b> ' + esc(structure) +
+        '<br><b>Replay:</b> <span class="' + outcome.className + '">' + esc(outcome.label) + '</span>' +
+        (eventData.prediction_resolved_at ? ' · resolved ' + esc(date(eventData.prediction_resolved_at)) : '') +
+        '<br><b>Position PnL:</b> ' + esc(positionPnl) +
+        '<br><b>Stair movement:</b> net ' + esc(signedPercent(eventData.stair_price_move_pct)) +
+        ' · favorable ' + esc(signedPercent(eventData.stair_favorable_move_pct)) +
+        ' · adverse ' + esc(signedPercent(eventData.stair_adverse_move_pct)) +
+        '<br><button type="button" class="copy-point">Copy point JSON</button>';
+      stairsChartTooltip.style.display = "block";
+      const tooltipWidth = stairsChartTooltip.offsetWidth;
+      const tooltipHeight = stairsChartTooltip.offsetHeight;
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+      stairsChartTooltip.style.left = Math.max(8, Math.min(event.clientX + 14, viewportWidth - tooltipWidth - 8)) + "px";
+      stairsChartTooltip.style.top = Math.max(8, Math.min(event.clientY + 14, viewportHeight - tooltipHeight - 8)) + "px";
+    });
+    stairsChart.addEventListener("mouseleave", hideStairsTooltip);
+
     const renderPatternLegend = () => {
       document.getElementById("patterns-pnl-legend").innerHTML = parallelSeries.map((series) =>
         '<span class="legend-item"><span class="legend-swatch" style="background:' + series.color + '"></span>' +
@@ -1342,6 +2009,7 @@ const TEMPLATE: &str = r###"<!doctype html>
       renderPredictions();
       drawChart();
       drawAllPatternChart();
+      drawStairsChart();
     };
     patternFilter.addEventListener("click", (event) => {
       const chip = event.target.closest(".pattern-chip");
@@ -1503,6 +2171,7 @@ const TEMPLATE: &str = r###"<!doctype html>
     }
     window.addEventListener("resize", drawChart);
     window.addEventListener("resize", drawAllPatternChart);
+    window.addEventListener("resize", drawStairsChart);
     refreshPatternDisplay();
   </script>
 </body>
@@ -1518,6 +2187,11 @@ mod tests {
     #[test]
     fn generated_report_is_standalone_html() {
         let report = AnalysisReport {
+            bypass_entry_blockers: false,
+            bypass_forced_candidates: 0,
+            bypass_forced_setups: 0,
+            bypass_forced_market_accepted: 0,
+            bypass_forced_market_busy: 0,
             crossing_count: 0,
             pattern_count: 0,
             patterns: Vec::new(),
@@ -1558,9 +2232,21 @@ mod tests {
         let html = TEMPLATE.replace("__DATA__", &serde_json::to_string(&data).unwrap());
         assert!(html.contains("<canvas id=\"pnl-chart\"></canvas>"));
         assert!(html.contains("<canvas id=\"patterns-pnl-chart\"></canvas>"));
+        assert!(html.contains("<canvas id=\"stairs-chart\"></canvas>"));
+        assert!(html.contains("Stairs detection / expectation"));
+        assert!(html.contains("dashed arrow/band = expectation"));
+        assert!(html.contains("protected/extreme ticks = stair structure"));
+        assert!(html.contains("MRC mean"));
+        assert!(html.contains("bull candle"));
+        assert!(html.contains("outer ring = active stair primary"));
+        assert!(html.contains("Active stair primary"));
+        assert!(html.contains("active_stair_expected_line"));
+        assert!(html.contains("followed (correct)"));
+        assert!(html.contains("broken (wrong)"));
         assert!(html.contains("id=\"pattern-filter\""));
         assert!(html.contains("class=\"pattern-chip selected\""));
         assert!(html.contains("class=\"copy-id\""));
+        assert!(html.contains("class=\"copy-point\""));
         assert!(html.contains("navigator.clipboard"));
         assert!(html.contains("line plans"));
         assert!(html.contains("covered_by_target"));

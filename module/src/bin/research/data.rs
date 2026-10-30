@@ -4,20 +4,18 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use long_scalping::model::MrcBands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ta::indicators::MeanReversionChannel;
+use ta::{Close, High, Low, Next};
 
-const BASE_URL: &str = "https://okx.tg.trading.sinvoid.me/api/indicators";
-const BASE_HOST: &str = "okx.tg.trading.sinvoid.me";
-const BASE_FALLBACK_IP: &str = "65.109.35.177";
-const API_PAGE_LIMIT: usize = 200;
-// Bump when a cached row gains or changes a parsed indicator. Version 2 was
-// created before NTPS was populated from the nested ntps.Value API field, so
-// accepting it would keep reporting the old zero placeholder forever.
-const CACHE_VERSION: u32 = 3;
+const BASE_URL: &str = "https://market-data-api.livtorgex.com/api/klines";
+const API_PAGE_LIMIT: usize = 500;
+pub(crate) const MRC_PERIOD: usize = 200;
+const CACHE_VERSION: u32 = 4;
 const CACHE_DIRECTORY: &str = "./tmp/cache";
 const ROLLING_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
@@ -84,23 +82,14 @@ pub(crate) fn f64_or(obj: &Value, primary: &str, fallback: &str) -> f64 {
     fn parse(value: &Value) -> Option<f64> {
         value
             .as_f64()
-            .or_else(|| value.as_str().and_then(|s| s.parse::<f64>().ok()))
+            .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
             .or_else(|| value.get("Value").and_then(parse))
             .or_else(|| value.get("value").and_then(parse))
     }
     obj.get(primary)
         .and_then(parse)
         .or_else(|| obj.get(fallback).and_then(parse))
-        .unwrap_or(0.0)
-}
-
-pub(crate) fn get_i64(map: &Value, key: &str) -> i64 {
-    map.get(key)
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-        })
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 fn encode_symbol_key(value: &str) -> String {
@@ -230,47 +219,57 @@ fn fetch_history_uncached(
         symbol_key, timeframe, limit, indicator_name
     );
     let mut merged = BTreeMap::<i64, CandleRow>::new();
-    let mut offset = 0usize;
+    let interval_ms = (timeframe.max(1) as i64).saturating_mul(1_000);
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+    let mut end_ms = now_ms / interval_ms * interval_ms;
     while merged.len() < limit {
         let page_limit = (limit - merged.len()).min(API_PAGE_LIMIT);
+        let start_ms = end_ms.saturating_sub(interval_ms.saturating_mul(page_limit as i64));
         eprintln!(
-            "[mrc-research][fetch] request symbol={} timeframe={} offset={} page_limit={}",
-            symbol_key, timeframe, offset, page_limit
+            "[mrc-research][fetch] request symbol={} timeframe={} start={} end={} page_limit={}",
+            symbol_key, timeframe, start_ms, end_ms, page_limit
         );
-        let page = fetch_history_page(symbol_key, timeframe, page_limit, offset, indicator_name)?;
+        let page = fetch_history_page(
+            symbol_key,
+            timeframe,
+            page_limit,
+            start_ms,
+            end_ms,
+            indicator_name,
+        )?;
         if page.is_empty() {
             eprintln!(
-                "[mrc-research][fetch] empty page symbol={} timeframe={} offset={} elapsed_ms={}",
+                "[mrc-research][fetch] empty page symbol={} timeframe={} start={} end={} elapsed_ms={}",
                 symbol_key,
                 timeframe,
-                offset,
+                start_ms,
+                end_ms,
                 started.elapsed().as_millis()
             );
             break;
         }
 
         let page_len = page.len();
+        let page_oldest = page.first().map(|row| row.time_ms).unwrap_or(end_ms);
         let previous_len = merged.len();
         for row in page {
-            // The API is newest-first. The timestamp key makes retries or
-            // overlapping page boundaries idempotent before chronological sort.
             merged.insert(row.time_ms, row);
         }
-        offset = offset.saturating_add(page_len);
 
         eprintln!(
-            "[mrc-research][fetch] page symbol={} timeframe={} offset={} rows={} total_rows={} elapsed_ms={}",
+            "[mrc-research][fetch] page symbol={} timeframe={} oldest={} rows={} total_rows={} elapsed_ms={}",
             symbol_key,
             timeframe,
-            offset.saturating_sub(page_len),
+            page_oldest,
             page_len,
             merged.len(),
             started.elapsed().as_millis()
         );
 
-        if merged.len() == previous_len || page_len < page_limit {
+        if merged.len() == previous_len || page_oldest >= end_ms {
             break;
         }
+        end_ms = page_oldest;
     }
 
     let mut rows = merged.into_values().collect::<Vec<_>>();
@@ -291,64 +290,20 @@ fn fetch_history_uncached(
 fn refresh_cached_rows(
     symbol_key: &str,
     timeframe: u64,
+    limit: usize,
     indicator_name: Option<&str>,
     cached: &[CandleRow],
 ) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    let Some(cached_latest) = cached.last().map(|row| row.time_ms) else {
-        return fetch_history_uncached(symbol_key, timeframe, API_PAGE_LIMIT, indicator_name);
-    };
-    let interval_ms = (timeframe as i64).saturating_mul(1_000);
     let started = Instant::now();
     eprintln!(
-        "[mrc-research][cache-refresh] start symbol={} timeframe={} cached_rows={} cached_latest={} ",
+        "[mrc-research][cache-refresh] start symbol={} timeframe={} limit={} cached_rows={} ",
         symbol_key,
         timeframe,
-        cached.len(),
-        cached_latest
+        limit,
+        cached.len()
     );
-    let mut incoming = Vec::new();
-    let mut offset = 0usize;
-
-    loop {
-        eprintln!(
-            "[mrc-research][cache-refresh] request symbol={} timeframe={} offset={}",
-            symbol_key, timeframe, offset
-        );
-        let page = fetch_history_page(
-            symbol_key,
-            timeframe,
-            API_PAGE_LIMIT,
-            offset,
-            indicator_name,
-        )?;
-        if page.is_empty() {
-            return Err("incremental candle refresh did not bridge the cached range".into());
-        }
-
-        let page_len = page.len();
-        let bridged = page
-            .first()
-            .is_some_and(|row| row.time_ms <= cached_latest.saturating_add(interval_ms));
-        incoming.extend(page);
-        eprintln!(
-            "[mrc-research][cache-refresh] page symbol={} timeframe={} offset={} rows={} incoming_rows={} elapsed_ms={}",
-            symbol_key,
-            timeframe,
-            offset,
-            page_len,
-            incoming.len(),
-            started.elapsed().as_millis()
-        );
-        if bridged || page_len < API_PAGE_LIMIT {
-            break;
-        }
-        offset = offset.saturating_add(page_len);
-    }
-
+    let incoming = fetch_history_uncached(symbol_key, timeframe, limit, indicator_name)?;
     let rows = merge_rows(cached, incoming);
-    if rows_have_gap(&rows, timeframe) {
-        return Err("cached candle range contains a timestamp gap".into());
-    }
     eprintln!(
         "[mrc-research][cache-refresh] complete symbol={} timeframe={} rows={} elapsed_ms={}",
         symbol_key,
@@ -359,59 +314,133 @@ fn refresh_cached_rows(
     Ok(rows)
 }
 
-fn resolve_host_ip() -> Option<String> {
-    let output = Command::new("getent")
-        .args(["hosts", BASE_HOST])
-        .output()
-        .ok();
-    let ip = output
-        .and_then(|out| {
-            if !out.status.success() {
-                return None;
-            }
-            String::from_utf8(out.stdout).ok()
-        })
-        .and_then(|text| text.split_whitespace().next().map(str::to_string));
-    Some(ip.unwrap_or_else(|| BASE_FALLBACK_IP.to_string()))
+fn value_at<'a>(item: &'a Value, index: usize, names: &[&str]) -> Option<&'a Value> {
+    item.as_array()
+        .and_then(|values| values.get(index))
+        .or_else(|| names.iter().find_map(|name| item.get(*name)))
 }
 
-fn parse_mrc(ind: &Value) -> MrcBands {
-    MrcBands {
-        down_big: f64_or(ind, "DownBig", "down_big"),
-        down_outer: f64_or(ind, "DownOuter", "down_outer"),
-        down_small: f64_or(ind, "DownSmall", "down_small"),
-        down_inner: f64_or(ind, "DownInner", "down_inner"),
-        mean_line: f64_or(ind, "MeanLine", "mean_line"),
-        up_inner: f64_or(ind, "UpInner", "up_inner"),
-        up_small: f64_or(ind, "UpSmall", "up_small"),
-        up_outer: f64_or(ind, "UpOuter", "up_outer"),
-        up_big: f64_or(ind, "UpBig", "up_big"),
-        current_cross: f64_or(ind, "CurrentCross", "current_cross"),
-        mean_line_slope: 0.0,
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+}
+
+fn parse_candle(item: &Value) -> Option<CandleRow> {
+    let time_ms = value_at(item, 0, &["time_ms", "timestamp", "time", "ts"]).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })?;
+    let open = value_at(item, 1, &["open", "Open", "o"]).and_then(value_as_f64)?;
+    let high = value_at(item, 2, &["high", "High", "h"]).and_then(value_as_f64)?;
+    let low = value_at(item, 3, &["low", "Low", "l"]).and_then(value_as_f64)?;
+    let close = value_at(item, 4, &["close", "Close", "c"]).and_then(value_as_f64)?;
+    let qty_buy = item
+        .get("qty_buy")
+        .and_then(value_as_f64)
+        .unwrap_or_default();
+    let qty_sell = item
+        .get("qty_sell")
+        .and_then(value_as_f64)
+        .unwrap_or_default();
+    let asset_buy = item.get("asset_buy").and_then(value_as_f64);
+    let asset_sell = item.get("asset_sell").and_then(value_as_f64);
+    let volume = value_at(item, 5, &["volume", "vol", "base_volume", "volume_base"])
+        .and_then(value_as_f64)
+        .unwrap_or(qty_buy + qty_sell);
+    let quote_volume = item
+        .as_array()
+        .and_then(|values| values.get(7))
+        .or_else(|| {
+            [
+                "quote_volume",
+                "quoteVolume",
+                "volume_quote",
+                "volCcyQuote",
+                "turnover",
+            ]
+            .iter()
+            .find_map(|name| item.get(*name))
+        })
+        .and_then(value_as_f64)
+        .or_else(|| Some(asset_buy.unwrap_or_default() + asset_sell.unwrap_or_default()))
+        .filter(|value| *value != 0.0)
+        .unwrap_or(volume);
+    let buy_sell_gain = match (asset_buy, asset_sell) {
+        (Some(buy), Some(sell)) => buy - sell,
+        _ => 0.0,
+    };
+    let ntps = item
+        .get("ntps")
+        .or_else(|| item.get("NTPS"))
+        .and_then(value_as_f64)
+        .unwrap_or_default()
+        .round() as i64;
+
+    Some(CandleRow {
+        time_ms,
+        open,
+        high,
+        low,
+        close,
+        gain: quote_volume,
+        buy_sell_gain,
+        ntps,
+        mrc: MrcBands::default(),
+    })
+}
+
+#[derive(Clone, Copy)]
+struct TaCandle {
+    high: f64,
+    low: f64,
+    close: f64,
+}
+
+impl High for TaCandle {
+    fn high(&self) -> f64 {
+        self.high
     }
 }
 
-fn parse_candle(item: &Value) -> CandleRow {
-    let ind = item.get("indicators").unwrap_or(&Value::Null);
-    let candle = ind.get("candle").unwrap_or(ind);
-    let mrc = ind.get("mrc_200").unwrap_or(&Value::Null);
-    let volume = ind.get("volume_50").unwrap_or(&Value::Null);
-    let ntps = if item.get("ntps").is_some() {
-        f64_or(item, "ntps", "NTPS")
-    } else {
-        f64_or(ind, "ntps", "NTPS")
-    };
+impl Low for TaCandle {
+    fn low(&self) -> f64 {
+        self.low
+    }
+}
 
-    CandleRow {
-        time_ms: get_i64(item, "time"),
-        open: f64_or(candle, "Open", "open"),
-        high: f64_or(candle, "High", "high"),
-        low: f64_or(candle, "Low", "low"),
-        close: f64_or(candle, "Close", "close"),
-        gain: f64_or(volume, "Gain", "gain"),
-        buy_sell_gain: f64_or(volume, "BuySellGain", "buy_sell_gain"),
-        ntps: ntps.round() as i64,
-        mrc: parse_mrc(mrc),
+impl Close for TaCandle {
+    fn close(&self) -> f64 {
+        self.close
+    }
+}
+
+pub(crate) fn compute_mrc(rows: &mut [CandleRow]) {
+    let mut channel = MeanReversionChannel::new(MRC_PERIOD);
+    let mut previous_middle = None;
+    for row in rows {
+        let output = channel.next(&TaCandle {
+            high: row.high,
+            low: row.low,
+            close: row.close,
+        });
+        row.mrc = MrcBands {
+            down_big: output.down_big,
+            down_outer: output.down_outer,
+            down_small: output.down_small,
+            down_inner: output.down_inner,
+            mean_line: output.middle,
+            up_inner: output.up_inner,
+            up_small: output.up_small,
+            up_outer: output.up_outer,
+            up_big: output.up_big,
+            current_cross: 0.0,
+            mean_line_slope: previous_middle
+                .map(|previous: f64| output.middle - previous)
+                .unwrap_or_default(),
+        };
+        previous_middle = Some(output.middle);
     }
 }
 
@@ -419,36 +448,45 @@ fn fetch_history_page(
     symbol_key: &str,
     timeframe: u64,
     limit: usize,
-    offset: usize,
+    start_ms: i64,
+    end_ms: i64,
     indicator_name: Option<&str>,
 ) -> Result<Vec<CandleRow>, Box<dyn Error>> {
-    let indicator_query = indicator_name
-        .map(|name| format!("&indicator_name={name}"))
-        .unwrap_or_default();
+    let _ = indicator_name;
     let url = format!(
-        "{}?symbol_key={}&timeframe={}&limit={}&offset={}{}",
+        "{}?symbol_key={}&timeframe={}&time_start={}&time_end={}&limit={}",
         BASE_URL,
-        encode_symbol_key(symbol_key),
+        encode_symbol_key(&symbol_key.to_ascii_lowercase()),
         timeframe,
+        start_ms,
+        end_ms,
         limit.min(API_PAGE_LIMIT),
-        offset,
-        indicator_query
     );
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--max-time", "180"]);
-    if let Some(ip) = resolve_host_ip() {
-        cmd.args(["--resolve", &format!("{}:443:{}", BASE_HOST, ip)]);
-    }
     let output = cmd.arg(&url).output()?;
     if !output.status.success() {
         return Err(format!("curl fetch failed for {symbol_key} tf={timeframe}").into());
     }
     let payload: Value = serde_json::from_slice(&output.stdout)?;
-    let mut rows = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|data| data.iter().map(parse_candle).collect::<Vec<_>>())
-        .unwrap_or_default();
+    let data = payload
+        .as_array()
+        .or_else(|| payload.get("data").and_then(Value::as_array))
+        .or_else(|| payload.get("klines").and_then(Value::as_array));
+    let Some(data) = data else {
+        return Err(format!("klines response has no data array for {symbol_key}").into());
+    };
+    let mut rows = data
+        .iter()
+        .filter_map(parse_candle)
+        .filter(|row| row.time_ms >= start_ms && row.time_ms < end_ms)
+        .collect::<Vec<_>>();
+    if rows.is_empty() && !data.is_empty() {
+        return Err(format!(
+            "klines response contained no parseable rows in [{start_ms}, {end_ms}) for {symbol_key}"
+        )
+        .into());
+    }
     rows.sort_by_key(|row| row.time_ms);
     Ok(rows)
 }
@@ -482,12 +520,10 @@ pub(crate) fn fetch_history_for_timeframe_cached(
         ));
     }
 
-    let path = cache_file_path(
-        Path::new(CACHE_DIRECTORY),
-        symbol_key,
-        timeframe,
-        indicator_name,
-    );
+    let cache_directory = std::env::var_os("LIVTORGEX_RESEARCH_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(CACHE_DIRECTORY));
+    let path = cache_file_path(&cache_directory, symbol_key, timeframe, indicator_name);
     eprintln!(
         "[mrc-research][cache] lookup symbol={} timeframe={} limit={} path={} enabled={} clear={} refresh={}",
         symbol_key,
@@ -557,7 +593,7 @@ pub(crate) fn fetch_history_for_timeframe_cached(
     }
 
     let (mut rows, mut status) =
-        match refresh_cached_rows(symbol_key, timeframe, indicator_name, &cached) {
+        match refresh_cached_rows(symbol_key, timeframe, limit, indicator_name, &cached) {
             Ok(rows) => (rows, None),
             Err(_) => (
                 fetch_history_uncached(symbol_key, timeframe, limit, indicator_name)?,
