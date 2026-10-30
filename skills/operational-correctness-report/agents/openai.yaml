@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operational Correctness Report"
+  short_description: "Audit strategy duration, signals, and entry/exit quality"
+  default_prompt: "Write an operational-correctness report for this strategy. Focus on position duration, signal behavior, and entry/exit price-point quality—not profitability."
