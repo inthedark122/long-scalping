@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.113",
+          "module_version": "1.0.118",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-            "module_version": "1.0.113"
+            "module_version": "1.0.118"
             }
           }
         }
@@ -30,12 +30,12 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.113 state-machine pattern engine with empirical MRC-touch learning, structural exits, and separate market/open-position decision contexts. The predictor learns next-line direction from exact and crossing touches, tags history by 5m MRC slope and price-side context, and tracks fast, normal, and slow touch intervals; it remains neutral until matching evidence is available. Stairs are the only primary entry authority. REVERSAL is a staircase transition with potential or confirmed state, not a separate primary pattern. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade supplies movement timing and activity context only; it does not determine direction or create staged orders. Limit entries use one selected entry order. A position uses one primary reduce-only TP calculated from the filled entry and learned favorable movement; MRC target lines remain route/reference analysis and the MRC structure supplies the protective stop. An open position keeps its same-side exit context while the market context controls future entries. Position lifetimes distinguish one-shot positions from bounded recyclable staircase cycles. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
+          "description": "Start the 1.0.118 signed short-position reconciliation release. STAIRS_UP and STAIRS_DOWN are the only primary patterns. Signed exchange quantities are normalized when positions attach, so short fills consume the pending entry intent and retain the position exit context. Entry intents are persisted before submission and re-emitted until the host confirms the resulting position or reports cancellation/expiry; exchange-confirmed positions create a durable position context with one reduce-only TP and virtual SL. Order status does not stand in for position confirmation, and future market direction never erases the open position exit plan. Missing indicators preserve the last valid plan, and TP repricing is idempotent. SugInfo processing is event-driven and may arrive at variable activity intervals. Direction BOTH may switch sides; LONG and SHORT restrict entries. The position is cleared only after confirmed flat.",
           "name": "Start",
           "params": [
             {
               "code": "cap_init",
-              "default": 50,
+              "default": 20,
               "description": "Percent of max_amount reserved for the internal trading budget.",
               "name": "Initial budget %",
               "variant": "Number"
@@ -70,14 +70,14 @@
             },
             {
               "code": "required_samples",
-              "default": 3,
+              "default": 1,
               "description": "Minimum number of observations used by the adaptive pattern engine before normal learned statistics are considered; continuation patterns can still trade when a stair is detected.",
               "name": "Required samples",
               "variant": "Number"
             },
             {
               "code": "primary_mode",
-              "default": 0,
+              "default": 1,
               "description": "Choose which primary entry authority is active. Direction LONG plus Stairs is the CAP long-stairs profile.",
               "name": "Primary rules",
               "options": [
@@ -89,7 +89,7 @@
             {
               "code": "entry_type",
               "default": 1,
-              "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation is confirmed.",
+              "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed and remains pending until the host reports fill, cancellation, or expiry. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation or expiry is confirmed.",
               "name": "Entry order",
               "options": [
                 { "label": "Market", "value": 0 },
@@ -126,12 +126,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.113",
+          "module_version": "1.0.118",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-            "module_version": "1.0.113"
+            "module_version": "1.0.118"
             }
           }
         }
@@ -139,12 +139,12 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.113 state-machine pattern engine with empirical MRC-touch learning, structural exits, and separate market/open-position decision contexts. The predictor learns next-line direction from exact and crossing touches, tags history by 5m MRC slope and price-side context, and tracks fast, normal, and slow touch intervals; it remains neutral until matching evidence is available. Stairs are the only primary entry authority. REVERSAL is a staircase transition with potential or confirmed state, not a separate primary pattern. Direction BOTH remains free to switch sides; LONG and SHORT restrict trading to the requested side. FAST_BREAK_RETURN, pullback, volume, trend, and favorable-extreme signals are support evidence and cannot open a trade by themselves. Cascade supplies movement timing and activity context only; it does not determine direction or create staged orders. Limit entries use one selected entry order. A position uses one primary reduce-only TP calculated from the filled entry and learned favorable movement; MRC target lines remain route/reference analysis and the MRC structure supplies the protective stop. An open position keeps its same-side exit context while the market context controls future entries. Position lifetimes distinguish one-shot positions from bounded recyclable staircase cycles. Runtime action decision_components accepts components=[...], add, or remove with primary-stairs, support-fast-break-return, support-pullback, support-volume, support-extreme, and support-trend. Market entries open immediately. Limit entries use the selected pattern price or two ticks beyond market when already crossed; any unfilled limit entry is cancelled after the next candle, and a new signal is evaluated only after the cancellation is confirmed.",
+          "description": "Start the 1.0.118 signed short-position reconciliation release. STAIRS_UP and STAIRS_DOWN are the only primary patterns. Signed exchange quantities are normalized when positions attach, so short fills consume the pending entry intent and retain the position exit context. Entry intents are persisted before submission and re-emitted until the host confirms the resulting position or reports cancellation/expiry; exchange-confirmed positions create a durable position context with one reduce-only TP and virtual SL. Order status does not stand in for position confirmation, and future market direction never erases the open position exit plan. Missing indicators preserve the last valid plan, and TP repricing is idempotent. SugInfo processing is event-driven and may arrive at variable activity intervals. Direction BOTH may switch sides; LONG and SHORT restrict entries. The position is cleared only after confirmed flat.",
           "name": "Start",
           "params": [
             {
               "code": "cap_init",
-              "default": 50,
+              "default": 20,
               "description": "Percent of max_amount reserved for the internal trading budget.",
               "name": "Initial budget %",
               "variant": "Number"
@@ -179,14 +179,14 @@
             },
             {
               "code": "required_samples",
-              "default": 3,
+              "default": 1,
               "description": "Minimum number of observations used by the adaptive pattern engine before normal learned statistics are considered; continuation patterns can still trade when a stair is detected.",
               "name": "Required samples",
               "variant": "Number"
             },
             {
               "code": "primary_mode",
-              "default": 0,
+              "default": 1,
               "description": "Choose which primary entry authority is active. Direction LONG plus Stairs is the CAP long-stairs profile.",
               "name": "Primary rules",
               "options": [
@@ -198,7 +198,7 @@
             {
               "code": "entry_type",
               "default": 1,
-              "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation is confirmed.",
+              "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed and remains pending until the host reports fill, cancellation, or expiry. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation or expiry is confirmed.",
               "name": "Entry order",
               "options": [
                 { "label": "Market", "value": 0 },
