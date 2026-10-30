@@ -2,6 +2,84 @@
 
 # Unreleased
 
+# 1.0.129
+
+Restore the host snapshot once at module startup and keep in-memory state
+authoritative across events. Attach the selected TP/SL plan to each open
+request so it follows that order through the fill event, then consume valid
+`NewPosition` values as the exit-plan anchor. Recover from current MRC analysis
+only when direction and entry price match the fill.
+
+# 1.0.128
+
+Recover the pending exit plan directly from host state when other persisted
+fields prevent restoring the complete module state.
+
+# 1.0.127
+
+Restore the host's latest saved module state before every event so pending
+entry exit plans survive order-to-position handoff.
+
+# 1.0.126
+
+Expose pending TP/SL values in the entry note to verify the handoff to the
+new-position event.
+
+# 1.0.125
+
+Keep pending TP/SL in dedicated persisted state until `NewPosition` consumes
+it, independent of active-position context cleanup.
+
+# 1.0.124
+
+Retain the exact pending entry TP/SL as a position-plan anchor so a fill keeps
+its submitted exit plan even if the entry-reason context is unavailable.
+
+# 1.0.123
+
+Include pending, runtime, and anchored exit values in emergency-close notes to
+trace exit-plan handoff state on the platform.
+
+# 1.0.122
+
+Persist pending entry intent separately from active position context so flat
+position cleanup cannot discard the exit plan before a fill event arrives.
+
+# 1.0.121
+
+Retain pending entry reason through cancel and expiry notifications so a fill
+arriving at the order-expiry boundary still has its saved exit plan.
+
+# 1.0.120
+
+Include saved exit-plan values in emergency-close order notes to identify why
+the platform could not resolve an entry plan.
+
+# 1.0.119
+
+Keep the persisted pending-order reason authoritative while synchronizing a
+filled position, so a later runtime decision cannot replace its exit plan.
+
+# 1.0.118
+
+Seed a new position's saved exit anchor from the persisted entry reason before
+resolving exits, preserving its valid TP/SL when current MRC recalculation fails.
+
+# 1.0.117
+
+Prefer the entry reason persisted with a pending order when the host confirms a
+new position, so a later market decision cannot replace the exit plan source.
+
+# 1.0.116
+
+Persist entry exit context across the order-to-position event boundary.
+
+- Save the selected entry reason before returning a new or updated entry order,
+  then restore it when the host confirms the position so the TP/SL plan can be
+  rebuilt after state serialization.
+- Clear pending entry context on cancellation or expiry while keeping emergency
+  closure for positions with no valid exit plan.
+
 # 1.0.115
 
 ta-rs kline data pipeline release.

@@ -47,12 +47,13 @@ pub(crate) fn limit_order(
 }
 
 /// Clean LIMIT open ("create position with price"): a maker open resting at
-/// `enter`. NO stop_loss/take_profit bracket on the create — attaching those
-/// gets the order rejected; the stop/TP are handled separately.
+/// `enter`. TP/SL are applied separately after the position opens.
 pub(crate) fn limit_open(
     direction: Direction,
     amount: f64,
     enter: f64,
+    take_profit: Option<f64>,
+    stop_loss: Option<f64>,
     note: &str,
 ) -> ModuleOpenPosition {
     ModuleOpenPosition {
@@ -61,8 +62,8 @@ pub(crate) fn limit_open(
         qty: None,
         enter_price: Some(enter),
         order_type: ModuleOrderType::Limit,
-        take_profit: None,
-        stop_loss: None,
+        take_profit,
+        stop_loss,
         note: note.to_string(),
     }
 }
@@ -73,6 +74,8 @@ pub(crate) fn market_open(
     direction: Direction,
     amount: f64,
     enter: f64,
+    take_profit: Option<f64>,
+    stop_loss: Option<f64>,
     note: &str,
 ) -> ModuleOpenPosition {
     ModuleOpenPosition {
@@ -81,8 +84,8 @@ pub(crate) fn market_open(
         qty: None,
         enter_price: Some(enter),
         order_type: ModuleOrderType::Market,
-        take_profit: None,
-        stop_loss: None,
+        take_profit,
+        stop_loss,
         note: note.to_string(),
     }
 }

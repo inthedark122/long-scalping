@@ -718,8 +718,12 @@ pub struct EngineState {
     /// serialize this cache; the host resends the requested history on Init.
     pub klines: KlineHistory,
     pub position: PositionRuntime,
-    /// Immutable and cached decision context owned by the current position.
+    /// Exit context owned by the active position.
     pub position_context: PositionContext,
+    /// Entry intent retained while the host processes an opening order.
+    pub pending_entry_reason: Option<EntryReason>,
+    /// Exact pending exit levels retained across the order-to-position event.
+    pub pending_entry_plan: Option<PositionPlanSnapshot>,
     pub take_profit_allocation: TakeProfitAllocation,
     pub trade_budget: f64,
     pub vlines: [VLineState; 9],
@@ -773,6 +777,8 @@ impl Default for EngineState {
             klines: KlineHistory::new(&crate::market_data::kline_requirements()),
             position: PositionRuntime::default(),
             position_context: PositionContext::default(),
+            pending_entry_reason: None,
+            pending_entry_plan: None,
             take_profit_allocation: TakeProfitAllocation::default(),
             trade_budget: 0.0,
             vlines: [VLineState::default(); 9],
@@ -820,6 +826,10 @@ struct PersistedState {
     #[serde(default)]
     position_context: PositionContext,
     #[serde(default)]
+    pending_entry_reason: Option<EntryReason>,
+    #[serde(default)]
+    pending_entry_plan: Option<PositionPlanSnapshot>,
+    #[serde(default)]
     take_profit_allocation: TakeProfitAllocation,
     #[serde(default)]
     exit_memory: ExitMemory,
@@ -849,6 +859,8 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         trade_budget: state.trade_budget,
         position: state.position.side,
         position_context: state.position_context.clone(),
+        pending_entry_reason: state.pending_entry_reason.clone(),
+        pending_entry_plan: state.pending_entry_plan,
         take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
         pattern_performance: state.mrc_crossing_model.pattern_performance.to_vec(),
@@ -881,6 +893,8 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.trade_budget = persisted.trade_budget;
     state.position.side = persisted.position;
     state.position_context = persisted.position_context;
+    state.pending_entry_reason = persisted.pending_entry_reason;
+    state.pending_entry_plan = persisted.pending_entry_plan;
     state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
     state.mrc_crossing_model.pattern_performance =
@@ -937,10 +951,10 @@ pub fn sync_position_state(
     match (long, short) {
         (Some((entry, _)), None) => {
             let entry_reason = state
-                .position
-                .entry_reason
+                .pending_entry_reason
                 .clone()
-                .or_else(|| state.position_context.entry_reason.clone());
+                .or_else(|| state.position_context.entry_reason.clone())
+                .or_else(|| state.position.entry_reason.clone());
             if state.position.side != PositionState::Long
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
@@ -979,17 +993,17 @@ pub fn sync_position_state(
                 state.position.peak_price = state.position.peak_price.max(price);
                 state.position.trough_price = state.position.trough_price.min(price);
             }
-            state.position_context.entry_reason = entry_reason;
+            state.position_context.entry_reason = entry_reason.clone();
             state
                 .position_context
-                .seed_entry_anchor_from_reason(state.position.entry_reason.as_ref());
+                .seed_entry_anchor_from_reason(entry_reason.as_ref());
         }
         (None, Some((entry, _))) => {
             let entry_reason = state
-                .position
-                .entry_reason
+                .pending_entry_reason
                 .clone()
-                .or_else(|| state.position_context.entry_reason.clone());
+                .or_else(|| state.position_context.entry_reason.clone())
+                .or_else(|| state.position.entry_reason.clone());
             if state.position.side != PositionState::Short
                 || (state.position.entry_price - entry).abs() > f64::EPSILON
             {
@@ -1028,10 +1042,10 @@ pub fn sync_position_state(
                 state.position.peak_price = state.position.peak_price.max(price);
                 state.position.trough_price = state.position.trough_price.min(price);
             }
-            state.position_context.entry_reason = entry_reason;
+            state.position_context.entry_reason = entry_reason.clone();
             state
                 .position_context
-                .seed_entry_anchor_from_reason(state.position.entry_reason.as_ref());
+                .seed_entry_anchor_from_reason(entry_reason.as_ref());
         }
         _ => {
             state.position = PositionRuntime::default();

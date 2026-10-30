@@ -5,7 +5,7 @@ use crate::model::IndicatorSnapshot;
 use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
 use crate::orders::{close, limit_open, market_open, update_position};
 use crate::risk::{entry_budget, EntrySizing};
-use crate::state::{sync_position_state, EngineState};
+use crate::state::{sync_position_state, EngineState, PositionPlanSnapshot};
 use lte_strategy_bridge::abi::{
     Direction, ModuleClosePosition, ModuleInput, ModuleOpenPosition, ModulePlaceOrder,
     ModulePositionSummary, ModuleUpdatePosition,
@@ -136,8 +136,12 @@ fn open_note(
     let reason_price = entry_reason(decision)
         .map(EntryReason::price)
         .unwrap_or(market_price);
+    let (plan_handoff_tp, plan_handoff_sl) = state
+        .pending_entry_plan
+        .map(|plan| (plan.take_profit, plan.stop_loss))
+        .unwrap_or((f64::NAN, f64::NAN));
     format!(
-        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4} cascade_dir={} cascade_phase={} cascade_speed={} cascade_potential={} cascade_adverse={} cascade_avg_time={} {}",
+        "open {} because {} entry={} reason={} reason_price={} order_price={} market_price={} amount={:.4} cap_init={:.2}% trading_amount={:.2}% budget={:.4} cascade_dir={} cascade_phase={} cascade_speed={} cascade_potential={} cascade_adverse={} cascade_avg_time={} {} plan_handoff_tp={:.8} plan_handoff_sl={:.8}",
         side,
         entry_note,
         state.cfg.entry_type.as_str(),
@@ -171,7 +175,9 @@ fn open_note(
             .average_duration_ms
             .map(fmt_duration_f64)
             .unwrap_or_else(|| "na".to_string()),
-        sizing.diagnostics()
+        sizing.diagnostics(),
+        plan_handoff_tp,
+        plan_handoff_sl
     )
 }
 
@@ -248,6 +254,34 @@ fn entry_reason(decision: &TradeDecision) -> Option<&EntryReason> {
         EntryGate::Open { reason, .. } => reason.as_entry_reason(),
         EntryGate::Wait(_) => None,
     }
+}
+
+fn remember_pending_entry(state: &mut EngineState, reason: Option<EntryReason>) {
+    let plan = reason.as_ref().and_then(|reason| match reason {
+        EntryReason::MrcCrossing {
+            target_price,
+            stop_price,
+            ..
+        } if target_price.is_finite()
+            && stop_price.is_finite()
+            && *target_price > 0.0
+            && *stop_price > 0.0 =>
+        {
+            Some(PositionPlanSnapshot {
+                take_profit: *target_price,
+                stop_loss: *stop_price,
+                tp_reliable: true,
+            })
+        }
+        _ => None,
+    });
+
+    state.position.entry_reason = reason.clone();
+    state.position_context.entry_reason = reason.clone();
+    state.position_context.entry_anchor = plan;
+    state.position_context.last_valid_plan = None;
+    state.pending_entry_plan = plan;
+    state.pending_entry_reason = reason;
 }
 
 fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64) -> f64 {
@@ -436,7 +470,6 @@ pub fn evaluate_with_mrc(
             input.price,
             tick_size(input),
         );
-        state.position.entry_reason = None;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_bar = None;
         // Cancel the expired order first. The host still reports the old
@@ -458,7 +491,7 @@ pub fn evaluate_with_mrc(
                 return None;
             }
             let reason = entry_reason(decision).cloned();
-            state.position.entry_reason = reason;
+            state.position.entry_reason = reason.clone();
             if matches!(
                 state.position.entry_reason,
                 Some(EntryReason::MrcCrossing { .. })
@@ -467,6 +500,7 @@ pub fn evaluate_with_mrc(
             }
             let update = created_position_update(input, state, PositionState::Long);
             if update.is_some() {
+                remember_pending_entry(state, reason);
                 state.pending_entry_bar =
                     (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
             }
@@ -490,7 +524,7 @@ pub fn evaluate_with_mrc(
                 return None;
             }
             let reason = entry_reason(decision).cloned();
-            state.position.entry_reason = reason;
+            state.position.entry_reason = reason.clone();
             if matches!(
                 state.position.entry_reason,
                 Some(EntryReason::MrcCrossing { .. })
@@ -499,6 +533,7 @@ pub fn evaluate_with_mrc(
             }
             let update = created_position_update(input, state, PositionState::Short);
             if update.is_some() {
+                remember_pending_entry(state, reason);
                 state.pending_entry_bar =
                     (state.cfg.entry_type == EntryType::Limit).then_some(state.bar_1m);
             }
@@ -648,6 +683,16 @@ pub fn evaluate_with_mrc(
                     PositionState::Short => Direction::Short,
                     PositionState::Flat => Direction::Both,
                 };
+                if state.pending_entry_reason.is_none() || state.pending_entry_plan.is_none() {
+                    let pending_reason = state
+                        .pending_entry_reason
+                        .clone()
+                        .or_else(|| state.position.entry_reason.clone())
+                        .or_else(|| state.position_context.entry_reason.clone());
+                    if pending_reason.is_some() {
+                        remember_pending_entry(state, pending_reason);
+                    }
+                }
                 return finish(ExecutionResult {
                     update_positions: vec![update_position(direction, Some(order_price))],
                     ..Default::default()
@@ -710,13 +755,21 @@ pub fn evaluate_with_mrc(
             });
         }
     }
-    match decision.market_state {
-        MarketState::Long => finish(ExecutionResult {
+    remember_pending_entry(state, reason.clone());
+    let (entry_take_profit, entry_stop_loss) = state
+        .pending_entry_plan
+        .filter(|plan| plan.valid_for(entry_side, sizing_reference_price))
+        .map(|plan| (Some(plan.take_profit), Some(plan.stop_loss)))
+        .unwrap_or((None, None));
+    let result = match decision.market_state {
+        MarketState::Long => ExecutionResult {
             open_positions: vec![if state.cfg.entry_type == EntryType::Market {
                 market_open(
                     Direction::Long,
                     amount,
                     input.price,
+                    entry_take_profit,
+                    entry_stop_loss,
                     &open_note(
                         Direction::Long,
                         amount,
@@ -733,6 +786,8 @@ pub fn evaluate_with_mrc(
                     Direction::Long,
                     amount,
                     order_price,
+                    entry_take_profit,
+                    entry_stop_loss,
                     &open_note(
                         Direction::Long,
                         amount,
@@ -746,13 +801,15 @@ pub fn evaluate_with_mrc(
                 )
             }],
             ..Default::default()
-        }),
-        MarketState::Short => finish(ExecutionResult {
+        },
+        MarketState::Short => ExecutionResult {
             open_positions: vec![if state.cfg.entry_type == EntryType::Market {
                 market_open(
                     Direction::Short,
                     amount,
                     input.price,
+                    entry_take_profit,
+                    entry_stop_loss,
                     &open_note(
                         Direction::Short,
                         amount,
@@ -769,6 +826,8 @@ pub fn evaluate_with_mrc(
                     Direction::Short,
                     amount,
                     order_price,
+                    entry_take_profit,
+                    entry_stop_loss,
                     &open_note(
                         Direction::Short,
                         amount,
@@ -782,7 +841,8 @@ pub fn evaluate_with_mrc(
                 )
             }],
             ..Default::default()
-        }),
-        _ => None,
-    }
+        },
+        _ => return None,
+    };
+    finish(result)
 }
