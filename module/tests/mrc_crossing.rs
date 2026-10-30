@@ -93,6 +93,41 @@ fn prediction_history_survives_local_pattern_window() {
     assert!(model.history.len() < model.prediction_history.len());
 }
 
+#[test]
+fn overlapping_stair_predictions_keep_both_directions_available() {
+    let sequence = [4_u8, 5, 6, 5, 6, 5, 4, 5];
+    let mut model = MrcCrossingModel::default();
+    model.history = sequence
+        .iter()
+        .enumerate()
+        .map(|(index, line)| MrcHistoryEvent {
+            line: *line,
+            direction: if index == 0 {
+                0
+            } else if *line > sequence[index - 1] {
+                1
+            } else {
+                -1
+            },
+            now_ms: index as u64 * 60_000,
+            market_price: lines()[*line as usize],
+            mrc_low: lines()[0],
+            mrc_high: lines()[8],
+            no_pullback_count: 0,
+            reverted_line: None,
+            completed_movement: None,
+        })
+        .collect();
+
+    let predictions = mrc_crossing::predict_all(&model);
+    assert!(predictions
+        .iter()
+        .any(|prediction| prediction.pattern_kind == MrcPatternKind::StairsUp));
+    assert!(predictions
+        .iter()
+        .any(|prediction| prediction.pattern_kind == MrcPatternKind::StairsDown));
+}
+
 fn successful_short_movement() -> MrcMovementSnapshot {
     MrcMovementSnapshot {
         start_line: 5,

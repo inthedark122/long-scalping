@@ -158,6 +158,65 @@ fn direction_lock_blocks_opposite_routes_and_keeps_stairs_authority() {
 }
 
 #[test]
+fn overlapping_down_stair_does_not_replace_blocked_active_up_stair() {
+    let mut state = DecisionState::default();
+    let components = DecisionComponents::default();
+    let up = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    assert_eq!(
+        state.choose(components, &[up], 1_000).selected_index,
+        Some(0)
+    );
+
+    let mut blocked_up = candidate(0, MrcPatternKind::StairsUp, 0.1, 1);
+    blocked_up.entry = false;
+    blocked_up.staircase_lifecycle = Some(StaircaseLifecycle::Pullback);
+    let mut overlapping_down = candidate(1, MrcPatternKind::StairsDown, 10.0, -1);
+    overlapping_down.staircase_lifecycle = Some(StaircaseLifecycle::Pullback);
+
+    let result = state.choose(components, &[blocked_up, overlapping_down], 2_000);
+    assert_eq!(result.selected_index, None);
+    assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
+    assert_eq!(result.primary_direction, 1);
+    assert_eq!(state.trace.reason, "primary-awaiting-same-direction-route");
+}
+
+#[test]
+fn blocked_up_stair_reserves_direction_before_overlapping_down_entry() {
+    let mut state = DecisionState::default();
+    let components = DecisionComponents::default();
+    let mut blocked_up = candidate(0, MrcPatternKind::StairsUp, 0.1, 1);
+    blocked_up.entry = false;
+    blocked_up.staircase_lifecycle = Some(StaircaseLifecycle::Pullback);
+    let mut overlapping_down = candidate(1, MrcPatternKind::StairsDown, 10.0, -1);
+    overlapping_down.staircase_lifecycle = Some(StaircaseLifecycle::Pullback);
+
+    let result = state.choose(components, &[blocked_up, overlapping_down], 1_000);
+    assert_eq!(result.selected_index, None);
+    assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
+    assert_eq!(result.primary_direction, 1);
+    assert_eq!(state.trace.reason, "primary-awaiting-same-direction-route");
+}
+
+#[test]
+fn active_up_stair_waits_when_local_history_has_only_overlapping_down_route() {
+    let mut state = DecisionState::default();
+    let components = DecisionComponents::default();
+    let up = candidate(0, MrcPatternKind::StairsUp, 0.2, 1);
+    assert_eq!(
+        state.choose(components, &[up], 1_000).selected_index,
+        Some(0)
+    );
+
+    let mut down = candidate(1, MrcPatternKind::StairsDown, 10.0, -1);
+    down.staircase_lifecycle = Some(StaircaseLifecycle::Pullback);
+    let result = state.choose(components, &[down], 2_000);
+    assert_eq!(result.selected_index, None);
+    assert_eq!(result.primary_kind, Some(PrimaryKind::Stairs));
+    assert_eq!(result.primary_direction, 1);
+    assert_eq!(state.trace.reason, "primary-awaiting-same-direction-route");
+}
+
+#[test]
 fn direction_lock_resets_an_opposite_primary_before_rearming() {
     let mut state = DecisionState::default();
     let components = DecisionComponents::default();
@@ -225,7 +284,7 @@ fn action_input(name: &str, values: HashMap<String, serde_json::Value>) -> Modul
             long: None,
             short: None,
         },
-        sug_info: None,
+        market_decision: None,
         state: None,
     }
 }

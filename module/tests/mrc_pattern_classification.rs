@@ -301,6 +301,38 @@ fn last_confirmed_upper_expansion_keeps_the_stair_long() {
 }
 
 #[test]
+fn upper_stair_remains_active_when_lower_overlap_reaches_but_does_not_break_protected_line() {
+    let signals = classify_all(&history(&[
+        (4, 100.0),
+        (5, 101.0),
+        (6, 102.0),
+        (5, 101.0),
+        (6, 102.0),
+        (5, 101.0),
+        (4, 100.0),
+        (5, 101.0),
+    ]));
+
+    let upper = signals
+        .iter()
+        .find(|signal| signal.kind == MrcPatternKind::StairsUp)
+        .expect("the upper staircase should remain active");
+    assert_eq!(upper.direction, 1);
+    assert_eq!(upper.staircase_lifecycle, Some(StaircaseLifecycle::Stalled));
+    assert_eq!(upper.staircase_protected_line, Some(4));
+
+    let lower = signals
+        .iter()
+        .find(|signal| signal.kind == MrcPatternKind::StairsDown)
+        .expect("the overlapping lower staircase should be retained for diagnostics");
+    assert_eq!(lower.direction, -1);
+    assert_eq!(
+        lower.staircase_lifecycle,
+        Some(StaircaseLifecycle::Pullback)
+    );
+}
+
+#[test]
 fn repeated_equal_zigzags_are_not_a_staircase() {
     let signal = classify(&history(&[
         (2, 100.0),

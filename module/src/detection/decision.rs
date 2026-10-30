@@ -310,7 +310,40 @@ impl DecisionState {
             self.primary = None;
         }
 
+        if self.primary.is_none() && !ended {
+            // Reserve the first valid staircase structure even when its
+            // execution entry is blocked. This keeps an overlapping
+            // opposite staircase from becoming primary merely because its
+            // timing gates happen to be open on the same candle.
+            if let Some(candidate) = candidates.iter().find(|candidate| {
+                primary_kind(candidate.pattern_kind) == Some(PrimaryKind::Stairs)
+                    && candidate.transition.is_none()
+                    && matches!(candidate.direction, 1 | -1)
+                    && !matches!(
+                        candidate.staircase_lifecycle,
+                        Some(StaircaseLifecycle::Invalidated)
+                    )
+                    && components.primary_stairs
+                    && direction_lock.is_none_or(|direction| candidate.direction == direction)
+            }) {
+                self.primary = Some(PrimaryState {
+                    kind: PrimaryKind::Stairs,
+                    direction: candidate.direction,
+                    phase: PrimaryPhase::Building,
+                    started_at_ms: now_ms,
+                    best_favorable_pct: 0.0,
+                    last_price: candidate.market_price,
+                    volume_climax: false,
+                });
+            }
+        }
+
         let primary_candidate = if let Some(current) = self.primary {
+            // A staircase direction is structural state, not just the set of
+            // entries that happen to pass the current timing/cascade gates.
+            // Overlapping staircases are common during a pullback: the
+            // opposite-direction candidate must not replace this primary
+            // unless the current protected structure has ended above.
             candidates
                 .iter()
                 .filter(|candidate| candidate_allowed(candidate, components, direction_lock))
@@ -320,22 +353,6 @@ impl DecisionState {
                         .then_some(candidate)
                 })
                 .max_by(candidate_order)
-                .or_else(|| {
-                    // Keep the reserved direction while allowing a fresh
-                    // staircase route to replace an exhausted primary state.
-                    candidates
-                        .iter()
-                        .filter(|candidate| {
-                            candidate_allowed(candidate, components, direction_lock)
-                        })
-                        .filter_map(|candidate| {
-                            (primary_kind(candidate.pattern_kind)
-                                .is_some_and(|kind| components.primary_enabled(kind))
-                                && candidate.direction != 0)
-                                .then_some(candidate)
-                        })
-                        .max_by(candidate_order)
-                })
         } else {
             candidates
                 .iter()
