@@ -4,7 +4,7 @@ pub mod trending;
 
 use crate::detection::{movement_window, mrc_cross_analysis::MrcCrossAnalysis};
 use crate::model::{Candle, EntryType, MrcBands};
-use crate::pattern_matching::PatternKind;
+use crate::pattern_matching::{Forecast, PatternKind};
 use lte_strategy_bridge::abi::Direction;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -82,6 +82,7 @@ impl EntryDecision {
 pub fn evaluate_entry(
     analysis: Option<&MrcCrossAnalysis>,
     detected_pattern: Option<PatternKind>,
+    pattern_forecast: Option<Forecast>,
     detected_trend_direction: Option<i8>,
     mrc: MrcBands,
     candle: Candle,
@@ -114,6 +115,7 @@ pub fn evaluate_entry(
             cascade_movement_start_ms,
             last_sideways_movement_start_ms,
             sideways_order_pending,
+            pattern_forecast,
         );
     }
 

@@ -1,5 +1,6 @@
 use crate::detection::movement_window::{MovementWindow, PriceLocation};
 use crate::model::EntryType;
+use crate::pattern_matching::Forecast;
 use crate::strategies::{EntryDecision, EntryPlan, StrategyKind};
 use lte_strategy_bridge::abi::Direction;
 
@@ -19,6 +20,7 @@ pub fn evaluate(
     movement_start_ms: u64,
     last_traded_movement_start_ms: Option<u64>,
     sideways_order_pending: bool,
+    pattern_forecast: Option<Forecast>,
 ) -> EntryDecision {
     if movement_start_ms == 0 {
         return wait("cascade-movement-start-unavailable");
@@ -50,6 +52,9 @@ pub fn evaluate(
             return wait("price-outside-range-window");
         }
     };
+    if pattern_forecast.is_some_and(|forecast| forecast.supports(-direction)) {
+        return wait("historical-pattern-forecast-opposes-range-trade");
+    }
     if stop_loss <= 0.0
         || if direction > 0 {
             !(stop_loss < entry_price && take_profit > entry_price)

@@ -840,6 +840,7 @@ fn process_realtime(
     let entry_decision = strategies::evaluate_entry(
         selected_analysis,
         pattern.current.map(|current| current.kind),
+        pattern.forecast,
         detected_trend_direction,
         snapshot.tf1m.mrc,
         snapshot.tf1m.candle,
