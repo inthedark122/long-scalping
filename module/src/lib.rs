@@ -1,11 +1,10 @@
 mod debug;
 pub mod detection;
 pub mod engine;
+mod entry;
 mod entry_policy;
-mod execution;
 mod exit;
 mod format;
-mod guard;
 pub mod market_data;
 pub mod model;
 pub mod observer;
@@ -15,7 +14,6 @@ pub mod pattern_matching;
 mod risk;
 mod risk_control;
 pub mod state;
-mod stop_loss;
 
 pub use engine::run;
 pub use format::{fmt_duration_f64, fmt_duration_ms};

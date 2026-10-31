@@ -1,14 +1,13 @@
 use crate::debug;
 use crate::detection::{
-    cascade, decision, mrc_crossing, mrc_direction_prediction, mrc_pattern_classification,
-    mrc_prediction, vlines,
+    cascade, decision, mrc_crossing, mrc_direction_prediction, mrc_prediction, vlines,
 };
-use crate::execution;
+use crate::entry;
 use crate::exit;
 use crate::market_data;
-use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
+use crate::model::EntryType;
 use crate::order_manager;
-use crate::orders::{close, entry_order_marks, update_position_stop_loss};
+use crate::orders::entry_order_marks;
 use crate::risk;
 use crate::state::{
     dir_to_position, direction_sign, sync_position_state, EngineState, PositionLifetime,
@@ -169,6 +168,8 @@ fn handle_signal(
         state.mrc_crossing_model.trade_direction_lock = direction_sign(*direction);
         state.trade_budget = 0.0;
         state.mrc_crossing_model.current_entry = None;
+        state.pending_entry_reason = None;
+        state.pending_entry_plan = None;
         state.pending_entry_bar = None;
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
@@ -256,18 +257,15 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy={} entry={} cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}] exit={:?}",
+                "start direction={:?} strategy=analysis-only entry=rules-not-implemented exit=rules-not-implemented cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
                 state.allowed_direction,
-                "pattern-engine",
-                state.cfg.entry_type.as_str(),
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
                 state.cfg.min_sl_percent(),
                 state.cfg.risk_target_percent(),
                 state.cfg.required_samples(),
-                state.cfg.decision_components.join(","),
-                MRC_CROSSING_EXIT_TYPE
+                state.cfg.decision_components.join(",")
             ),
             ..Default::default()
         }
@@ -414,345 +412,45 @@ fn handle_new_position(
     stop_loss: Option<f64>,
 ) -> ModuleOutput {
     let side = dir_to_position(direction);
-    let pending_entry_reason = state.pending_entry_reason.clone();
-    let context_entry_reason = state.position_context.entry_reason.clone();
-    let runtime_entry_reason = state.position.entry_reason.clone();
-    let entry_reason = pending_entry_reason
-        .clone()
-        .or_else(|| context_entry_reason.clone())
-        .or_else(|| runtime_entry_reason.clone());
-    let input_pending_entry_plan = input
-        .state
-        .as_ref()
-        .and_then(|saved| saved.get("pending_entry_plan"))
-        .and_then(|saved| serde_json::from_value(saved.clone()).ok());
-    let pending_entry_plan = state.pending_entry_plan.or(input_pending_entry_plan);
-    let stored_entry_anchor = pending_entry_plan;
-    let event_entry_plan = take_profit
-        .zip(stop_loss)
-        .map(
-            |(take_profit, stop_loss)| crate::state::PositionPlanSnapshot {
-                take_profit,
-                stop_loss,
-                tp_reliable: true,
-            },
-        )
-        .filter(|plan| plan.valid_for(side, entry_price));
-    let analysis_entry_plan = state
-        .market_mrc_analysis
-        .as_ref()
-        .filter(|analysis| {
-            analysis.trade_direction
-                == match side {
-                    crate::model::PositionState::Long => 1,
-                    crate::model::PositionState::Short => -1,
-                    crate::model::PositionState::Flat => 0,
-                }
-        })
-        .and_then(|analysis| {
-            let analysis_entry = analysis.effective_entry_price?;
-            let tolerance = (input.symbol_info.price_tick_size * 2.0).max(entry_price.abs() * 1e-6);
-            if !analysis_entry.is_finite() || (analysis_entry - entry_price).abs() > tolerance {
-                return None;
-            }
-            Some(crate::state::PositionPlanSnapshot {
-                take_profit: analysis.target_price?,
-                stop_loss: analysis.stop_price?,
-                tp_reliable: true,
-            })
-        })
-        .filter(|plan| plan.valid_for(side, entry_price));
-    let pending_entry_anchor = stored_entry_anchor
-        .filter(|plan| plan.valid_for(side, entry_price))
-        .or(event_entry_plan)
-        .or_else(|| {
-            state
-                .position_context
-                .entry_anchor
-                .filter(|plan| plan.valid_for(side, entry_price))
-        })
-        .or(analysis_entry_plan);
+    let entry_time_ms = state.last_market_decision_time_ms;
+
     state.pending_entry_reason = None;
     state.pending_entry_plan = None;
-    let allocation_qty = qty.abs().max(
-        input
-            .positions
-            .long
-            .as_ref()
-            .map(|position| position.qty.abs())
-            .or_else(|| {
-                input
-                    .positions
-                    .short
-                    .as_ref()
-                    .map(|position| position.qty.abs())
-            })
-            .unwrap_or(0.0),
-    );
-    state.take_profit_allocation.begin(side, allocation_qty);
-    let entry_time_ms = state.last_market_decision_time_ms;
+    state.pending_entry_bar = None;
+    state.take_profit_allocation.reset();
+    state.pending_exit_context = None;
     state.position_context.begin(
         side,
         entry_price,
         entry_time_ms,
-        entry_reason.clone(),
-        position_lifetime_for_entry(state, side),
-        state
-            .market_mrc_analysis
-            .as_ref()
-            .map(|analysis| analysis.stair_sequence.clone())
-            .unwrap_or_default(),
+        None,
+        PositionLifetime::OneShot,
+        Vec::new(),
     );
-    state
-        .position_context
-        .seed_entry_anchor_from_reason(entry_reason.as_ref());
-    if let Some(anchor) = pending_entry_anchor.filter(|anchor| anchor.valid_for(side, entry_price))
-    {
-        state.position_context.entry_anchor = Some(anchor);
-    }
-    state.exit_progress.begin(side, entry_time_ms, entry_price);
     state.position = PositionRuntime {
         side,
         entry_price,
         peak_price: input.price.max(entry_price),
         trough_price: input.price.min(entry_price),
-        take_profit: 0.0,
-        stop_loss: 0.0,
-        stop_loss_reason: String::new(),
-        exit_tp_reliable: false,
-        exit_mode: ExitMode::Fixed,
-        exit_type: MRC_CROSSING_EXIT_TYPE,
-        entry_reason: entry_reason.clone(),
+        take_profit: take_profit.unwrap_or_default(),
+        stop_loss: stop_loss.unwrap_or_default(),
+        stop_loss_reason: if stop_loss.is_some() {
+            "provided-by-host".to_string()
+        } else {
+            String::new()
+        },
+        exit_tp_reliable: take_profit.is_some(),
+        entry_reason: None,
+        ..PositionRuntime::default()
     };
     state.mrc_crossing_model.current_entry = None;
-    state.pending_entry_bar = None;
-
-    let snapshot = match state.last_snapshot.clone() {
-        Some(snapshot) => snapshot,
-        None => {
-            let has_entry_plan = state.position.entry_reason.as_ref().is_some_and(|reason| {
-                matches!(
-                    reason,
-                    crate::model::EntryReason::MrcCrossing { .. }
-                        | crate::model::EntryReason::CandleTrend { .. }
-                )
-            });
-            if has_entry_plan {
-                crate::model::IndicatorSnapshot::default()
-            } else {
-                let error = format!(
-                    "event=NewPosition missing-cached-snapshot {}",
-                    market_data::render_kline_history_inventory(&state.klines)
-                );
-                state.last_error = Some(error.clone());
-                return ModuleOutput {
-                    debug: error,
-                    ..Default::default()
-                };
-            }
-        }
-    };
-    let plan =
-        exit::resolve_position_exit_plan(state, &snapshot, entry_price, side).map(|(plan, _)| plan);
-    let mut tp_orders = Vec::new();
-    let mut cancel_orders = entry_order_marks();
-    let mut stop_loss_updates = Vec::new();
-    if let Some(plan) = plan {
-        state.position_context.set_decision(
-            crate::state::PositionDecisionAction::UpdateExit,
-            "entry-exit-plan-ready",
-        );
-        state.position.exit_mode = ExitMode::Fixed;
-        state.position.take_profit = plan.take_profit.price();
-        exit::set_stop_loss(state, plan.stop_loss);
-        if matches!(
-            entry_reason.as_ref(),
-            Some(
-                crate::model::EntryReason::MrcCrossing { .. }
-                    | crate::model::EntryReason::CandleTrend { .. }
-            )
-        ) {
-            state.position_context.entry_anchor = Some(crate::state::PositionPlanSnapshot {
-                take_profit: plan.take_profit.price(),
-                stop_loss: plan.stop_loss.price(),
-                tp_reliable: plan.tp_reliable,
-            });
-            stop_loss_updates.push(update_position_stop_loss(direction, plan.stop_loss.price()));
-        }
-        let qty = input
-            .positions
-            .long
-            .as_ref()
-            .map(|p| p.qty)
-            .or_else(|| input.positions.short.as_ref().map(|p| p.qty))
-            .unwrap_or(0.0);
-        if qty > 0.0 {
-            let note = plan.take_profit.order_note();
-            let (orders, tp_cancel_orders) = exit::take_profit_orders(
-                input,
-                state,
-                side,
-                qty,
-                entry_price,
-                plan.take_profit.price(),
-                Some(&note),
-                exit::far_target_for_position(
-                    state,
-                    &snapshot,
-                    entry_price,
-                    plan.take_profit.price(),
-                ),
-            );
-            tp_orders = orders;
-            cancel_orders.extend(tp_cancel_orders);
-        }
-    }
-
-    let plan_result = if plan.is_some() {
-        format!(
-            "new-position-plan=ready live_qty={:.4} tp_orders={} cancel_orders={}",
-            input
-                .positions
-                .long
-                .as_ref()
-                .map(|position| position.qty)
-                .or_else(|| input.positions.short.as_ref().map(|position| position.qty))
-                .unwrap_or(0.0),
-            tp_orders.len(),
-            cancel_orders.len()
-        )
-    } else if state.position.entry_reason.is_none() {
-        state.position_context.set_decision(
-            crate::state::PositionDecisionAction::Close,
-            "emergency-no-entry-reason",
-        );
-        "new-position-plan=none reason=missing-entry-reason".to_string()
-    } else {
-        state.position_context.set_decision(
-            crate::state::PositionDecisionAction::Close,
-            "emergency-no-exit-plan",
-        );
-        "new-position-plan=none reason=no-valid-exit-plan".to_string()
-    };
-    exit::record_exit_event(state, plan_result);
-
-    let emergency_close = plan.is_none()
-        && state.position_context.last_plan_source
-            == crate::state::PositionExitPlanSource::EmergencyClose;
-    let emergency_note = if emergency_close {
-        let levels = |reason: Option<&crate::model::EntryReason>| {
-            reason.map(|reason| match reason {
-                crate::model::EntryReason::MrcCrossing {
-                    target_price,
-                    stop_price,
-                    ..
-                }
-                | crate::model::EntryReason::CandleTrend {
-                    target_price,
-                    stop_price,
-                    ..
-                } => (*target_price, *stop_price),
-            })
-        };
-        let (pending_tp, pending_sl) =
-            levels(pending_entry_reason.as_ref()).unwrap_or((f64::NAN, f64::NAN));
-        let (context_tp, context_sl) =
-            levels(context_entry_reason.as_ref()).unwrap_or((f64::NAN, f64::NAN));
-        let (runtime_tp, runtime_sl) =
-            levels(runtime_entry_reason.as_ref()).unwrap_or((f64::NAN, f64::NAN));
-        let pending_plan_tp = pending_entry_plan
-            .map(|plan| plan.take_profit)
-            .unwrap_or(f64::NAN);
-        let pending_plan_sl = pending_entry_plan
-            .map(|plan| plan.stop_loss)
-            .unwrap_or(f64::NAN);
-        let analysis_plan_tp = analysis_entry_plan
-            .map(|plan| plan.take_profit)
-            .unwrap_or(f64::NAN);
-        let analysis_plan_sl = analysis_entry_plan
-            .map(|plan| plan.stop_loss)
-            .unwrap_or(f64::NAN);
-        let anchor = state.position_context.entry_anchor;
-        let anchor_tp = anchor.map(|anchor| anchor.take_profit).unwrap_or(f64::NAN);
-        let anchor_sl = anchor.map(|anchor| anchor.stop_loss).unwrap_or(f64::NAN);
-        let anchor_valid = anchor.is_some_and(|anchor| anchor.valid_for(side, entry_price));
-        format!(
-            "close because position-controller-emergency-no-exit-plan side={:?} entry={:.8} event_tp={:.8} event_sl={:.8} pending={} pending_tp={:.8} pending_sl={:.8} pending_plan_tp={:.8} pending_plan_sl={:.8} analysis_plan_tp={:.8} analysis_plan_sl={:.8} context={} context_tp={:.8} context_sl={:.8} runtime={} runtime_tp={:.8} runtime_sl={:.8} anchor_tp={:.8} anchor_sl={:.8} anchor_valid={} mrc_ordered={}",
-            side,
-            entry_price,
-            take_profit.unwrap_or(f64::NAN),
-            stop_loss.unwrap_or(f64::NAN),
-            pending_entry_reason.is_some(),
-            pending_tp,
-            pending_sl,
-            pending_plan_tp,
-            pending_plan_sl,
-            analysis_plan_tp,
-            analysis_plan_sl,
-            context_entry_reason.is_some(),
-            context_tp,
-            context_sl,
-            runtime_entry_reason.is_some(),
-            runtime_tp,
-            runtime_sl,
-            anchor_tp,
-            anchor_sl,
-            anchor_valid,
-            snapshot.tf1m.mrc.ordered()
-        )
-    } else {
-        String::new()
-    };
 
     ModuleOutput {
-        close_positions: emergency_close
-            .then(|| vec![close(direction, &emergency_note)])
-            .unwrap_or_default(),
-        place_orders: tp_orders,
-        cancel_orders,
-        update_positions: stop_loss_updates,
         debug: format!(
-            "new-position {:?} {}",
-            direction,
-            plan.map(|plan| exit::describe(Some(plan)))
-                .unwrap_or_else(|| "tp=n/a sl=n/a".to_string())
-        ) + " "
-            + &state.last_exit_event,
+            "new-position observed side={:?} entry={:.8} qty={:.8} entry=rules-not-implemented exit=rules-not-implemented",
+            direction, entry_price, qty
+        ),
         ..Default::default()
-    }
-}
-
-fn position_lifetime_for_entry(
-    state: &EngineState,
-    side: crate::model::PositionState,
-) -> PositionLifetime {
-    let direction = match side {
-        crate::model::PositionState::Long => 1,
-        crate::model::PositionState::Short => -1,
-        crate::model::PositionState::Flat => 0,
-    };
-    let recyclable = state.market_mrc_analysis.as_ref().is_some_and(|analysis| {
-        analysis.trade_direction == direction
-            && matches!(
-                analysis.pattern_kind,
-                Some(
-                    mrc_pattern_classification::MrcPatternKind::StairsUp
-                        | mrc_pattern_classification::MrcPatternKind::StairsDown
-                )
-            )
-            && matches!(
-                analysis.staircase_lifecycle,
-                Some(
-                    mrc_pattern_classification::StaircaseLifecycle::Progressing
-                        | mrc_pattern_classification::StaircaseLifecycle::Pullback
-                )
-            )
-            && analysis.stair_entry_approved
-    });
-    if recyclable {
-        PositionLifetime::RecyclableStairs
-    } else {
-        PositionLifetime::OneShot
     }
 }
 
@@ -964,15 +662,6 @@ fn process_realtime(
         input.price,
     );
 
-    let now_ms = market_decision.time.max(0) as u64;
-    if state.position.side != crate::model::PositionState::Flat
-        && state.exit_progress.side != state.position.side
-    {
-        state
-            .exit_progress
-            .begin(state.position.side, now_ms, state.position.entry_price);
-    }
-
     let Some(snapshot) = state.last_snapshot.clone() else {
         let error = format!(
             "event=MarketDecision time={} symbol={} missing-cached-snapshot {}",
@@ -1032,9 +721,6 @@ fn process_realtime(
     state
         .mrc_risk
         .observe(&snapshot, input.price, market_decision.time as u64);
-    state
-        .exit_progress
-        .observe_activity(market_decision.ntp_5s, snapshot.tf1m.volume_gain);
 
     let prediction_context = mrc_prediction::MrcPredictionContext {
         cascade_enabled: true,
@@ -1075,36 +761,33 @@ fn process_realtime(
         }
     }
 
-    let entry_selection = crate::entry_policy::evaluate(
-        input,
+    let selected_analysis = mrc_observation.selected_analysis();
+    let selected_forecast = mrc_observation
+        .selected_candidate_index
+        .and_then(|index| mrc_observation.candidates.get(index))
+        .is_some_and(|candidate| candidate.forecast);
+    crate::entry_policy::state::update(state, selected_analysis, prediction_context);
+    let entry_decision = entry::evaluate(selected_analysis);
+    let exit_decision = exit::evaluate(state.position.side, selected_analysis);
+    let entry_analysis = crate::entry_policy::analysis_summary(
         state,
         &snapshot,
-        market_decision,
-        &mrc_observation,
-        prediction_context,
+        selected_analysis,
+        selected_forecast,
+        input.price,
+        market_decision.time.max(0) as u64,
+        input.symbol_info.price_tick_size,
     );
-    let decision = entry_selection.decision;
-    let execution = execution::evaluate_with_mrc(input, state, &snapshot, &decision);
     let debug = debug::render(
         state,
         &snapshot,
-        &entry_selection.debug,
-        &decision,
-        execution
-            .as_ref()
-            .and_then(|result| result.constraint.as_deref()),
+        &entry_analysis,
+        entry_decision.as_str(),
+        exit_decision.as_str(),
+        None,
         input.symbol_info.price_tick_size,
     );
-    let execution = execution.unwrap_or_default();
-
-    let mut place_orders = execution.entry_orders;
-    place_orders.extend(execution.tp_orders);
     ModuleOutput {
-        open_positions: execution.open_positions,
-        close_positions: execution.close_positions,
-        update_positions: execution.update_positions,
-        place_orders,
-        cancel_orders: execution.cancel_orders,
         debug,
         ..Default::default()
     }

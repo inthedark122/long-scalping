@@ -1,13 +1,14 @@
 use crate::detection::mrc_pattern_classification;
 use crate::format::{fmt_duration_ms, fmt_price_tick};
-use crate::model::{EntryGate, EntryOpenReason, IndicatorSnapshot, PositionState, TradeDecision};
+use crate::model::{IndicatorSnapshot, PositionState};
 use crate::state::EngineState;
 
 pub fn render(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
-    candle_trend: &str,
-    decision: &TradeDecision,
+    entry_analysis: &str,
+    entry_status: &str,
+    exit_status: &str,
     constraint: Option<&str>,
     tick_size: f64,
 ) -> String {
@@ -38,8 +39,7 @@ pub fn render(
     let primary_trace = &state.mrc_crossing_model.decision_state.trace;
     let mut parts = vec![
         format!("t={}", state.ticks),
-        "strategy=pattern-engine".to_string(),
-        format!("entry={}", state.cfg.entry_type.as_str()),
+        "strategy=analysis-only".to_string(),
         format!(
             "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
@@ -95,10 +95,10 @@ pub fn render(
             primary_trace.reason
         ),
         format!(
-            "dir={:?}:src={}:why={}",
-            decision.market_state, state.direction_source, state.direction_reason
+            "analysis=src:{} why={}",
+            state.direction_source, state.direction_reason
         ),
-        format!("candle-trend=[{candle_trend}]"),
+        format!("entry-analysis=[{entry_analysis}]"),
         format!(
             "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} avg_time={}",
             state.cascade_signal.dir,
@@ -137,12 +137,7 @@ pub fn render(
             state.mrc_direction_prediction.summary()
         ),
     ];
-    if state.position.side == PositionState::Flat {
-        parts.push(format!(
-            "exec={}",
-            format_execution_text(decision, tick_size)
-        ));
-    }
+    parts.push(format!("entry={entry_status} exit={exit_status}"));
     if state.position.side != PositionState::Flat {
         parts.push(format!("tp={}", format_take_profit(state, tick_size)));
     }
@@ -199,42 +194,6 @@ pub fn render(
         parts.push(format!("error={error}"));
     }
     parts.join(" ")
-}
-
-fn format_execution_text(decision: &TradeDecision, tick_size: f64) -> String {
-    let direction = match decision.market_state {
-        crate::model::MarketState::Long => "long",
-        crate::model::MarketState::Short => "short",
-        crate::model::MarketState::Sideways => "both",
-    };
-    match &decision.entry {
-        EntryGate::Wait(wait) => format!(
-            "entry-wait reason={} expect={}",
-            wait.reason,
-            wait.solutions
-                .first()
-                .map(format_entry_wait_solution)
-                .unwrap_or_else(|| "wait".to_string())
-        ),
-        EntryGate::Open { reason, .. } => match reason {
-            EntryOpenReason::Entry(reason) => format!(
-                "open:{} dir={} price={}",
-                reason.label(),
-                direction,
-                fmt_price_tick(reason.price(), tick_size)
-            ),
-        },
-    }
-}
-
-fn format_entry_wait_solution(solution: &crate::model::EntryWaitSolution) -> String {
-    match solution {
-        crate::model::EntryWaitSolution::MrcCrossing => "mrc-crossing".to_string(),
-        crate::model::EntryWaitSolution::MrcDirectionalTarget => "directional-target".to_string(),
-        crate::model::EntryWaitSolution::WaitForSamples { required, current } => {
-            format!("samples:{current}/{required}")
-        }
-    }
 }
 
 fn format_take_profit(state: &EngineState, tick_size: f64) -> String {

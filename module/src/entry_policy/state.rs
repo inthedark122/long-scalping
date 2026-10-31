@@ -9,13 +9,9 @@ use crate::state::EngineState;
 pub fn update(
     state: &mut EngineState,
     analysis: Option<&MrcCrossAnalysis>,
-    selected_pattern_reason: &str,
     prediction_context: MrcPredictionContext,
-    trend_entry_selected: bool,
-    trend_summary: &str,
-    pattern_summary: &str,
 ) {
-    state.direction_source = "pattern-selector".to_string();
+    state.direction_source = "mrc-analysis".to_string();
     update_active_analysis(state, analysis, prediction_context);
     update_staircase(state, analysis);
 
@@ -24,13 +20,7 @@ pub fn update(
         .unwrap_or(CascadeTradeState::NotConfigured);
     state.direction_reason = analysis
         .map(mrc_crossing::line_plan_summary)
-        .unwrap_or_else(|| format!("pattern={selected_pattern_reason}"));
-    state.direction_reason.push(' ');
-    state.direction_reason.push_str(pattern_summary);
-    if trend_entry_selected {
-        state.direction_source = "kline-candle-trend".to_string();
-        state.direction_reason = format!("{trend_summary} {pattern_summary}");
-    }
+        .unwrap_or_else(|| "no-selected-analysis".to_string());
 }
 
 fn update_active_analysis(
