@@ -2,8 +2,6 @@ use crate::debug;
 use crate::detection::{
     cascade, decision, mrc_crossing, mrc_direction_prediction, mrc_prediction, vlines,
 };
-use crate::entry;
-use crate::exit;
 use crate::market_data;
 use crate::model::EntryType;
 use crate::order_manager;
@@ -13,9 +11,11 @@ use crate::state::{
     dir_to_position, direction_sign, sync_position_state, EngineState, PositionLifetime,
     PositionRuntime,
 };
+use crate::strategies::trending::exit;
+use crate::strategies::{self, StrategyKind};
 use lte_strategy_bridge::abi::{
     Direction, ModuleDataRequirements, ModuleEvent, ModuleInput, ModuleMarketDecision,
-    ModuleOrderStatus, ModuleOutput, OrderRole,
+    ModuleOrderStatus, ModuleOutput, ModuleUpdatePosition, OrderRole,
 };
 use lte_strategy_bridge::MODULE_ABI_VERSION;
 use std::collections::BTreeMap;
@@ -43,7 +43,7 @@ fn refresh_last_snapshot(state: &mut EngineState, snapshot: &crate::model::Indic
 }
 
 fn seed_mrc_from_kline_history(state: &mut EngineState, now_ms: u64) {
-    let Ok(history) = market_data::build_mrc_history(&state.klines) else {
+    let Ok(history) = market_data::build_mrc_history(&state.mrc_calculation) else {
         return;
     };
     mrc_crossing::seed_from_history_with_touch(
@@ -171,6 +171,8 @@ fn handle_signal(
         state.pending_entry_reason = None;
         state.pending_entry_plan = None;
         state.pending_entry_bar = None;
+        state.pending_strategy = None;
+        state.strategy_runtime.reset();
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
@@ -257,7 +259,7 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategy=analysis-only entry=rules-not-implemented exit=rules-not-implemented cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
+                "start direction={:?} strategies=[trending,sideways] cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
                 state.allowed_direction,
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
@@ -413,9 +415,34 @@ fn handle_new_position(
 ) -> ModuleOutput {
     let side = dir_to_position(direction);
     let entry_time_ms = state.last_market_decision_time_ms;
+    let strategy = state.pending_strategy.take().unwrap_or_default();
+    let pending_plan = state.pending_entry_plan.take();
+    let host_take_profit = take_profit.filter(|price| price.is_finite() && *price > 0.0);
+    let host_stop_loss = stop_loss.filter(|price| price.is_finite() && *price > 0.0);
+    let pending_take_profit = pending_plan
+        .map(|plan| plan.take_profit)
+        .filter(|price| price.is_finite() && *price > 0.0);
+    let pending_stop_loss = pending_plan
+        .map(|plan| plan.stop_loss)
+        .filter(|price| price.is_finite() && *price > 0.0);
+    let take_profit = host_take_profit.or(pending_take_profit);
+    let stop_loss = host_stop_loss.or(pending_stop_loss);
+    let tp_source = if host_take_profit.is_some() {
+        "host"
+    } else if pending_take_profit.is_some() {
+        "pending-entry-plan"
+    } else {
+        "none"
+    };
+    let repair_exit_plan =
+        (host_take_profit.is_none() || host_stop_loss.is_none()).then_some(ModuleUpdatePosition {
+            direction,
+            enter_price: None,
+            take_profit,
+            stop_loss,
+        });
 
     state.pending_entry_reason = None;
-    state.pending_entry_plan = None;
     state.pending_entry_bar = None;
     state.take_profit_allocation.reset();
     state.pending_exit_context = None;
@@ -427,6 +454,7 @@ fn handle_new_position(
         PositionLifetime::OneShot,
         Vec::new(),
     );
+    state.position_context.strategy = strategy;
     state.position = PositionRuntime {
         side,
         entry_price,
@@ -446,9 +474,20 @@ fn handle_new_position(
     state.mrc_crossing_model.current_entry = None;
 
     ModuleOutput {
+        update_positions: repair_exit_plan.into_iter().collect(),
         debug: format!(
-            "new-position observed side={:?} entry={:.8} qty={:.8} entry=rules-not-implemented exit=rules-not-implemented",
-            direction, entry_price, qty
+            "new-position observed side={:?} entry={:.8} qty={:.8} strategy={} tp={} tp_source={} sl={}",
+            direction,
+            entry_price,
+            qty,
+            strategy.as_str(),
+            take_profit
+                .map(|price| format!("{price:.8}"))
+                .unwrap_or_else(|| "none".to_string()),
+            tp_source,
+            stop_loss
+                .map(|price| format!("{price:.8}"))
+                .unwrap_or_else(|| "none".to_string()),
         ),
         ..Default::default()
     }
@@ -582,23 +621,44 @@ fn refresh_klines(
         input.price,
     );
 
-    let snapshot = match market_data::build_indicator_snapshot(&state.klines) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let error = format!(
-                "event={} {} {} {}",
-                if is_init { "Init" } else { "KlineUpdate" },
-                timeframes_context(timeframes),
-                error,
-                market_data::render_kline_history_inventory(&state.klines)
-            );
-            state.last_error = Some(error.clone());
-            return ModuleOutput {
-                debug: error,
-                ..Default::default()
-            };
-        }
+    let calculation = if is_init {
+        state.mrc_calculation.initialize(&state.klines)
+    } else {
+        state.mrc_calculation.update(&input.klines, &state.klines)
     };
+    if let Err(error) = calculation {
+        let error = format!(
+            "event={} {} {} {}",
+            if is_init { "Init" } else { "KlineUpdate" },
+            timeframes_context(timeframes),
+            error,
+            market_data::render_kline_history_inventory(&state.klines)
+        );
+        state.last_error = Some(error.clone());
+        return ModuleOutput {
+            debug: error,
+            ..Default::default()
+        };
+    }
+
+    let snapshot =
+        match market_data::build_indicator_snapshot(&state.klines, &state.mrc_calculation) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let error = format!(
+                    "event={} {} {} {}",
+                    if is_init { "Init" } else { "KlineUpdate" },
+                    timeframes_context(timeframes),
+                    error,
+                    market_data::render_kline_history_inventory(&state.klines)
+                );
+                state.last_error = Some(error.clone());
+                return ModuleOutput {
+                    debug: error,
+                    ..Default::default()
+                };
+            }
+        };
     if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
         state.last_error = Some(error.clone());
         return ModuleOutput {
@@ -762,18 +822,124 @@ fn process_realtime(
     }
 
     let selected_analysis = mrc_observation.selected_analysis();
+    let pattern = crate::pattern_matching::evaluate(
+        state.klines.get(TF_1M),
+        market_decision.time.max(0) as u64,
+    );
+    let detected_trend_direction = state
+        .mrc_crossing_model
+        .decision_state
+        .primary
+        .map(|primary| primary.direction);
     let selected_forecast = mrc_observation
         .selected_candidate_index
         .and_then(|index| mrc_observation.candidates.get(index))
         .is_some_and(|candidate| candidate.forecast);
     crate::entry_policy::state::update(state, selected_analysis, prediction_context);
-    let entry_decision = entry::evaluate(selected_analysis);
-    let exit_decision = exit::evaluate(state.position.side, selected_analysis);
+    let movement_window = crate::detection::movement_window::detect(&state.cascade, input.price);
+    let entry_decision = strategies::evaluate_entry(
+        selected_analysis,
+        pattern.current.map(|current| current.kind),
+        detected_trend_direction,
+        snapshot.tf1m.mrc,
+        snapshot.tf1m.candle,
+        input.price,
+        input.symbol_info.price_tick_size,
+        movement_window,
+        state.strategy_runtime.last_sideways_movement_start_ms(),
+        state.cascade.movement_start_ms,
+        state.cascade_signal.dir,
+        state.pending_strategy == Some(StrategyKind::Sideways) && state.pending_entry_bar.is_some(),
+    );
+    let routed_strategy = entry_decision.strategy();
+    let mut output = ModuleOutput::default();
+    let entry_status;
+    let mut exit_status = "no-position".to_string();
+    let constraint;
+
+    if state.position.side == crate::model::PositionState::Flat {
+        let execution = strategies::execute_entry(input, state, entry_decision);
+        entry_status = execution.status;
+        constraint = execution.constraint;
+        output.cancel_orders = execution.cancel_orders;
+        output.open_positions.extend(execution.open_position);
+        output.place_orders.extend(execution.place_order);
+    } else {
+        entry_status = "position-open".to_string();
+        constraint = None;
+        output.cancel_orders = entry_order_marks();
+        let sideways_handoff = if state.position_context.strategy == StrategyKind::Trending
+            && routed_strategy == StrategyKind::Sideways
+        {
+            movement_window.and_then(|window| {
+                strategies::sideways::exit_plan(
+                    state.position.side,
+                    input.price,
+                    input.symbol_info.price_tick_size,
+                    window,
+                )
+            })
+        } else {
+            None
+        };
+        if let Some(plan) = sideways_handoff {
+            state.position_context.strategy = StrategyKind::Sideways;
+            state.position_context.last_action = crate::state::PositionDecisionAction::UpdateExit;
+            state.position_context.last_plan_source =
+                crate::state::PositionExitPlanSource::DynamicSameSide;
+            state.position_context.decision_reason = "sideways-range-handoff".to_string();
+            state.position_context.remember_plan(
+                crate::state::PositionPlanSnapshot {
+                    take_profit: plan.take_profit,
+                    stop_loss: plan.stop_loss,
+                    tp_reliable: true,
+                },
+                crate::state::PositionExitPlanSource::DynamicSameSide,
+            );
+            state.position.take_profit = plan.take_profit;
+            state.position.stop_loss = plan.stop_loss;
+            state.position.exit_tp_reliable = true;
+            state.position.stop_loss_reason = "sideways-range-boundary".to_string();
+            output.update_positions.push(ModuleUpdatePosition {
+                direction: if state.position.side == crate::model::PositionState::Long {
+                    Direction::Long
+                } else {
+                    Direction::Short
+                },
+                enter_price: None,
+                take_profit: Some(plan.take_profit),
+                stop_loss: Some(plan.stop_loss),
+            });
+            exit_status = "sideways-range-handoff".to_string();
+        } else {
+            match state.position_context.strategy {
+                StrategyKind::Trending => match exit::evaluate(
+                    state.position.side,
+                    state.position.entry_price,
+                    input.price,
+                    state.position.stop_loss,
+                    snapshot.tf1m.mrc,
+                ) {
+                    exit::Decision::NoPosition => {}
+                    exit::Decision::Hold => exit_status = "trending-hold".to_string(),
+                    exit::Decision::Update(update) => {
+                        output.update_positions.push(exit::execute(state, update));
+                        exit_status = update.reason.to_string();
+                    }
+                },
+                StrategyKind::Sideways => {
+                    exit_status = "sideways-fixed-range-tp-sl".to_string();
+                }
+            }
+        }
+    }
+
     let entry_analysis = crate::entry_policy::analysis_summary(
         state,
         &snapshot,
         selected_analysis,
         selected_forecast,
+        &pattern,
         input.price,
         market_decision.time.max(0) as u64,
         input.symbol_info.price_tick_size,
@@ -782,13 +948,15 @@ fn process_realtime(
         state,
         &snapshot,
         &entry_analysis,
-        entry_decision.as_str(),
-        exit_decision.as_str(),
-        None,
+        &entry_status,
+        &exit_status,
+        routed_strategy,
+        constraint.as_deref(),
         input.symbol_info.price_tick_size,
+        input.price,
+        market_decision.ntp_5s,
+        market_decision.tdt,
     );
-    ModuleOutput {
-        debug,
-        ..Default::default()
-    }
+    output.debug = debug;
+    output
 }

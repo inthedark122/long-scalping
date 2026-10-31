@@ -12,6 +12,7 @@ pub fn analysis_summary(
     snapshot: &IndicatorSnapshot,
     analysis: Option<&MrcCrossAnalysis>,
     forecast: bool,
+    pattern: &pattern_matching::Evaluation,
     price: f64,
     now_ms: u64,
     tick_size: f64,
@@ -23,7 +24,6 @@ pub fn analysis_summary(
         snapshot.tf1m.mrc.lines(),
         tick_size,
     );
-    let pattern = pattern_matching::evaluate(state.klines.get(crate::market_data::TF_1M), now_ms);
     let mrc = analysis
         .map(|analysis| format!("mrc=[{}]", notes::mrc_analysis(analysis, forecast)))
         .unwrap_or_else(|| "mrc=none".to_string());

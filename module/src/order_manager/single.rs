@@ -36,23 +36,16 @@ impl SingleOrderManager {
             .into_iter()
             .chain(input.positions.short.as_ref())
             .any(|position| position.qty > 0.0 || position.notional > 0.0);
-        let ended_direction = match direction {
-            Direction::Long => 1,
-            Direction::Short => -1,
-            Direction::Both => 0,
-        };
         if entry_order_ended
             && !has_active_position
             && state.position.side == crate::model::PositionState::Flat
             && state.position_context.side == crate::model::PositionState::Flat
             && mark.as_deref() == Some(crate::orders::entry_order_mark(direction))
-            && state.pending_entry_reason.as_ref().is_some_and(|reason| {
-                crate::detection::mrc_crossing::reason_direction(reason) == ended_direction
-            })
         {
             state.pending_entry_bar = None;
             state.pending_entry_reason = None;
             state.pending_entry_plan = None;
+            state.pending_strategy = None;
         }
         ModuleOutput {
             debug: shared::debug_line(

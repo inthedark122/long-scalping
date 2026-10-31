@@ -14,6 +14,7 @@ use crate::model::{
 };
 use crate::observer::{TpRepriceHistory, VolumeGainTracker};
 use crate::risk_control::MrcRiskManager;
+use crate::strategies::StrategyKind;
 use lte_strategy_bridge::abi::Direction;
 use lte_strategy_bridge::kline_access::KlineHistory;
 
@@ -123,6 +124,8 @@ impl PositionPlanSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PositionContext {
     pub side: PositionState,
+    #[serde(default)]
+    pub strategy: StrategyKind,
     pub entry_price: f64,
     pub entry_time_ms: u64,
     pub entry_reason: Option<EntryReason>,
@@ -178,6 +181,7 @@ impl PositionContext {
         };
         *self = Self {
             side,
+            strategy: StrategyKind::Trending,
             entry_price,
             entry_time_ms,
             entry_reason,
@@ -246,6 +250,7 @@ impl PositionContext {
             && self.consecutive_entries < Self::MAX_RECYCLABLE_ENTRIES
         {
             self.side = PositionState::Flat;
+            self.strategy = StrategyKind::Trending;
             self.entry_price = 0.0;
             self.entry_time_ms = 0;
             self.entry_reason = None;
@@ -723,11 +728,18 @@ pub struct EngineState {
     /// Raw kline cache and ta-rs indicators are runtime-only. `save` does not
     /// serialize this cache; the host resends the requested history on Init.
     pub klines: KlineHistory,
+    /// Recursive ta-rs MRC filters advance on KlineUpdate and are not saved.
+    pub mrc_calculation: crate::market_data::MrcCalculation,
     pub position: PositionRuntime,
+    /// Sideways movement already traded, preventing duplicate entries in that
+    /// cascade movement after an exit.
+    pub strategy_runtime: crate::strategies::StrategyRuntime,
     /// Exit context owned by the active position.
     pub position_context: PositionContext,
     /// Entry intent retained while the host processes an opening order.
     pub pending_entry_reason: Option<EntryReason>,
+    /// Strategy that owns an entry order until its position is observed.
+    pub pending_strategy: Option<StrategyKind>,
     /// Exact pending exit levels retained across the order-to-position event.
     pub pending_entry_plan: Option<PositionPlanSnapshot>,
     pub take_profit_allocation: TakeProfitAllocation,
@@ -785,9 +797,12 @@ impl Default for EngineState {
             market_mrc_analysis: None,
             market_mrc_context: MrcPredictionContext::default(),
             klines: KlineHistory::new(&crate::market_data::kline_requirements()),
+            mrc_calculation: crate::market_data::MrcCalculation::default(),
             position: PositionRuntime::default(),
+            strategy_runtime: crate::strategies::StrategyRuntime::default(),
             position_context: PositionContext::default(),
             pending_entry_reason: None,
+            pending_strategy: None,
             pending_entry_plan: None,
             take_profit_allocation: TakeProfitAllocation::default(),
             trade_budget: 0.0,
@@ -842,6 +857,12 @@ struct PersistedState {
     #[serde(default)]
     pending_entry_reason: Option<EntryReason>,
     #[serde(default)]
+    pending_strategy: Option<StrategyKind>,
+    #[serde(default)]
+    pending_entry_bar: Option<u64>,
+    #[serde(default)]
+    last_sideways_movement_start_ms: Option<u64>,
+    #[serde(default)]
     pending_entry_plan: Option<PositionPlanSnapshot>,
     #[serde(default)]
     take_profit_allocation: TakeProfitAllocation,
@@ -882,6 +903,9 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         position: state.position.side,
         position_context: state.position_context.clone(),
         pending_entry_reason: state.pending_entry_reason.clone(),
+        pending_strategy: state.pending_strategy,
+        pending_entry_bar: state.pending_entry_bar,
+        last_sideways_movement_start_ms: state.strategy_runtime.last_sideways_movement_start_ms(),
         pending_entry_plan: state.pending_entry_plan,
         take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
@@ -920,6 +944,11 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.position.side = persisted.position;
     state.position_context = persisted.position_context;
     state.pending_entry_reason = persisted.pending_entry_reason;
+    state.pending_strategy = persisted.pending_strategy;
+    state.pending_entry_bar = persisted.pending_entry_bar;
+    state
+        .strategy_runtime
+        .restore_last_sideways_movement_start_ms(persisted.last_sideways_movement_start_ms);
     state.pending_entry_plan = persisted.pending_entry_plan;
     state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
@@ -975,7 +1004,9 @@ pub fn sync_position_state(
         state.pending_exit_context = None;
         state.active_mrc_analysis = None;
         state.active_mrc_context = MrcPredictionContext::default();
-        state.pending_entry_bar = None;
+        if state.pending_strategy.is_none() {
+            state.pending_entry_bar = None;
+        }
     }
 
     match (long, short) {
@@ -1079,6 +1110,12 @@ pub fn sync_position_state(
         }
         _ => {
             state.position = PositionRuntime::default();
+        }
+    }
+
+    if state.position.side != PositionState::Flat {
+        if let Some(strategy) = state.pending_strategy.take() {
+            state.position_context.strategy = strategy;
         }
     }
 }

@@ -1,6 +1,7 @@
 pub mod candle_trend;
 pub mod cascade;
 pub mod decision;
+pub mod movement_window;
 pub mod mrc;
 pub mod mrc_cross_analysis;
 pub mod mrc_crossing;

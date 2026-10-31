@@ -1,7 +1,9 @@
+use crate::detection::movement_window;
 use crate::detection::mrc_pattern_classification;
 use crate::format::{fmt_duration_ms, fmt_price_tick};
 use crate::model::{IndicatorSnapshot, PositionState};
 use crate::state::EngineState;
+use crate::strategies::StrategyKind;
 
 pub fn render(
     state: &EngineState,
@@ -9,8 +11,12 @@ pub fn render(
     entry_analysis: &str,
     entry_status: &str,
     exit_status: &str,
+    routed_strategy: StrategyKind,
     constraint: Option<&str>,
     tick_size: f64,
+    market_price: f64,
+    ntp_5s: i64,
+    tdt: Option<i64>,
 ) -> String {
     let tp_reprice = format_tp_reprice(&state.tp_reprice_history, tick_size);
     let mrc_risk = state
@@ -37,9 +43,33 @@ pub fn render(
         .unwrap_or_else(|| "primary=none".to_string());
     let support = state.mrc_crossing_model.decision_state.support;
     let primary_trace = &state.mrc_crossing_model.decision_state.trace;
+    let movement_window = movement_window::detect(&state.cascade, market_price)
+        .map(|window| {
+            format!(
+                "moves={} low={} high={} avg_move={} width={:.3}% changes={} price={} movement_start_ms={}",
+                window.movements,
+                fmt_price_tick(window.low, tick_size),
+                fmt_price_tick(window.high, tick_size),
+                fmt_price_tick(window.average_movement_size, tick_size),
+                window.width_pct,
+                window.direction_changes,
+                window.price_location.as_str(),
+                state.cascade.movement_start_ms
+            )
+        })
+        .unwrap_or_else(|| "na".to_string());
+    let active_strategy = if state.position.side == PositionState::Flat {
+        "none"
+    } else {
+        state.position_context.strategy.as_str()
+    };
     let mut parts = vec![
         format!("t={}", state.ticks),
-        "strategy=analysis-only".to_string(),
+        format!(
+            "strategies=[trending,sideways] routed={} active={}",
+            routed_strategy.as_str(),
+            active_strategy
+        ),
         format!(
             "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
@@ -124,6 +154,13 @@ pub fn render(
                 .map(|value| fmt_duration_ms(value as u64))
                 .unwrap_or_else(|| "na".to_string()),
         ),
+        format!("movement-window=[{movement_window}]"),
+        format!(
+            "market-activity=ntp_5s:{} tdt:{}",
+            ntp_5s,
+            tdt.map(|value| value.to_string())
+                .unwrap_or_else(|| "na".to_string())
+        ),
         format!("volume=[{}]", state.volume_gain.summary()),
         format!("mrc_risk=[{mrc_risk}]"),
         format!("mrc_cross=[{}]", format_mrc_crossing(state)),
@@ -152,7 +189,8 @@ pub fn render(
             })
             .unwrap_or("none");
         parts.push(format!(
-            "position-control=action={} exit-source={} future-route={} lifetime={} reentry={} reason={}",
+            "position-control=strategy={} action={} exit-source={} future-route={} lifetime={} reentry={} reason={}",
+            state.position_context.strategy.as_str(),
             state.position_context.last_action.as_str(),
             state.position_context.last_plan_source.as_str(),
             future_route,
@@ -174,6 +212,16 @@ pub fn render(
             fmt_price_tick(state.position.stop_loss, tick_size),
             state.position.stop_loss_reason,
         ));
+    }
+    if let (Some(strategy), Some(plan)) = (state.pending_strategy, state.pending_entry_plan) {
+        if state.pending_entry_bar.is_some() && plan.take_profit > 0.0 && plan.stop_loss > 0.0 {
+            parts.push(format!(
+                "pending-plan=strategy={} tp={} sl={}",
+                strategy.as_str(),
+                fmt_price_tick(plan.take_profit, tick_size),
+                fmt_price_tick(plan.stop_loss, tick_size),
+            ));
+        }
     }
     if state.position.side != PositionState::Flat {
         parts.push(format!(
@@ -202,7 +250,11 @@ fn format_take_profit(state: &EngineState, tick_size: f64) -> String {
         return "none".to_string();
     }
 
-    format!("{}:mrc", fmt_price_tick(price, tick_size))
+    let source = match state.position_context.strategy {
+        StrategyKind::Trending => "mrc",
+        StrategyKind::Sideways => "movement-window",
+    };
+    format!("{}:{source}", fmt_price_tick(price, tick_size))
 }
 
 fn mrc_line_label(index: u8) -> &'static str {

@@ -1,6 +1,6 @@
 use crate::detection::mrc;
 use crate::model::{Candle, IndicatorSnapshot, MrcBands, TimeframeSnapshot};
-use lte_strategy_bridge::abi::ModuleKline;
+use lte_strategy_bridge::abi::{ModuleKline, ModuleKlineSnapshot};
 use lte_strategy_bridge::kline_access::KlineHistory;
 use std::collections::{BTreeMap, VecDeque};
 use ta::indicators::{
@@ -52,15 +52,203 @@ impl Close for TaCandle {
     }
 }
 
-struct CalculatedCandle {
-    snapshot: TimeframeSnapshot,
-    mrc_history: MrcHistorySample,
+#[derive(Clone)]
+struct MrcCheckpoint {
+    time: i64,
+    channel: MeanReversionChannel,
+    previous_middle: Option<f64>,
+    latest: Option<MrcBands>,
+    last_time: Option<i64>,
+}
+
+struct MrcTimeframe {
+    channel: MeanReversionChannel,
+    previous_middle: Option<f64>,
+    latest: Option<MrcBands>,
+    last_time: Option<i64>,
+    history: VecDeque<MrcHistorySample>,
+    checkpoints: VecDeque<MrcCheckpoint>,
+}
+
+impl Default for MrcTimeframe {
+    fn default() -> Self {
+        Self {
+            channel: MeanReversionChannel::new(MRC_PERIOD),
+            previous_middle: None,
+            latest: None,
+            last_time: None,
+            history: VecDeque::new(),
+            checkpoints: VecDeque::new(),
+        }
+    }
+}
+
+impl MrcTimeframe {
+    fn initialize(
+        &mut self,
+        rows: Option<&VecDeque<ModuleKline>>,
+        timeframe: i32,
+    ) -> Result<(), String> {
+        *self = Self::default();
+        let rows = rows.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
+        if rows.is_empty() {
+            return Err(format!("missing-kline-history tf={timeframe}"));
+        }
+        for row in rows {
+            self.process(row, timeframe);
+        }
+        Ok(())
+    }
+
+    fn update(
+        &mut self,
+        updates: Option<&[ModuleKline]>,
+        retained_rows: Option<&VecDeque<ModuleKline>>,
+        timeframe: i32,
+    ) -> Result<(), String> {
+        let Some(updates) = updates else {
+            return Ok(());
+        };
+
+        let revised_time = updates
+            .iter()
+            .filter(|row| self.last_time.is_some_and(|last| row.time <= last))
+            .map(|row| row.time)
+            .min();
+
+        if let Some(revised_time) = revised_time {
+            let index = self
+                .checkpoints
+                .iter()
+                .position(|checkpoint| checkpoint.time == revised_time)
+                .ok_or_else(|| {
+                    format!(
+                        "mrc-update-outside-retained-history tf={timeframe} time={revised_time}"
+                    )
+                })?;
+            let checkpoint = self.checkpoints[index].clone();
+            self.channel = checkpoint.channel;
+            self.previous_middle = checkpoint.previous_middle;
+            self.latest = checkpoint.latest;
+            self.last_time = checkpoint.last_time;
+            self.checkpoints.truncate(index);
+            self.history.truncate(index);
+
+            let rows =
+                retained_rows.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
+            for row in rows.iter().filter(|row| row.time >= revised_time) {
+                self.process(row, timeframe);
+            }
+            return Ok(());
+        }
+
+        for row in updates {
+            if self.last_time.is_none_or(|last| row.time > last) {
+                self.process(row, timeframe);
+            }
+        }
+        Ok(())
+    }
+
+    fn process(&mut self, row: &ModuleKline, timeframe: i32) {
+        self.checkpoints.push_back(MrcCheckpoint {
+            time: row.time,
+            channel: self.channel.clone(),
+            previous_middle: self.previous_middle,
+            latest: self.latest,
+            last_time: self.last_time,
+        });
+
+        let output = self.channel.next(&TaCandle {
+            high: row.high,
+            low: row.low,
+            close: row.close,
+        });
+        let bands = MrcBands {
+            down_big: output.down_big,
+            down_outer: output.down_outer,
+            down_small: output.down_small,
+            down_inner: output.down_inner,
+            mean_line: output.middle,
+            up_inner: output.up_inner,
+            up_small: output.up_small,
+            up_outer: output.up_outer,
+            up_big: output.up_big,
+            current_cross: 0.0,
+            mean_line_slope: self
+                .previous_middle
+                .map(|previous| output.middle - previous)
+                .unwrap_or_default(),
+        };
+        self.previous_middle = Some(output.middle);
+        self.latest = Some(bands);
+        self.last_time = Some(row.time);
+        self.history.push_back(MrcHistorySample {
+            time_ms: row
+                .time
+                .saturating_add(i64::from(timeframe).saturating_mul(1_000))
+                .max(0) as u64,
+            close: row.close,
+            lines: bands.lines(),
+        });
+
+        while self.history.len() > KLINE_HISTORY_COUNT as usize {
+            self.history.pop_front();
+            self.checkpoints.pop_front();
+        }
+    }
+}
+
+/// Holds the existing ta-rs MRC filters between kline updates. It is runtime
+/// calculation state and is deliberately omitted from the module output state.
+#[derive(Default)]
+pub struct MrcCalculation {
+    one_minute: MrcTimeframe,
+    five_minute: MrcTimeframe,
+}
+
+impl MrcCalculation {
+    pub fn initialize(&mut self, history: &KlineHistory) -> Result<(), String> {
+        *self = Self::default();
+        self.one_minute.initialize(history.get(TF_1M), TF_1M)?;
+        self.five_minute.initialize(history.get(TF_5M), TF_5M)
+    }
+
+    pub fn update(
+        &mut self,
+        updates: &ModuleKlineSnapshot,
+        history: &KlineHistory,
+    ) -> Result<(), String> {
+        self.one_minute.update(
+            updates.get(&TF_1M).map(Vec::as_slice),
+            history.get(TF_1M),
+            TF_1M,
+        )?;
+        self.five_minute.update(
+            updates.get(&TF_5M).map(Vec::as_slice),
+            history.get(TF_5M),
+            TF_5M,
+        )
+    }
+
+    pub fn latest_bands(&self, timeframe: i32) -> Option<MrcBands> {
+        match timeframe {
+            TF_1M => self.one_minute.latest,
+            TF_5M => self.five_minute.latest,
+            _ => None,
+        }
+    }
+
+    fn one_minute_history(&self) -> Vec<MrcHistorySample> {
+        self.one_minute.history.iter().copied().collect()
+    }
 }
 
 fn calculate_timeframe(
     rows: Option<&VecDeque<ModuleKline>>,
     timeframe: i32,
-) -> Result<Vec<CalculatedCandle>, String> {
+    mrc_bands: MrcBands,
+) -> Result<TimeframeSnapshot, String> {
     let rows = rows.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
     if rows.is_empty() {
         return Err(format!("missing-kline-history tf={timeframe}"));
@@ -72,7 +260,6 @@ fn calculate_timeframe(
         ));
     }
 
-    let mut channel = MeanReversionChannel::new(MRC_PERIOD);
     let mut atr = AverageTrueRange::new(ATR_PERIOD)
         .map_err(|error| format!("atr-init tf={timeframe} error={error}"))?;
     let mut volume_ema = ExponentialMovingAverage::new(VOLUME_PERIOD)
@@ -88,15 +275,13 @@ fn calculate_timeframe(
     let mut max_buy_sell_gain = Maximum::new(VOLUME_PERIOD)
         .map_err(|error| format!("buy-sell-max-init tf={timeframe} error={error}"))?;
 
-    let mut previous_middle = None;
-    let mut calculated = Vec::with_capacity(rows.len());
+    let mut latest = None;
     for row in rows {
         let ta_candle = TaCandle {
             high: row.high,
             low: row.low,
             close: row.close,
         };
-        let channel_output = channel.next(&ta_candle);
         let atr = atr.next(&ta_candle);
         let volume = row.qty_buy + row.qty_sell;
         let average_volume = volume_ema.next(volume);
@@ -113,23 +298,6 @@ fn calculate_timeframe(
             0.0
         };
 
-        let bands = MrcBands {
-            down_big: channel_output.down_big,
-            down_outer: channel_output.down_outer,
-            down_small: channel_output.down_small,
-            down_inner: channel_output.down_inner,
-            mean_line: channel_output.middle,
-            up_inner: channel_output.up_inner,
-            up_small: channel_output.up_small,
-            up_outer: channel_output.up_outer,
-            up_big: channel_output.up_big,
-            current_cross: 0.0,
-            mean_line_slope: previous_middle
-                .map(|previous: f64| channel_output.middle - previous)
-                .unwrap_or_default(),
-        };
-        previous_middle = Some(channel_output.middle);
-
         let volume_gain_min = min_gain.next(gain);
         let volume_gain_max = max_gain.next(gain);
         // Keep the matching rolling flow extrema warm as well, even though
@@ -142,42 +310,35 @@ fn calculate_timeframe(
             low: row.low,
             close: row.close,
         };
-        calculated.push(CalculatedCandle {
-            snapshot: TimeframeSnapshot {
-                candle,
-                mrc: bands,
-                atr,
-                mrc_signal: mrc::analyze(&bands, row.close),
-                volume_gain: gain,
-                volume_gain_min,
-                volume_gain_max,
-                buy_sell_gain,
-                // NTPS is not a kline input and this module does not request
-                // platform-provided indicator values.
-                ntps: 0,
-            },
-            mrc_history: MrcHistorySample {
-                time_ms: row
-                    .time
-                    .saturating_add(i64::from(timeframe).saturating_mul(1_000))
-                    .max(0) as u64,
-                close: row.close,
-                lines: bands.lines(),
-            },
+        latest = Some(TimeframeSnapshot {
+            candle,
+            mrc: mrc_bands,
+            atr,
+            mrc_signal: mrc::analyze(&mrc_bands, row.close),
+            volume_gain: gain,
+            volume_gain_min,
+            volume_gain_max,
+            buy_sell_gain,
+            // NTPS is not a kline input and this module does not request
+            // platform-provided indicator values.
+            ntps: 0,
         });
     }
-    Ok(calculated)
+    latest.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))
 }
 
-pub fn build_indicator_snapshot(history: &KlineHistory) -> Result<IndicatorSnapshot, String> {
-    let tf1m = calculate_timeframe(history.get(TF_1M), TF_1M)?
-        .pop()
-        .ok_or_else(|| "missing-kline-history tf=60".to_string())?
-        .snapshot;
-    let tf5m = calculate_timeframe(history.get(TF_5M), TF_5M)?
-        .pop()
-        .ok_or_else(|| "missing-kline-history tf=300".to_string())?
-        .snapshot;
+pub fn build_indicator_snapshot(
+    history: &KlineHistory,
+    mrc_calculation: &MrcCalculation,
+) -> Result<IndicatorSnapshot, String> {
+    let tf1m_bands = mrc_calculation
+        .latest_bands(TF_1M)
+        .ok_or_else(|| "missing-mrc-calculation tf=60".to_string())?;
+    let tf5m_bands = mrc_calculation
+        .latest_bands(TF_5M)
+        .ok_or_else(|| "missing-mrc-calculation tf=300".to_string())?;
+    let tf1m = calculate_timeframe(history.get(TF_1M), TF_1M, tf1m_bands)?;
+    let tf5m = calculate_timeframe(history.get(TF_5M), TF_5M, tf5m_bands)?;
     Ok(IndicatorSnapshot {
         tf1m,
         tf5m,
@@ -185,11 +346,14 @@ pub fn build_indicator_snapshot(history: &KlineHistory) -> Result<IndicatorSnaps
     })
 }
 
-pub fn build_mrc_history(history: &KlineHistory) -> Result<Vec<MrcHistorySample>, String> {
-    Ok(calculate_timeframe(history.get(TF_1M), TF_1M)?
-        .into_iter()
-        .map(|row| row.mrc_history)
-        .collect())
+pub fn build_mrc_history(
+    mrc_calculation: &MrcCalculation,
+) -> Result<Vec<MrcHistorySample>, String> {
+    let history = mrc_calculation.one_minute_history();
+    if history.is_empty() {
+        return Err("missing-mrc-calculation tf=60".to_string());
+    }
+    Ok(history)
 }
 
 pub fn render_kline_history_inventory(history: &KlineHistory) -> String {
