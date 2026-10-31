@@ -2,6 +2,17 @@
 
 # Unreleased
 
+# 1.0.130
+
+Add explicit Trending and Sideways strategy routing. Sideways trades enter at
+Movement Cascade range boundaries and target the opposite boundary, with stops
+one average movement beyond the entry boundary. A confident historical pattern
+forecast opposing a proposed range trade now causes the strategy to wait;
+missing or inconclusive forecasts leave the existing entry behavior unchanged.
+
+Include the saved entry TP/SL in the position handoff when the host omits an
+exit level, and print TP/SL source and values in the new-position debug line.
+
 # 1.0.129
 
 Restore the host snapshot once at module startup and keep in-memory state
