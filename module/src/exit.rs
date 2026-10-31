@@ -220,6 +220,24 @@ fn position_exit_plan(
                 tp_reliable: true,
             })
         }
+        Some(EntryReason::CandleTrend {
+            target_price,
+            stop_price,
+            ..
+        }) if target_price.is_finite()
+            && stop_price.is_finite()
+            && *target_price > 0.0
+            && *stop_price > 0.0 =>
+        {
+            Some(ExitPlan {
+                take_profit: TakeProfit::Fixed {
+                    price: *target_price,
+                },
+                stop_loss: StopLoss::Fixed { price: *stop_price },
+                tp_reliable: true,
+            })
+        }
+        Some(EntryReason::CandleTrend { .. }) => None,
         None => None,
     };
     plan.and_then(|plan| {
@@ -467,7 +485,10 @@ pub(crate) fn far_target_for_position(
         target_line,
         target_is_movement,
         ..
-    } = reason;
+    } = reason
+    else {
+        return None;
+    };
     if *target_is_movement {
         // The primary target is an entry-relative movement. Do not silently
         // add a second executable TP derived from an MRC line.

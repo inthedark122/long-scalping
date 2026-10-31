@@ -215,17 +215,23 @@ impl PositionContext {
         if self.entry_anchor.is_some() {
             return;
         }
-        let Some(EntryReason::MrcCrossing {
-            target_price,
-            stop_price,
-            ..
-        }) = reason
-        else {
+        let Some((target_price, stop_price)) = reason.map(|reason| match reason {
+            EntryReason::MrcCrossing {
+                target_price,
+                stop_price,
+                ..
+            }
+            | EntryReason::CandleTrend {
+                target_price,
+                stop_price,
+                ..
+            } => (*target_price, *stop_price),
+        }) else {
             return;
         };
         let plan = PositionPlanSnapshot {
-            take_profit: *target_price,
-            stop_loss: *stop_price,
+            take_profit: target_price,
+            stop_loss: stop_price,
             tp_reliable: true,
         };
         if plan.take_profit.is_finite() && plan.stop_loss.is_finite() {
@@ -744,6 +750,10 @@ pub struct EngineState {
     /// One-way exit state. Cascade contributes timing/activity context only.
     pub exit_progress: ExitProgress,
     pub pending_entry_bar: Option<u64>,
+    pub candle_uptrend_seen: bool,
+    pub candle_downtrend_seen: bool,
+    pub candle_trend_direction: i8,
+    pub candle_trend_last_closed_ms: u64,
     pub volume_gain: VolumeGainTracker,
     pub direction_source: String,
     pub direction_reason: String,
@@ -793,6 +803,10 @@ impl Default for EngineState {
             staircase_progress: StaircaseProgress::default(),
             exit_progress: ExitProgress::default(),
             pending_entry_bar: None,
+            candle_uptrend_seen: false,
+            candle_downtrend_seen: false,
+            candle_trend_direction: 0,
+            candle_trend_last_closed_ms: 0,
             volume_gain: VolumeGainTracker::default(),
             direction_source: "pattern-selector".to_string(),
             direction_reason: "na".to_string(),
@@ -847,6 +861,14 @@ struct PersistedState {
     mrc_touch_learning: MrcTouchLearningState,
     #[serde(default)]
     exit_progress: ExitProgress,
+    #[serde(default)]
+    candle_uptrend_seen: bool,
+    #[serde(default)]
+    candle_downtrend_seen: bool,
+    #[serde(default)]
+    candle_trend_direction: i8,
+    #[serde(default)]
+    candle_trend_last_closed_ms: u64,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
@@ -870,6 +892,10 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         trade_direction_lock: state.mrc_crossing_model.trade_direction_lock,
         mrc_touch_learning: state.mrc_touch_learning.clone(),
         exit_progress: state.exit_progress,
+        candle_uptrend_seen: state.candle_uptrend_seen,
+        candle_downtrend_seen: state.candle_downtrend_seen,
+        candle_trend_direction: state.candle_trend_direction,
+        candle_trend_last_closed_ms: state.candle_trend_last_closed_ms,
     })
     .ok()
 }
@@ -917,6 +943,10 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.mrc_crossing_model.trade_direction_lock = persisted.trade_direction_lock;
     state.mrc_touch_learning = persisted.mrc_touch_learning;
     state.exit_progress = persisted.exit_progress;
+    state.candle_uptrend_seen = persisted.candle_uptrend_seen;
+    state.candle_downtrend_seen = persisted.candle_downtrend_seen;
+    state.candle_trend_direction = persisted.candle_trend_direction;
+    state.candle_trend_last_closed_ms = persisted.candle_trend_last_closed_ms;
     state
         .mrc_crossing_model
         .decision_state

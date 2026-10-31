@@ -8,7 +8,7 @@ use crate::exit;
 use crate::market_data;
 use crate::model::{EntryType, ExitMode, MRC_CROSSING_EXIT_TYPE};
 use crate::order_manager;
-use crate::orders::close;
+use crate::orders::{close, entry_order_marks, update_position_stop_loss};
 use crate::risk;
 use crate::state::{
     dir_to_position, direction_sign, sync_position_state, EngineState, PositionLifetime,
@@ -427,7 +427,7 @@ fn handle_new_position(
         .and_then(|saved| saved.get("pending_entry_plan"))
         .and_then(|saved| serde_json::from_value(saved.clone()).ok());
     let pending_entry_plan = state.pending_entry_plan.or(input_pending_entry_plan);
-    let stored_entry_anchor = pending_entry_plan.or(state.position_context.entry_anchor);
+    let stored_entry_anchor = pending_entry_plan;
     let event_entry_plan = take_profit
         .zip(stop_loss)
         .map(
@@ -462,8 +462,15 @@ fn handle_new_position(
             })
         })
         .filter(|plan| plan.valid_for(side, entry_price));
-    let pending_entry_anchor = event_entry_plan
-        .or_else(|| stored_entry_anchor.filter(|plan| plan.valid_for(side, entry_price)))
+    let pending_entry_anchor = stored_entry_anchor
+        .filter(|plan| plan.valid_for(side, entry_price))
+        .or(event_entry_plan)
+        .or_else(|| {
+            state
+                .position_context
+                .entry_anchor
+                .filter(|plan| plan.valid_for(side, entry_price))
+        })
         .or(analysis_entry_plan);
     state.pending_entry_reason = None;
     state.pending_entry_plan = None;
@@ -523,10 +530,14 @@ fn handle_new_position(
     let snapshot = match state.last_snapshot.clone() {
         Some(snapshot) => snapshot,
         None => {
-            let is_mrc = state.position.entry_reason.as_ref().is_some_and(|reason| {
-                matches!(reason, crate::model::EntryReason::MrcCrossing { .. })
+            let has_entry_plan = state.position.entry_reason.as_ref().is_some_and(|reason| {
+                matches!(
+                    reason,
+                    crate::model::EntryReason::MrcCrossing { .. }
+                        | crate::model::EntryReason::CandleTrend { .. }
+                )
             });
-            if is_mrc {
+            if has_entry_plan {
                 crate::model::IndicatorSnapshot::default()
             } else {
                 let error = format!(
@@ -541,10 +552,11 @@ fn handle_new_position(
             }
         }
     };
-    let resolved_plan = exit::resolve_position_exit_plan(state, &snapshot, entry_price, side);
-    let plan = resolved_plan.map(|(plan, _)| plan);
+    let plan =
+        exit::resolve_position_exit_plan(state, &snapshot, entry_price, side).map(|(plan, _)| plan);
     let mut tp_orders = Vec::new();
-    let mut cancel_orders = Vec::new();
+    let mut cancel_orders = entry_order_marks();
+    let mut stop_loss_updates = Vec::new();
     if let Some(plan) = plan {
         state.position_context.set_decision(
             crate::state::PositionDecisionAction::UpdateExit,
@@ -553,6 +565,20 @@ fn handle_new_position(
         state.position.exit_mode = ExitMode::Fixed;
         state.position.take_profit = plan.take_profit.price();
         exit::set_stop_loss(state, plan.stop_loss);
+        if matches!(
+            entry_reason.as_ref(),
+            Some(
+                crate::model::EntryReason::MrcCrossing { .. }
+                    | crate::model::EntryReason::CandleTrend { .. }
+            )
+        ) {
+            state.position_context.entry_anchor = Some(crate::state::PositionPlanSnapshot {
+                take_profit: plan.take_profit.price(),
+                stop_loss: plan.stop_loss.price(),
+                tp_reliable: plan.tp_reliable,
+            });
+            stop_loss_updates.push(update_position_stop_loss(direction, plan.stop_loss.price()));
+        }
         let qty = input
             .positions
             .long
@@ -562,7 +588,7 @@ fn handle_new_position(
             .unwrap_or(0.0);
         if qty > 0.0 {
             let note = plan.take_profit.order_note();
-            (tp_orders, cancel_orders) = exit::take_profit_orders(
+            let (orders, tp_cancel_orders) = exit::take_profit_orders(
                 input,
                 state,
                 side,
@@ -577,6 +603,8 @@ fn handle_new_position(
                     plan.take_profit.price(),
                 ),
             );
+            tp_orders = orders;
+            cancel_orders.extend(tp_cancel_orders);
         }
     }
 
@@ -615,6 +643,11 @@ fn handle_new_position(
         let levels = |reason: Option<&crate::model::EntryReason>| {
             reason.map(|reason| match reason {
                 crate::model::EntryReason::MrcCrossing {
+                    target_price,
+                    stop_price,
+                    ..
+                }
+                | crate::model::EntryReason::CandleTrend {
                     target_price,
                     stop_price,
                     ..
@@ -677,6 +710,7 @@ fn handle_new_position(
             .unwrap_or_default(),
         place_orders: tp_orders,
         cancel_orders,
+        update_positions: stop_loss_updates,
         debug: format!(
             "new-position {:?} {}",
             direction,
@@ -746,7 +780,8 @@ fn handle_finish_position(
         state.active_mrc_analysis = None;
         state.active_mrc_context = mrc_prediction::MrcPredictionContext::default();
     }
-    let cancel_orders = exit::all_tp_marks(direction);
+    let mut cancel_orders = exit::all_tp_marks(direction);
+    cancel_orders.extend(entry_order_marks());
     state.exit_progress.reset();
     ModuleOutput {
         cancel_orders,
@@ -1040,293 +1075,20 @@ fn process_realtime(
         }
     }
 
-    state.direction_source = "pattern-selector".to_string();
-    let selected_analysis = mrc_observation.selected_analysis();
-    if let Some(analysis) = selected_analysis.filter(|analysis| {
-        matches!(
-            analysis.pattern_kind,
-            Some(
-                mrc_pattern_classification::MrcPatternKind::StairsUp
-                    | mrc_pattern_classification::MrcPatternKind::StairsDown
-            )
-        )
-    }) {
-        state.market_mrc_analysis = Some(analysis.clone());
-        if state.position.side == crate::model::PositionState::Flat
-            || matches!(
-                (state.position.side, analysis.trade_direction),
-                (crate::model::PositionState::Long, 1) | (crate::model::PositionState::Short, -1)
-            )
-        {
-            state.active_mrc_analysis = Some(analysis.clone());
-            state.active_mrc_context = prediction_context;
-        }
-    } else {
-        state.market_mrc_analysis = None;
-    }
-    if let Some(analysis) = selected_analysis.filter(|analysis| {
-        matches!(
-            analysis.pattern_kind,
-            Some(
-                mrc_pattern_classification::MrcPatternKind::StairsUp
-                    | mrc_pattern_classification::MrcPatternKind::StairsDown
-            )
-        )
-    }) {
-        let staircase = &mut state.staircase_progress;
-        staircase.direction = analysis.trade_direction;
-        staircase.lifecycle = analysis.staircase_lifecycle;
-        staircase.transition = analysis.staircase_transition;
-        staircase.protected_line = analysis.staircase_protected_line;
-        staircase.extreme_line = analysis.staircase_extreme_line;
-        if analysis.stair_favorable_extreme_time_ms >= staircase.favorable_extreme_time_ms {
-            staircase.favorable_extreme_price = analysis.stair_favorable_extreme_price;
-            staircase.favorable_extreme_time_ms = analysis.stair_favorable_extreme_time_ms;
-        }
-        if analysis.stair_adverse_extreme_time_ms >= staircase.adverse_extreme_time_ms {
-            staircase.adverse_extreme_price = analysis.stair_adverse_extreme_price;
-            staircase.adverse_extreme_time_ms = analysis.stair_adverse_extreme_time_ms;
-        }
-        state.exit_progress.observe_extreme(
-            analysis.trade_direction,
-            analysis.stair_favorable_extreme_price,
-            analysis.stair_favorable_extreme_time_ms,
-        );
-        staircase.pattern_elapsed_ms = analysis.pattern_elapsed_ms;
-        staircase.updated_at_ms = analysis.now_ms;
-    }
-    let selected_pattern_reason = mrc_observation
-        .selected_pattern
-        .map(|pattern| pattern.as_str().to_string())
-        .unwrap_or_else(|| {
-            mrc_observation
-                .wait_reason
-                .map(|reason| format!("wait:{reason:?}"))
-                .unwrap_or_else(|| "no-candidate".to_string())
-        });
-    state.selected_cascade_trade_state = selected_analysis
-        .map(|analysis| analysis.cascade_trade_state)
-        .unwrap_or(cascade::CascadeTradeState::NotConfigured);
-    state.direction_reason = selected_analysis
-        .map(mrc_crossing::line_plan_summary)
-        .unwrap_or_else(|| format!("pattern={selected_pattern_reason}"));
-    let mrc_reason_direction = mrc_observation
-        .entry
-        .as_ref()
-        .map(mrc_crossing::reason_direction)
-        .or_else(|| {
-            state
-                .mrc_crossing_model
-                .current_entry
-                .as_ref()
-                .map(mrc_crossing::reason_direction)
-        });
-    let entry_direction = mrc_reason_direction
-        .filter(|direction| *direction != 0)
-        .map(mrc_crossing::market_state)
-        .unwrap_or_else(|| mrc_crossing::market_state(state.mrc_crossing_model.last_direction));
-    let entry_gate = {
-        let mut gate = mrc_crossing::entry_gate(&state.mrc_crossing_model);
-        if let Some(reason) = mrc_observation.entry.clone() {
-            let direction = match entry_direction {
-                crate::model::MarketState::Long => 1,
-                crate::model::MarketState::Short => -1,
-                crate::model::MarketState::Sideways => 0,
-            };
-            let crate::model::EntryReason::MrcCrossing {
-                price,
-                target_price,
-                stop_price,
-                pattern_kind,
-                target_is_movement,
-                ..
-            } = &reason;
-            let valid = if *target_is_movement {
-                mrc_crossing::valid_movement_price_levels(
-                    direction,
-                    *price,
-                    *target_price,
-                    *stop_price,
-                    Some(input.symbol_info.price_tick_size),
-                )
-            } else {
-                mrc_crossing::valid_price_levels_for_pattern(
-                    direction,
-                    *price,
-                    *target_price,
-                    *stop_price,
-                    Some(input.symbol_info.price_tick_size),
-                    mrc_pattern_classification::MrcPatternKind::from_str(pattern_kind),
-                )
-            };
-            if valid {
-                let analysis_note = selected_analysis.map(|event| {
-                            format!(
-                                "forecast={} pattern={} steps={} stair_sequence={} stair_price_move_pct={:.4} stair_favorable_move_pct={:.4} stair_adverse_move_pct={:.4} stair_lifecycle={} stair_transition={} stair_protected_line={} stair_extreme_line={} stair_entry_state={} stair_entry_line={} stair_entry_reason={} reversal_state={} reversal_reason={} cascade_enabled={} cascade_direction={} cascade_speed_pct_per_min={} cascade_phase={} cascade_potential_move_pct={} cascade_adverse_move_pct={} cascade_trade_state={} barrier={}:{} resistance_line={}@{:.6} learned_line={}@{:.6} predicted_direction={} trade_direction={} tp_line={} tp={:.6} sl_line={} sl={:.6} history_scope={} trigger_move_pct={} volume_gain={:.3} volume_gain_min={:.3} volume_gain_max={:.3} buy_sell_gain={:.3}",
-                                mrc_observation.forecast.is_some(),
-                                event
-                                    .pattern_kind
-                                    .map(|kind| kind.as_str())
-                                    .unwrap_or("none"),
-                                event.pattern_steps,
-                                if event.stair_sequence.is_empty() {
-                                    "na".to_string()
-                                } else {
-                                    event
-                                        .stair_sequence
-                                        .iter()
-                                        .filter_map(|line| {
-                                            mrc_crossing::LINE_LABELS.get(*line as usize).copied()
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join(">")
-                                },
-                                event.stair_price_move_pct,
-                                event.stair_favorable_move_pct,
-                                event.stair_adverse_move_pct,
-                                event
-                                    .staircase_lifecycle
-                                    .map(|value| value.as_str())
-                                    .unwrap_or("na"),
-                                event
-                                    .staircase_transition
-                                    .map(|value| value.as_str())
-                                    .unwrap_or("na"),
-                                event
-                                    .staircase_protected_line
-                                    .and_then(|line| mrc_crossing::LINE_LABELS.get(line as usize))
-                                    .copied()
-                                    .unwrap_or("na"),
-                                event
-                                    .staircase_extreme_line
-                                    .and_then(|line| mrc_crossing::LINE_LABELS.get(line as usize))
-                                    .copied()
-                                    .unwrap_or("na"),
-                                event
-                                    .stair_entry_state
-                                    .map(|state| state.as_str())
-                                    .unwrap_or("na"),
-                                event
-                                    .stair_entry_line
-                                    .and_then(|line| mrc_crossing::LINE_LABELS.get(line as usize))
-                                    .copied()
-                                    .unwrap_or("na"),
-                                event
-                                    .stair_entry_reason
-                                    .as_deref()
-                                    .unwrap_or("na"),
-                                event.reversal_state.as_str(),
-                                event
-                                    .reversal_reason
-                                    .as_deref()
-                                    .unwrap_or("na"),
-                                event.cascade_enabled,
-                                event.cascade_direction,
-                                event
-                                    .cascade_speed_pct_per_min
-                                    .map(|value| format!("{value:.4}"))
-                                    .unwrap_or_else(|| "na".to_string()),
-                                event.cascade_phase.as_str(),
-                                event
-                                    .cascade_potential_move_pct
-                                    .map(|value| format!("{value:.4}"))
-                                    .unwrap_or_else(|| "na".to_string()),
-                                event
-                                    .cascade_adverse_move_pct
-                                    .map(|value| format!("{value:.4}"))
-                                    .unwrap_or_else(|| "na".to_string()),
-                                event.cascade_trade_state.as_str(),
-                                event.barrier_state.as_str(),
-                                event
-                                    .barrier_line
-                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                    .unwrap_or("na"),
-                                event
-                                    .barrier_line
-                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                    .unwrap_or("na"),
-                                event.barrier_price.unwrap_or(0.0),
-                                event
-                                    .target_line
-                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                    .unwrap_or("na"),
-                                event.predicted_line_price.unwrap_or(0.0),
-                                event
-                                    .predicted_direction,
-                                event.trade_direction,
-                                if event.target_is_movement {
-                                    "move"
-                                } else {
-                                    event
-                                        .take_profit_line
-                                        .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                        .unwrap_or("na")
-                                },
-                                event.target_price.unwrap_or(0.0),
-                                event
-                                    .stop_loss_line
-                                    .map(|line| mrc_crossing::LINE_LABELS[line as usize])
-                                    .unwrap_or("na"),
-                                event.stop_price.unwrap_or(0.0),
-                                if event.context_samples > 0 {
-                                    "contextual"
-                                } else {
-                                    "broad-fallback"
-                                },
-                                event
-                                    .effective_move_pct
-                                    .map(|value| format!("{value:.4}%"))
-                                    .unwrap_or_else(|| "na".to_string()),
-                                event.volume_gain,
-                                event.volume_gain_min,
-                                event.volume_gain_max,
-                                event.buy_sell_gain,
-                            )
-                        });
-                let mut notes = vec![
-                    "strategy=pattern-engine".to_string(),
-                    format!("samples={}", mrc_observation.samples),
-                    format!(
-                        "selected_pattern={}",
-                        mrc_observation
-                            .selected_pattern
-                            .map(|p| p.as_str())
-                            .unwrap_or("none")
-                    ),
-                    format!(
-                        "selected_score={:.4}",
-                        mrc_observation.selected_score.unwrap_or(0.0)
-                    ),
-                ];
-                if let Some(analysis_note) = analysis_note {
-                    notes.push(analysis_note);
-                }
-                gate = crate::model::EntryGate::Open {
-                    notes,
-                    reason: crate::model::EntryOpenReason::Entry(reason),
-                };
-            } else {
-                state.mrc_crossing_model.current_entry = None;
-                gate = crate::model::EntryGate::Wait(crate::model::EntryWait {
-                    reason: "mrc-invalid-exit-levels".to_string(),
-                    solutions: Vec::new(),
-                    notes: vec!["MRC target/stop collapse to the entry tick".to_string()],
-                });
-            }
-        } else if let Some(wait_reason) = mrc_observation.wait_reason {
-            gate = mrc_crossing::wait_entry_gate(wait_reason);
-        }
-        gate
-    };
-    let base_decision = crate::model::TradeDecision {
-        market_state: entry_direction,
-        entry: entry_gate,
-    };
-    let decision = base_decision;
+    let entry_selection = crate::entry_policy::evaluate(
+        input,
+        state,
+        &snapshot,
+        market_decision,
+        &mrc_observation,
+        prediction_context,
+    );
+    let decision = entry_selection.decision;
     let execution = execution::evaluate_with_mrc(input, state, &snapshot, &decision);
     let debug = debug::render(
         state,
         &snapshot,
+        &entry_selection.debug,
         &decision,
         execution
             .as_ref()

@@ -3,7 +3,7 @@ use crate::exit;
 use crate::format::{fmt_duration_f64, fmt_duration_ms, fmt_price_tick, tick_size};
 use crate::model::IndicatorSnapshot;
 use crate::model::{EntryGate, EntryReason, EntryType, MarketState, PositionState, TradeDecision};
-use crate::orders::{close, limit_open, market_open, update_position};
+use crate::orders::{close, entry_order_mark, limit_order, market_open, update_position};
 use crate::risk::{entry_budget, EntrySizing};
 use crate::state::{sync_position_state, EngineState, PositionPlanSnapshot};
 use lte_strategy_bridge::abi::{
@@ -43,6 +43,14 @@ fn open_note(
     let entry_note = match &decision.entry {
         EntryGate::Open { notes, .. } => notes.join("|"),
         EntryGate::Wait(wait) => format!("wait:{}|{}", wait.reason, wait.notes.join("|")),
+    };
+    let entry_note = if matches!(
+        entry_reason(decision),
+        Some(EntryReason::MrcCrossing { .. })
+    ) {
+        format!("{entry_note}|sl_mode=fill-referenced")
+    } else {
+        entry_note
     };
     let reason_note = match &decision.entry {
         EntryGate::Open { reason, .. } => reason
@@ -128,6 +136,39 @@ fn open_note(
                         *expected_price_high,
                     ),
                     fmt_duration_f64(*estimated_time_ms)
+                ),
+                EntryReason::CandleTrend {
+                    direction,
+                    target_price,
+                    stop_price,
+                    target_line,
+                    stop_line,
+                    rising_closes,
+                    start_close,
+                    end_close,
+                    net_change_pct,
+                    start_time_ms,
+                    end_time_ms,
+                    ..
+                } => format!(
+                    "{} direction={} directional_closes={} start_close={:.8} end_close={:.8} change={:.4}% window={}..{} target_line={}@{:.8} stop_line={}@{:.8}",
+                    if *direction > 0 { "candle-uptrend" } else { "candle-downtrend" },
+                    if *direction > 0 { "long" } else { "short" },
+                    if *direction > 0 {
+                        *rising_closes
+                    } else {
+                        (crate::detection::candle_trend::CLOSE_TO_CLOSE_CHANGES as u32)
+                            .saturating_sub(*rising_closes)
+                    },
+                    start_close,
+                    end_close,
+                    net_change_pct,
+                    start_time_ms,
+                    end_time_ms,
+                    crate::detection::mrc_crossing::LINE_LABELS[*target_line as usize],
+                    target_price,
+                    crate::detection::mrc_crossing::LINE_LABELS[*stop_line as usize],
+                    stop_price,
                 ),
             })
             .unwrap_or_else(|| "none".to_string()),
@@ -262,6 +303,11 @@ fn remember_pending_entry(state: &mut EngineState, reason: Option<EntryReason>) 
             target_price,
             stop_price,
             ..
+        }
+        | EntryReason::CandleTrend {
+            target_price,
+            stop_price,
+            ..
         } if target_price.is_finite()
             && stop_price.is_finite()
             && *target_price > 0.0
@@ -291,25 +337,6 @@ fn order_entry_price(input: &ModuleInput, side: PositionState, reason_price: f64
         PositionState::Short if input.price > reason_price => input.price + 2.0 * tick,
         _ => reason_price,
     }
-}
-
-fn pending_limit_entry_expired(
-    input: &ModuleInput,
-    state: &EngineState,
-    side: PositionState,
-) -> bool {
-    if state.cfg.entry_type != EntryType::Limit {
-        return false;
-    }
-    let Some(signal_bar) = state.pending_entry_bar else {
-        return false;
-    };
-    if state.bar_1m <= signal_bar {
-        return false;
-    }
-    pending_position(input, side)
-        .map(|position| !has_active_position(Some(position)))
-        .unwrap_or(false)
 }
 
 fn recyclable_reentry_block_reason(state: &EngineState, side: PositionState) -> Option<String> {
@@ -455,34 +482,6 @@ pub fn evaluate_with_mrc(
         MarketState::Sideways => PositionState::Flat,
     };
     let decision_is_open = matches!(&decision.entry, EntryGate::Open { .. });
-    if let Some(side) = [PositionState::Long, PositionState::Short]
-        .into_iter()
-        .find(|side| pending_limit_entry_expired(input, state, *side))
-    {
-        let direction = match side {
-            PositionState::Long => Direction::Long,
-            PositionState::Short => Direction::Short,
-            PositionState::Flat => Direction::Both,
-        };
-        let reason = close_reason(
-            "limit-entry-expired-after-one-candle",
-            state,
-            input.price,
-            tick_size(input),
-        );
-        state.mrc_crossing_model.current_entry = None;
-        state.pending_entry_bar = None;
-        // Cancel the expired order first. The host still reports the old
-        // pending order in this evaluation, so opening a replacement in the
-        // same result can associate the new MRC exit levels with a different
-        // eventual fill. The next evaluation will process a fresh signal
-        // after the cancellation has been applied.
-        return Some(ExecutionResult {
-            close_positions: vec![close(direction, &reason)],
-            ..Default::default()
-        });
-    }
-
     let finish = |result: ExecutionResult| Some(result);
 
     if let Some(long_position) = input.positions.long.as_ref() {
@@ -761,87 +760,98 @@ pub fn evaluate_with_mrc(
         .filter(|plan| plan.valid_for(entry_side, sizing_reference_price))
         .map(|plan| (Some(plan.take_profit), Some(plan.stop_loss)))
         .unwrap_or((None, None));
+    let entry_stop_loss = if mrc_entry { None } else { entry_stop_loss };
     let result = match decision.market_state {
-        MarketState::Long => ExecutionResult {
-            open_positions: vec![if state.cfg.entry_type == EntryType::Market {
-                market_open(
-                    Direction::Long,
-                    amount,
-                    input.price,
-                    entry_take_profit,
-                    entry_stop_loss,
-                    &open_note(
+        MarketState::Long => {
+            let order_price = if state.cfg.entry_type == EntryType::Market {
+                input.price
+            } else {
+                order_price
+            };
+            let note = open_note(
+                Direction::Long,
+                amount,
+                order_price,
+                input.price,
+                tick_size(input),
+                decision,
+                state,
+                sizing,
+            );
+            if state.cfg.entry_type == EntryType::Market {
+                ExecutionResult {
+                    open_positions: vec![market_open(
                         Direction::Long,
                         amount,
                         input.price,
-                        input.price,
-                        tick_size(input),
-                        decision,
-                        state,
-                        sizing,
-                    ),
-                )
+                        entry_take_profit,
+                        entry_stop_loss,
+                        &note,
+                    )],
+                    cancel_orders: crate::orders::entry_order_marks(),
+                    ..Default::default()
+                }
             } else {
-                limit_open(
-                    Direction::Long,
-                    amount,
-                    order_price,
-                    entry_take_profit,
-                    entry_stop_loss,
-                    &open_note(
+                ExecutionResult {
+                    entry_orders: vec![limit_order(
                         Direction::Long,
                         amount,
                         order_price,
-                        input.price,
-                        tick_size(input),
-                        decision,
-                        state,
-                        sizing,
-                    ),
-                )
-            }],
-            ..Default::default()
-        },
-        MarketState::Short => ExecutionResult {
-            open_positions: vec![if state.cfg.entry_type == EntryType::Market {
-                market_open(
-                    Direction::Short,
-                    amount,
-                    input.price,
-                    entry_take_profit,
-                    entry_stop_loss,
-                    &open_note(
+                        entry_take_profit,
+                        entry_stop_loss,
+                        entry_order_mark(Direction::Long),
+                        &note,
+                    )],
+                    cancel_orders: vec![entry_order_mark(Direction::Short).to_string()],
+                    ..Default::default()
+                }
+            }
+        }
+        MarketState::Short => {
+            let order_price = if state.cfg.entry_type == EntryType::Market {
+                input.price
+            } else {
+                order_price
+            };
+            let note = open_note(
+                Direction::Short,
+                amount,
+                order_price,
+                input.price,
+                tick_size(input),
+                decision,
+                state,
+                sizing,
+            );
+            if state.cfg.entry_type == EntryType::Market {
+                ExecutionResult {
+                    open_positions: vec![market_open(
                         Direction::Short,
                         amount,
                         input.price,
-                        input.price,
-                        tick_size(input),
-                        decision,
-                        state,
-                        sizing,
-                    ),
-                )
+                        entry_take_profit,
+                        entry_stop_loss,
+                        &note,
+                    )],
+                    cancel_orders: crate::orders::entry_order_marks(),
+                    ..Default::default()
+                }
             } else {
-                limit_open(
-                    Direction::Short,
-                    amount,
-                    order_price,
-                    entry_take_profit,
-                    entry_stop_loss,
-                    &open_note(
+                ExecutionResult {
+                    entry_orders: vec![limit_order(
                         Direction::Short,
                         amount,
                         order_price,
-                        input.price,
-                        tick_size(input),
-                        decision,
-                        state,
-                        sizing,
-                    ),
-                )
-            }],
-            ..Default::default()
-        },
+                        entry_take_profit,
+                        entry_stop_loss,
+                        entry_order_mark(Direction::Short),
+                        &note,
+                    )],
+                    cancel_orders: vec![entry_order_mark(Direction::Long).to_string()],
+                    ..Default::default()
+                }
+            }
+        }
         _ => return None,
     };
     finish(result)

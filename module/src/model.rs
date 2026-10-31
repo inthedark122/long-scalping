@@ -232,6 +232,8 @@ pub struct TimeframeSnapshot {
     pub candle: Candle,
     pub mrc: MrcBands,
     #[serde(default)]
+    pub atr: f64,
+    #[serde(default)]
     pub mrc_signal: MrcSignal,
     pub volume_gain: f64,
     pub volume_gain_min: f64,
@@ -293,18 +295,34 @@ pub enum EntryReason {
         favorable_move_pct: f64,
         adverse_move_pct: f64,
     },
+    CandleTrend {
+        direction: i8,
+        price: f64,
+        target_price: f64,
+        stop_price: f64,
+        target_line: u8,
+        stop_line: u8,
+        rising_closes: u32,
+        start_close: f64,
+        end_close: f64,
+        net_change_pct: f64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    },
 }
 
 impl EntryReason {
     pub fn price(&self) -> f64 {
         match self {
             Self::MrcCrossing { price, .. } => *price,
+            Self::CandleTrend { price, .. } => *price,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Self::MrcCrossing { .. } => "mrc-crossing",
+            Self::CandleTrend { .. } => "candle-trend",
         }
     }
 }

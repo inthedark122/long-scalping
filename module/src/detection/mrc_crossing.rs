@@ -106,7 +106,10 @@ fn pattern_entry_note(reason: &EntryReason) -> String {
         expected_price_low,
         expected_price_high,
         ..
-    } = reason;
+    } = reason
+    else {
+        return reason.label().to_string();
+    };
     format!(
         "pattern={} cycle={} context_samples={} no_pullback={} reverted_line={} market_price={:.4} mrc_range={:.4}..{:.4} transition_samples={} target_samples={} movement_samples={} next_line_crosses={} support_resistance={} price_only_moves={} movement_wins={} movement_losses={} movement_success_rate={:.3} expected_move_pct={:.3} expected_price={:.4}..{:.4} projection={}",
         pattern_kind,
@@ -1577,7 +1580,10 @@ pub fn imperative_exit_levels(
         target_line,
         pattern_kind,
         ..
-    } = reason;
+    } = reason
+    else {
+        return None;
+    };
     let direction = reason_direction(reason);
     let stop_line = mrc_cross_analysis::mrc_stop_line(lines, *source_line, entry_price, direction)?;
     let stop_price = lines.get(stop_line as usize).copied()?;
@@ -1633,7 +1639,10 @@ pub fn exit_levels(reason: &EntryReason, lines: [f64; 9], entry_price: f64) -> O
         price: planned_entry_price,
         target_price: planned_target_price,
         ..
-    } = reason;
+    } = reason
+    else {
+        return None;
+    };
     let direction = reason_direction(reason);
     let target_price = if *target_is_movement {
         let move_pct = if favorable_move_pct.is_finite() && *favorable_move_pct > 0.0 {
@@ -1716,19 +1725,21 @@ pub fn market_state(direction: i8) -> MarketState {
 }
 
 pub fn reason_direction(reason: &EntryReason) -> i8 {
-    let EntryReason::MrcCrossing {
-        price,
-        target_price,
-        source_line,
-        ..
-    } = reason;
-    match target_price.partial_cmp(price) {
-        Some(std::cmp::Ordering::Greater) => 1,
-        Some(std::cmp::Ordering::Less) => -1,
-        _ => match source_line {
-            0..=3 => -1,
-            5..=8 => 1,
-            _ => 0,
+    match reason {
+        EntryReason::CandleTrend { direction, .. } => *direction,
+        EntryReason::MrcCrossing {
+            price,
+            target_price,
+            source_line,
+            ..
+        } => match target_price.partial_cmp(price) {
+            Some(std::cmp::Ordering::Greater) => 1,
+            Some(std::cmp::Ordering::Less) => -1,
+            _ => match source_line {
+                0..=3 => -1,
+                5..=8 => 1,
+                _ => 0,
+            },
         },
     }
 }

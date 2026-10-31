@@ -12,6 +12,7 @@ pub const TF_1M: i32 = 60;
 pub const TF_5M: i32 = 300;
 pub const MRC_PERIOD: usize = 200;
 pub const VOLUME_PERIOD: usize = 50;
+pub const ATR_PERIOD: usize = 14;
 pub const KLINE_HISTORY_COUNT: u32 = MRC_PERIOD as u32;
 
 /// Request enough raw bars to warm the MRC calculation. The shorter volume
@@ -72,6 +73,8 @@ fn calculate_timeframe(
     }
 
     let mut channel = MeanReversionChannel::new(MRC_PERIOD);
+    let mut atr = AverageTrueRange::new(ATR_PERIOD)
+        .map_err(|error| format!("atr-init tf={timeframe} error={error}"))?;
     let mut volume_ema = ExponentialMovingAverage::new(VOLUME_PERIOD)
         .map_err(|error| format!("volume-ema-init tf={timeframe} error={error}"))?;
     let mut buy_sell_atr = AverageTrueRange::new(VOLUME_PERIOD)
@@ -88,11 +91,13 @@ fn calculate_timeframe(
     let mut previous_middle = None;
     let mut calculated = Vec::with_capacity(rows.len());
     for row in rows {
-        let channel_output = channel.next(&TaCandle {
+        let ta_candle = TaCandle {
             high: row.high,
             low: row.low,
             close: row.close,
-        });
+        };
+        let channel_output = channel.next(&ta_candle);
+        let atr = atr.next(&ta_candle);
         let volume = row.qty_buy + row.qty_sell;
         let average_volume = volume_ema.next(volume);
         let gain = if average_volume == 0.0 {
@@ -141,6 +146,7 @@ fn calculate_timeframe(
             snapshot: TimeframeSnapshot {
                 candle,
                 mrc: bands,
+                atr,
                 mrc_signal: mrc::analyze(&bands, row.close),
                 volume_gain: gain,
                 volume_gain_min,

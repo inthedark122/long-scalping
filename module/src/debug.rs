@@ -6,6 +6,7 @@ use crate::state::EngineState;
 pub fn render(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
+    candle_trend: &str,
     decision: &TradeDecision,
     constraint: Option<&str>,
     tick_size: f64,
@@ -97,6 +98,7 @@ pub fn render(
             "dir={:?}:src={}:why={}",
             decision.market_state, state.direction_source, state.direction_reason
         ),
+        format!("candle-trend=[{candle_trend}]"),
         format!(
             "cascade=dir={}:phase={}:speed={}:potential={}:adverse={} avg_time={}",
             state.cascade_signal.dir,

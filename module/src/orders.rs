@@ -5,6 +5,21 @@ use lte_strategy_bridge::abi::{
     ModulePlaceOrder, ModuleUpdatePosition,
 };
 
+pub(crate) fn entry_order_mark(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Long => "structural-scalping-entry-long",
+        Direction::Short => "structural-scalping-entry-short",
+        Direction::Both => "structural-scalping-entry-both",
+    }
+}
+
+pub(crate) fn entry_order_marks() -> Vec<String> {
+    [Direction::Long, Direction::Short]
+        .into_iter()
+        .map(|direction| entry_order_mark(direction).to_string())
+        .collect()
+}
+
 pub(crate) fn close(direction: Direction, reason: &str) -> ModuleClosePosition {
     ModuleClosePosition {
         direction,
@@ -25,17 +40,19 @@ pub(crate) fn limit_order(
     direction: Direction,
     amount: f64,
     price: f64,
+    take_profit: Option<f64>,
+    stop_loss: Option<f64>,
     mark: &str,
-    note: Option<&str>,
+    note: &str,
 ) -> ModulePlaceOrder {
     ModulePlaceOrder {
         direction,
         amount: Some(amount),
         qty: None,
         enter_price: price,
-        take_profit: None,
-        stop_loss: None,
-        note: note.map(|value| value.to_string()),
+        take_profit,
+        stop_loss,
+        note: Some(note.to_string()),
         mark: mark.to_string(),
         order_side: match direction {
             Direction::Long => ModuleOrderSide::Buy,
@@ -43,28 +60,6 @@ pub(crate) fn limit_order(
             _ => ModuleOrderSide::Buy,
         },
         reduce_only: false,
-    }
-}
-
-/// Clean LIMIT open ("create position with price"): a maker open resting at
-/// `enter`. TP/SL are applied separately after the position opens.
-pub(crate) fn limit_open(
-    direction: Direction,
-    amount: f64,
-    enter: f64,
-    take_profit: Option<f64>,
-    stop_loss: Option<f64>,
-    note: &str,
-) -> ModuleOpenPosition {
-    ModuleOpenPosition {
-        direction,
-        amount: Some(amount),
-        qty: None,
-        enter_price: Some(enter),
-        order_type: ModuleOrderType::Limit,
-        take_profit,
-        stop_loss,
-        note: note.to_string(),
     }
 }
 
@@ -125,5 +120,17 @@ pub(crate) fn update_position(
         enter_price,
         take_profit: None,
         stop_loss: None,
+    }
+}
+
+pub(crate) fn update_position_stop_loss(
+    direction: Direction,
+    stop_loss: f64,
+) -> ModuleUpdatePosition {
+    ModuleUpdatePosition {
+        direction,
+        enter_price: None,
+        take_profit: None,
+        stop_loss: Some(stop_loss),
     }
 }

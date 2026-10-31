@@ -20,6 +20,9 @@
 - Scope each implementation to one requested feature or one clearly defined
   solution. Do not bundle unrelated fixes, cleanup, or behavior changes into
   the same implementation.
+- Prefer the simplest solution that fixes the identified cause. Remove
+  unnecessary or conflicting behavior instead of layering new code around it.
+  Overly complex solutions, kludges, and makeshift fixes are unacceptable.
 - Prioritize clear structure, readable code, and well-defined ownership over
   adding or changing strategy behavior. Implement strategy behavior exactly as
   specified; do not infer, broaden, or silently alter requirements.

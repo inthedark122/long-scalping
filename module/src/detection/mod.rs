@@ -1,3 +1,4 @@
+pub mod candle_trend;
 pub mod cascade;
 pub mod decision;
 pub mod mrc;
