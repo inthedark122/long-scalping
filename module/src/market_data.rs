@@ -11,21 +11,28 @@ use ta::{Close, High, Low, Next};
 pub const TF_1M: i32 = 60;
 pub const TF_5M: i32 = 300;
 pub const MRC_PERIOD: usize = 200;
+pub const MRC_WARMUP_BARS: usize = MRC_PERIOD;
+pub const MARKET_REPLAY_BARS: usize = 8 * 60;
+pub const TF_1M_HISTORY_BARS: usize = MRC_WARMUP_BARS + MARKET_REPLAY_BARS;
+pub const TF_5M_HISTORY_BARS: usize = MRC_WARMUP_BARS;
 pub const VOLUME_PERIOD: usize = 50;
 pub const ATR_PERIOD: usize = 14;
-pub const KLINE_HISTORY_COUNT: u32 = MRC_PERIOD as u32;
+pub const TF_1M_HISTORY_COUNT: u32 = TF_1M_HISTORY_BARS as u32;
+pub const TF_5M_HISTORY_COUNT: u32 = TF_5M_HISTORY_BARS as u32;
 
-/// Request enough raw bars to warm the MRC calculation. The shorter volume
-/// EMA and rolling extrema are calculated from the same kline history.
+/// Keep the MRC warmup separate from the recent market window used at startup.
 pub fn kline_requirements() -> BTreeMap<i32, u32> {
-    BTreeMap::from([(TF_1M, KLINE_HISTORY_COUNT), (TF_5M, KLINE_HISTORY_COUNT)])
+    BTreeMap::from([(TF_1M, TF_1M_HISTORY_COUNT), (TF_5M, TF_5M_HISTORY_COUNT)])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MrcHistorySample {
     pub time_ms: u64,
-    pub close: f64,
-    pub lines: [f64; 9],
+    pub candle: Candle,
+    pub mrc: MrcBands,
+    pub context_mrc: Option<MrcBands>,
+    pub qty_buy: f64,
+    pub qty_sell: f64,
 }
 
 struct TaCandle {
@@ -188,11 +195,19 @@ impl MrcTimeframe {
                 .time
                 .saturating_add(i64::from(timeframe).saturating_mul(1_000))
                 .max(0) as u64,
-            close: row.close,
-            lines: bands.lines(),
+            candle: Candle {
+                open: row.open,
+                high: row.high,
+                low: row.low,
+                close: row.close,
+            },
+            mrc: bands,
+            context_mrc: None,
+            qty_buy: row.qty_buy,
+            qty_sell: row.qty_sell,
         });
 
-        while self.history.len() > KLINE_HISTORY_COUNT as usize {
+        while self.history.len() > history_count_for_timeframe(timeframe) as usize {
             self.history.pop_front();
             self.checkpoints.pop_front();
         }
@@ -242,21 +257,40 @@ impl MrcCalculation {
     fn one_minute_history(&self) -> Vec<MrcHistorySample> {
         self.one_minute.history.iter().copied().collect()
     }
+
+    fn five_minute_history(&self) -> Vec<MrcHistorySample> {
+        self.five_minute.history.iter().copied().collect()
+    }
+
+    fn history(&self, timeframe: i32) -> Vec<MrcHistorySample> {
+        match timeframe {
+            TF_1M => self.one_minute_history(),
+            TF_5M => self.five_minute_history(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn history_count_for_timeframe(timeframe: i32) -> u32 {
+    match timeframe {
+        TF_1M => TF_1M_HISTORY_COUNT,
+        TF_5M => TF_5M_HISTORY_COUNT,
+        _ => MRC_WARMUP_BARS as u32,
+    }
 }
 
 fn calculate_timeframe(
-    rows: Option<&VecDeque<ModuleKline>>,
+    samples: &[MrcHistorySample],
     timeframe: i32,
-    mrc_bands: MrcBands,
-) -> Result<TimeframeSnapshot, String> {
-    let rows = rows.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
-    if rows.is_empty() {
+) -> Result<Vec<TimeframeSnapshot>, String> {
+    if samples.is_empty() {
         return Err(format!("missing-kline-history tf={timeframe}"));
     }
-    if rows.len() < KLINE_HISTORY_COUNT as usize {
+    let required_bars = history_count_for_timeframe(timeframe) as usize;
+    if samples.len() < required_bars {
         return Err(format!(
-            "insufficient-kline-history tf={timeframe} rows={} required={KLINE_HISTORY_COUNT}",
-            rows.len()
+            "insufficient-kline-history tf={timeframe} rows={} required={required_bars}",
+            samples.len()
         ));
     }
 
@@ -275,22 +309,22 @@ fn calculate_timeframe(
     let mut max_buy_sell_gain = Maximum::new(VOLUME_PERIOD)
         .map_err(|error| format!("buy-sell-max-init tf={timeframe} error={error}"))?;
 
-    let mut latest = None;
-    for row in rows {
+    let mut snapshots = Vec::with_capacity(samples.len());
+    for sample in samples {
         let ta_candle = TaCandle {
-            high: row.high,
-            low: row.low,
-            close: row.close,
+            high: sample.candle.high,
+            low: sample.candle.low,
+            close: sample.candle.close,
         };
         let atr = atr.next(&ta_candle);
-        let volume = row.qty_buy + row.qty_sell;
+        let volume = sample.qty_buy + sample.qty_sell;
         let average_volume = volume_ema.next(volume);
         let gain = if average_volume == 0.0 {
             0.0
         } else {
             (volume - average_volume) / average_volume
         };
-        let buy_sell_delta = row.qty_buy - row.qty_sell;
+        let buy_sell_delta = sample.qty_buy - sample.qty_sell;
         let buy_sell_atr = buy_sell_atr.next(buy_sell_delta);
         let buy_sell_gain = if buy_sell_atr > 0.0 {
             buy_sell_delta / buy_sell_atr
@@ -304,17 +338,11 @@ fn calculate_timeframe(
         // current strategy decisions use only BuySellGain.
         let _ = min_buy_sell_gain.next(buy_sell_gain);
         let _ = max_buy_sell_gain.next(buy_sell_gain);
-        let candle = Candle {
-            open: row.open,
-            high: row.high,
-            low: row.low,
-            close: row.close,
-        };
-        latest = Some(TimeframeSnapshot {
-            candle,
-            mrc: mrc_bands,
+        snapshots.push(TimeframeSnapshot {
+            candle: sample.candle,
+            mrc: sample.mrc,
             atr,
-            mrc_signal: mrc::analyze(&mrc_bands, row.close),
+            mrc_signal: mrc::analyze(&sample.mrc, sample.candle.close),
             volume_gain: gain,
             volume_gain_min,
             volume_gain_max,
@@ -324,21 +352,49 @@ fn calculate_timeframe(
             ntps: 0,
         });
     }
-    latest.ok_or_else(|| format!("missing-kline-history tf={timeframe}"))
+    Ok(snapshots)
+}
+
+pub fn build_timeframe_snapshot_history(
+    mrc_calculation: &MrcCalculation,
+    timeframe: i32,
+) -> Result<Vec<TimeframeSnapshot>, String> {
+    calculate_timeframe(&mrc_calculation.history(timeframe), timeframe)
 }
 
 pub fn build_indicator_snapshot(
     history: &KlineHistory,
     mrc_calculation: &MrcCalculation,
 ) -> Result<IndicatorSnapshot, String> {
-    let tf1m_bands = mrc_calculation
-        .latest_bands(TF_1M)
+    for timeframe in [TF_1M, TF_5M] {
+        let rows = history
+            .get(timeframe)
+            .ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
+        let calculated = mrc_calculation.history(timeframe);
+        let raw_last_time = rows
+            .back()
+            .map(|row| {
+                row.time
+                    .saturating_add(i64::from(timeframe).saturating_mul(1_000))
+                    .max(0) as u64
+            })
+            .ok_or_else(|| format!("missing-kline-history tf={timeframe}"))?;
+        let calculated_last_time = calculated.last().map(|sample| sample.time_ms);
+        if calculated_last_time != Some(raw_last_time) {
+            return Err(format!(
+                "kline-mrc-history-mismatch tf={timeframe} raw_last={raw_last_time} calculated_last={:?}",
+                calculated_last_time
+            ));
+        }
+    }
+    let tf1m = build_timeframe_snapshot_history(mrc_calculation, TF_1M)?
+        .last()
+        .copied()
         .ok_or_else(|| "missing-mrc-calculation tf=60".to_string())?;
-    let tf5m_bands = mrc_calculation
-        .latest_bands(TF_5M)
+    let tf5m = build_timeframe_snapshot_history(mrc_calculation, TF_5M)?
+        .last()
+        .copied()
         .ok_or_else(|| "missing-mrc-calculation tf=300".to_string())?;
-    let tf1m = calculate_timeframe(history.get(TF_1M), TF_1M, tf1m_bands)?;
-    let tf5m = calculate_timeframe(history.get(TF_5M), TF_5M, tf5m_bands)?;
     Ok(IndicatorSnapshot {
         tf1m,
         tf5m,
@@ -349,9 +405,25 @@ pub fn build_indicator_snapshot(
 pub fn build_mrc_history(
     mrc_calculation: &MrcCalculation,
 ) -> Result<Vec<MrcHistorySample>, String> {
-    let history = mrc_calculation.one_minute_history();
+    let mut history = mrc_calculation.one_minute_history();
     if history.is_empty() {
         return Err("missing-mrc-calculation tf=60".to_string());
+    }
+    let five_minute_history = mrc_calculation.five_minute_history();
+    let mut slow_index = 0;
+    for sample in &mut history {
+        while five_minute_history
+            .get(slow_index + 1)
+            .is_some_and(|slow| slow.time_ms <= sample.time_ms)
+        {
+            slow_index += 1;
+        }
+        if let Some(slow) = five_minute_history
+            .get(slow_index)
+            .filter(|slow| slow.time_ms <= sample.time_ms)
+        {
+            sample.context_mrc = Some(slow.mrc);
+        }
     }
     Ok(history)
 }
@@ -361,9 +433,9 @@ pub fn render_kline_history_inventory(history: &KlineHistory) -> String {
     format!(
         "klines=60:{}/{} 300:{}/{}",
         count(TF_1M),
-        KLINE_HISTORY_COUNT,
+        TF_1M_HISTORY_COUNT,
         count(TF_5M),
-        KLINE_HISTORY_COUNT
+        TF_5M_HISTORY_COUNT
     )
 }
 

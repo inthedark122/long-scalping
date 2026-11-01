@@ -48,6 +48,7 @@ pub enum EntryDecision {
 #[derive(Debug, Clone, Default)]
 pub struct StrategyRuntime {
     last_sideways_movement_start_ms: Option<u64>,
+    stable_sideways_range: crate::detection::stable_range::StableRangeState,
 }
 
 impl StrategyRuntime {
@@ -65,8 +66,37 @@ impl StrategyRuntime {
         self.last_sideways_movement_start_ms = movement_start_ms.filter(|value| *value > 0);
     }
 
+    pub fn update_stable_sideways_range(
+        &mut self,
+        cascade: &crate::detection::cascade::CascadeState,
+        candidate: Option<movement_window::MovementWindow>,
+        price: f64,
+    ) -> Option<movement_window::MovementWindow> {
+        self.stable_sideways_range.update(cascade, candidate, price)
+    }
+
+    pub fn stable_sideways_range_bounds(&self) -> Option<(f64, f64)> {
+        self.stable_sideways_range.bounds()
+    }
+
+    pub fn stable_sideways_range_state(&self) -> crate::detection::stable_range::StableRangeState {
+        self.stable_sideways_range
+    }
+
+    pub fn restore_stable_sideways_range(
+        &mut self,
+        stable_range: crate::detection::stable_range::StableRangeState,
+    ) {
+        self.stable_sideways_range = stable_range;
+    }
+
+    pub fn reset_stable_sideways_range(&mut self) {
+        self.stable_sideways_range.reset();
+    }
+
     pub fn reset(&mut self) {
         self.last_sideways_movement_start_ms = None;
+        self.stable_sideways_range.reset();
     }
 }
 
@@ -89,12 +119,35 @@ pub fn evaluate_entry(
     market_price: f64,
     tick_size: f64,
     movement_window: Option<movement_window::MovementWindow>,
+    stable_sideways_range: Option<movement_window::MovementWindow>,
     last_sideways_movement_start_ms: Option<u64>,
     cascade_movement_start_ms: u64,
     cascade_direction: i8,
     sideways_order_pending: bool,
+    sideways_only: bool,
+    sideways_nonstop: bool,
 ) -> EntryDecision {
-    if detected_pattern == Some(PatternKind::MeanRange) {
+    if sideways_nonstop {
+        let Some(window) = stable_sideways_range else {
+            return EntryDecision::Wait {
+                strategy: StrategyKind::Sideways,
+                reason: "stable-range-not-confirmed",
+            };
+        };
+        return sideways::evaluate(
+            window,
+            market_price,
+            tick_size,
+            cascade_direction,
+            cascade_movement_start_ms,
+            last_sideways_movement_start_ms,
+            sideways_order_pending,
+            pattern_forecast,
+            true,
+        );
+    }
+
+    if sideways_only || detected_pattern == Some(PatternKind::MeanRange) {
         let Some(window) = movement_window else {
             return EntryDecision::Wait {
                 strategy: StrategyKind::Sideways,
@@ -116,6 +169,7 @@ pub fn evaluate_entry(
             last_sideways_movement_start_ms,
             sideways_order_pending,
             pattern_forecast,
+            sideways_nonstop,
         );
     }
 

@@ -42,18 +42,105 @@ fn refresh_last_snapshot(state: &mut EngineState, snapshot: &crate::model::Indic
     state.last_snapshot = Some(snapshot.clone());
 }
 
-fn seed_mrc_from_kline_history(state: &mut EngineState, now_ms: u64) {
+fn reset_market_analysis_state(state: &mut EngineState) {
+    state.ticks = 0;
+    state.mrc_crossing_model = Default::default();
+    state.mrc_crossing_model.decision_components =
+        decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
+    state.vlines = [crate::state::VLineState::default(); 9];
+    state.mrc_crossing = crate::state::MrcCrossingState::default();
+    state.mrc_touch.reset();
+    state.mrc_touch_learning.reset();
+    state.mrc_direction_prediction = Default::default();
+    state.mrc_risk = Default::default();
+    state.cascade = crate::detection::cascade::CascadeState::default();
+    state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
+    state.volume_gain = Default::default();
+    state.strategy_runtime.reset_stable_sideways_range();
+    state.staircase_progress = crate::state::StaircaseProgress::default();
+    state.candle_uptrend_seen = false;
+    state.candle_downtrend_seen = false;
+    state.candle_trend_direction = 0;
+    state.candle_trend_last_closed_ms = 0;
+    if state.position.side == crate::model::PositionState::Flat {
+        state.active_mrc_analysis = None;
+        state.active_mrc_context = Default::default();
+    }
+    state.market_mrc_analysis = None;
+    state.market_mrc_context = Default::default();
+    state.selected_cascade_trade_state =
+        crate::detection::cascade::CascadeTradeState::NotConfigured;
+    state.last_active_tp_recalc_bar = None;
+    state.last_error = None;
+    state.last_exit_event.clear();
+    state.pending_exit_context = None;
+    state.tp_reprice_history.reset();
+}
+
+fn seed_mrc_from_kline_history(state: &mut EngineState, now_ms: u64) -> usize {
     let Ok(history) = market_data::build_mrc_history(&state.mrc_calculation) else {
-        return;
+        return 0;
     };
-    mrc_crossing::seed_from_history_with_touch(
+    let warmup_bars = market_data::MRC_WARMUP_BARS.min(history.len());
+    let replay_start = history
+        .len()
+        .saturating_sub(market_data::MARKET_REPLAY_BARS)
+        .max(warmup_bars);
+    let replay_history = &history[replay_start..];
+    if replay_history.is_empty() {
+        state.mrc_crossing_model.seeded_from_history = true;
+        return 0;
+    }
+
+    mrc_crossing::seed_from_history_with_touch_learning(
         &mut state.mrc_crossing_model,
         &mut state.vlines,
         &mut state.mrc_crossing,
-        &history,
+        replay_history,
         now_ms,
         &mut state.mrc_touch,
+        &mut state.mrc_touch_learning,
     );
+
+    if let Ok(snapshots) =
+        market_data::build_timeframe_snapshot_history(&state.mrc_calculation, TF_1M)
+    {
+        let snapshot_start = snapshots.len().saturating_sub(replay_history.len());
+        let replay_snapshots = &snapshots[snapshot_start..];
+        state.cascade = crate::detection::cascade::CascadeState::default();
+        state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
+        state.volume_gain = Default::default();
+        state.strategy_runtime.reset_stable_sideways_range();
+        state.bar_1m = state.bar_1m.max(replay_history.len() as u64);
+        let first_bar = state.bar_1m.saturating_sub(replay_history.len() as u64);
+        for (index, (sample, snapshot)) in replay_history.iter().zip(replay_snapshots).enumerate() {
+            state.cascade_signal = cascade::update_at(&mut state.cascade, snapshot, sample.time_ms);
+            state.volume_gain.observe(
+                first_bar.saturating_add(index as u64 + 1),
+                snapshot.volume_gain,
+                snapshot.buy_sell_gain,
+                snapshot.mrc_signal.zone,
+                0,
+                snapshot.candle.high,
+                snapshot.candle.low,
+                snapshot.candle.close,
+            );
+            if state.cfg.sideways_nonstop {
+                let candidate = crate::detection::movement_window::detect(
+                    &state.cascade,
+                    snapshot.candle.close,
+                )
+                .filter(crate::strategies::sideways::is_range);
+                state.strategy_runtime.update_stable_sideways_range(
+                    &state.cascade,
+                    candidate,
+                    snapshot.candle.close,
+                );
+            }
+        }
+    }
+    state.ticks = state.ticks.max(replay_history.len() as u64);
+    replay_history.len()
 }
 
 pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
@@ -70,15 +157,36 @@ pub fn run(input: &ModuleInput, state: &mut EngineState) -> ModuleOutput {
             },
             debug: format!(
                 "requirements klines=[60:{},300:{}] indicators=unsupported",
-                market_data::KLINE_HISTORY_COUNT,
-                market_data::KLINE_HISTORY_COUNT
+                market_data::TF_1M_HISTORY_COUNT,
+                market_data::TF_5M_HISTORY_COUNT
             ),
             ..Default::default()
         },
         ModuleEvent::Init => {
+            reset_market_analysis_state(state);
+            state.active_mrc_analysis = None;
+            state.active_mrc_context = Default::default();
             state.last_snapshot = None;
             state.klines.init(&input.klines);
-            refresh_klines(input, state, &[TF_1M, TF_5M], true, true)
+            let mut output = refresh_klines(input, state, &[TF_1M, TF_5M], true, true);
+            if state.last_error.is_none() {
+                let latest_kline_time_ms = state
+                    .klines
+                    .get_prev(TF_1M, 0)
+                    .map(|kline| kline.time.saturating_add(i64::from(TF_1M) * 1_000).max(0) as u64)
+                    .filter(|time| *time > 0)
+                    .unwrap_or_default();
+                let now_ms = state.last_market_decision_time_ms.max(latest_kline_time_ms);
+                state.last_market_decision_time_ms = now_ms;
+                let replayed = seed_mrc_from_kline_history(state, now_ms);
+                output.debug = format!(
+                    "{} market-replay={replayed}/{} warmup={}",
+                    output.debug,
+                    market_data::MARKET_REPLAY_BARS,
+                    market_data::MRC_WARMUP_BARS
+                );
+            }
+            output
         }
         ModuleEvent::KlineUpdate { timeframes } => {
             let previous_1m_time = state.klines.get_prev(TF_1M, 0).map(|kline| kline.time);
@@ -201,6 +309,20 @@ fn handle_signal(
                 EntryType::Market
             };
         }
+        if let Some(sideways_only) = values
+            .get("sideways_only")
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+        {
+            state.cfg.sideways_only = sideways_only >= 0.5;
+        }
+        if let Some(sideways_nonstop) = values
+            .get("sideways_nonstop")
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+        {
+            state.cfg.sideways_nonstop = sideways_nonstop >= 0.5;
+        }
         if let Some(required_samples) = values
             .get("required_samples")
             .and_then(|value| value.as_f64())
@@ -222,35 +344,8 @@ fn handle_signal(
             state.mrc_crossing_model.decision_components =
                 decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
         }
-        // Restart the market sequence, not the learned ledger. Pattern
-        // performance must survive a fresh start signal so the selector can
-        // keep improving instead of relearning from zero every session.
-        state.mrc_crossing_model.history.clear();
-        state.mrc_crossing_model.prediction_history.clear();
-        state.mrc_crossing_model.seeded_from_history = false;
-        state.mrc_crossing_model.last_line = None;
-        state.mrc_crossing_model.last_direction = 0;
-        state.mrc_crossing_model.last_event_ms = 0;
-        state.mrc_crossing_model.current_entry = None;
-        state.mrc_crossing_model.active_pattern = None;
-        state.mrc_crossing_model.active_pattern_score = 0.0;
-        state.mrc_crossing_model.active_pattern_since_ms = 0;
-        state.mrc_crossing_model.last_plan_key = None;
-        state.mrc_crossing_model.decision_state.reset();
-        state.vlines = [crate::state::VLineState::default(); 9];
-        state.mrc_crossing = crate::state::MrcCrossingState::default();
-        state.mrc_touch.reset();
-        state.cascade = crate::detection::cascade::CascadeState::default();
-        state.cascade_signal = crate::detection::cascade::CascadeSignal::default();
-        if state.position.side == crate::model::PositionState::Flat {
-            state.active_mrc_analysis = None;
-            state.active_mrc_context =
-                crate::detection::mrc_prediction::MrcPredictionContext::default();
-        }
-        state.market_mrc_analysis = None;
-        state.market_mrc_context =
-            crate::detection::mrc_prediction::MrcPredictionContext::default();
-        state.staircase_progress = crate::state::StaircaseProgress::default();
+        reset_market_analysis_state(state);
+        state.mrc_crossing_model.trade_direction_lock = direction_sign(*direction);
         state.exit_progress.reset();
         let now_ms = state.last_market_decision_time_ms;
         if now_ms > 0 {
@@ -259,8 +354,15 @@ fn handle_signal(
         state.cfg_loaded = true;
         ModuleOutput {
             debug: format!(
-                "start direction={:?} strategies=[trending,sideways] cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
+                "start direction={:?} strategy_mode={} strategies=[trending,sideways] cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
                 state.allowed_direction,
+                if state.cfg.sideways_nonstop {
+                    "sideways-stable-range-experiment"
+                } else if state.cfg.sideways_only {
+                    "sideways-only"
+                } else {
+                    "mixed"
+                },
                 state.cfg.cap_init,
                 state.cfg.trading_amount,
                 state.cfg.min_tp_percent(),
@@ -558,6 +660,8 @@ mod tests {
             auto_max_amount: 100.0,
             leverage: 10,
             indicators: BTreeMap::new(),
+            internal_indicators: BTreeMap::new(),
+            klines: BTreeMap::new(),
             positions: ModulePositions {
                 long: None,
                 short: None,
@@ -568,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn start_initializes_the_pattern_engine() {
+    fn start_initializes_runtime_configuration() {
         let mut state = EngineState::default();
         let mut values = std::collections::HashMap::new();
         values.insert("entry_type".to_string(), serde_json::json!(0.0));
@@ -583,7 +687,9 @@ mod tests {
             }),
             &mut state,
         );
-        assert!(output.debug.contains("strategy=pattern-engine"));
+        assert!(output
+            .debug
+            .contains("strategy_mode=mixed strategies=[trending,sideways]"));
         assert_eq!(state.cfg.entry_type, EntryType::Market);
         assert_eq!(state.cfg.required_samples(), 5);
         assert_eq!(state.cfg.min_sl_percent(), 0.75);
@@ -591,7 +697,6 @@ mod tests {
         assert!(output.debug.contains("required_samples=5"));
         assert!(output.debug.contains("min_sl_percent=0.75%"));
         assert!(output.debug.contains("risk_target_percent=1.25%"));
-        assert!(output.debug.contains("entry=market"));
     }
 }
 
@@ -837,6 +942,16 @@ fn process_realtime(
         .is_some_and(|candidate| candidate.forecast);
     crate::entry_policy::state::update(state, selected_analysis, prediction_context);
     let movement_window = crate::detection::movement_window::detect(&state.cascade, input.price);
+    let stable_sideways_range = if state.cfg.sideways_nonstop {
+        state.strategy_runtime.update_stable_sideways_range(
+            &state.cascade,
+            movement_window.filter(crate::strategies::sideways::is_range),
+            input.price,
+        )
+    } else {
+        state.strategy_runtime.reset_stable_sideways_range();
+        None
+    };
     let entry_decision = strategies::evaluate_entry(
         selected_analysis,
         pattern.current.map(|current| current.kind),
@@ -847,10 +962,13 @@ fn process_realtime(
         input.price,
         input.symbol_info.price_tick_size,
         movement_window,
+        stable_sideways_range,
         state.strategy_runtime.last_sideways_movement_start_ms(),
         state.cascade.movement_start_ms,
         state.cascade_signal.dir,
         state.pending_strategy == Some(StrategyKind::Sideways) && state.pending_entry_bar.is_some(),
+        state.cfg.sideways_only,
+        state.cfg.sideways_nonstop,
     );
     let routed_strategy = entry_decision.strategy();
     let mut output = ModuleOutput::default();
@@ -884,7 +1002,24 @@ fn process_realtime(
             None
         };
         if let Some(plan) = sideways_handoff {
-            state.position_context.strategy = StrategyKind::Sideways;
+            let original_stop = state.position.stop_loss;
+            if let exit::Decision::Update(update) = exit::evaluate(
+                state.position.side,
+                state.position.entry_price,
+                input.price,
+                state.position.stop_loss,
+                snapshot.tf1m.mrc,
+            ) {
+                exit::execute(state, update);
+            }
+            let (stop_loss, sideways_stop_applied) = exit::protect_handoff_stop_loss(
+                state.position.side,
+                state.position.entry_price,
+                state.position.stop_loss,
+                plan.stop_loss,
+                snapshot.tf1m.mrc,
+            )
+            .unwrap_or((state.position.stop_loss, false));
             state.position_context.last_action = crate::state::PositionDecisionAction::UpdateExit;
             state.position_context.last_plan_source =
                 crate::state::PositionExitPlanSource::DynamicSameSide;
@@ -892,15 +1027,17 @@ fn process_realtime(
             state.position_context.remember_plan(
                 crate::state::PositionPlanSnapshot {
                     take_profit: plan.take_profit,
-                    stop_loss: plan.stop_loss,
+                    stop_loss,
                     tp_reliable: true,
                 },
                 crate::state::PositionExitPlanSource::DynamicSameSide,
             );
             state.position.take_profit = plan.take_profit;
-            state.position.stop_loss = plan.stop_loss;
+            state.position.stop_loss = stop_loss;
             state.position.exit_tp_reliable = true;
-            state.position.stop_loss_reason = "sideways-range-boundary".to_string();
+            if sideways_stop_applied {
+                state.position.stop_loss_reason = "sideways-range-boundary".to_string();
+            }
             output.update_positions.push(ModuleUpdatePosition {
                 direction: if state.position.side == crate::model::PositionState::Long {
                     Direction::Long
@@ -909,7 +1046,7 @@ fn process_realtime(
                 },
                 enter_price: None,
                 take_profit: Some(plan.take_profit),
-                stop_loss: Some(plan.stop_loss),
+                stop_loss: (stop_loss != original_stop).then_some(stop_loss),
             });
             exit_status = "sideways-range-handoff".to_string();
         } else {

@@ -54,6 +54,7 @@ fn prediction(
         pattern_direction: 1,
         pattern_steps: 3,
         pattern_elapsed_ms: 10 * 60_000,
+        pattern_sequence: vec![4, 5, 6, 5, 6],
         stair_sequence: vec![4, 5, 6, 5, 6],
         stair_price_move_pct: 5.0,
         stair_favorable_move_pct: 6.0,

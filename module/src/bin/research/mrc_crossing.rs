@@ -220,6 +220,8 @@ pub(crate) struct CrossingEvent {
     pub(crate) barrier_state: String,
     pub(crate) history_scope: &'static str,
     pub(crate) pattern_kind: Option<&'static str>,
+    pub(crate) pattern_direction: i8,
+    pub(crate) pattern_sequence: Vec<usize>,
     /// The stateful primary staircase direction. This is separate from the
     /// local pattern on the crossing because an overlapping pullback may
     /// produce a diagnostic staircase in the opposite direction.
@@ -408,6 +410,12 @@ fn crossing_event_from_analysis(
         barrier_state: event.barrier_state.as_str().to_string(),
         history_scope: history_scope(event.context_samples, event.target_line.is_some()),
         pattern_kind: event.pattern_kind.map(|kind| kind.as_str()),
+        pattern_direction: event.pattern_direction,
+        pattern_sequence: event
+            .pattern_sequence
+            .iter()
+            .map(|line| *line as usize)
+            .collect(),
         active_stair_pattern: None,
         active_stair_direction: 0,
         active_stair_expected_line: None,

@@ -1,6 +1,6 @@
 [package]
 name = "long-scalping"
-version = "1.0.130"
+version = "1.0.131"
 edition = "2021"
 
 [features]
@@ -14,6 +14,11 @@ path = "src/main.rs"
 [[bin]]
 name = "mrc_crossing_research"
 path = "src/bin/mrc_crossing_research.rs"
+required-features = ["mrc-research", "native-tools"]
+
+[[bin]]
+name = "mrc_window_research"
+path = "src/bin/mrc_window_research.rs"
 required-features = ["mrc-research", "native-tools"]
 
 [dependencies]

@@ -307,7 +307,10 @@ fn stair_entry_stays_on_the_crossed_line_and_stop_stays_behind_entry() {
     };
     let EntryReason::MrcCrossing {
         price, stop_price, ..
-    } = entry;
+    } = entry
+    else {
+        panic!("expected an MRC crossing entry");
+    };
 
     assert_eq!(price, 104.0);
     assert_eq!(stop_price, 100.0);
@@ -403,6 +406,11 @@ fn stair_prediction(kind: MrcPatternKind, direction: i8, target_line: u8) -> Mrc
         pattern_direction: direction,
         pattern_steps: 3,
         pattern_elapsed_ms: 7 * 60_000,
+        pattern_sequence: if direction > 0 {
+            vec![5, 4, 5, 6, 5]
+        } else {
+            vec![5, 4, 5, 6, 5, 4, 3]
+        },
         stair_sequence: if direction > 0 {
             vec![5, 4, 5, 6, 5]
         } else {

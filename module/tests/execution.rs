@@ -52,6 +52,8 @@ fn input(price: f64, positions: ModulePositions) -> ModuleInput {
         auto_max_amount: 100.0,
         leverage: 10,
         indicators: BTreeMap::new(),
+        internal_indicators: BTreeMap::new(),
+        klines: BTreeMap::new(),
         positions,
         market_decision: Some(market_decision(1_000, price)),
         state: None,
@@ -366,6 +368,8 @@ fn new_position_uses_mrc_entry_reason_exits() {
         direction: Direction::Long,
         entry_price: 100.0,
         qty: 0.1,
+        take_profit: None,
+        stop_loss: None,
     };
 
     let output = run(&new_position, &mut state);
@@ -410,6 +414,8 @@ fn staircase_position_uses_primary_and_far_structural_take_profits() {
         direction: Direction::Long,
         entry_price: 100.0,
         qty: 0.1,
+        take_profit: None,
+        stop_loss: None,
     };
 
     let output = run(&new_position, &mut state);
@@ -473,6 +479,8 @@ fn cascade_values_do_not_switch_or_reprice_the_tp_structure() {
         direction: Direction::Long,
         entry_price: 100.0,
         qty: 1.0,
+        take_profit: None,
+        stop_loss: None,
     };
 
     let initial = run(&new_position, &mut state);
@@ -571,6 +579,8 @@ fn both_direction_filled_position_does_not_create_a_permanent_lock() {
         direction: Direction::Long,
         entry_price: 100.0,
         qty: 0.1,
+        take_profit: None,
+        stop_loss: None,
     };
 
     run(&new_position, &mut state);

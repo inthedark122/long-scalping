@@ -21,11 +21,15 @@ pub fn evaluate(
     last_traded_movement_start_ms: Option<u64>,
     sideways_order_pending: bool,
     pattern_forecast: Option<Forecast>,
+    stable_range_experiment: bool,
 ) -> EntryDecision {
     if movement_start_ms == 0 {
         return wait("cascade-movement-start-unavailable");
     }
-    if last_traded_movement_start_ms == Some(movement_start_ms) && !sideways_order_pending {
+    if !stable_range_experiment
+        && last_traded_movement_start_ms == Some(movement_start_ms)
+        && !sideways_order_pending
+    {
         return wait("cascade-movement-already-traded");
     }
 
@@ -66,11 +70,27 @@ pub fn evaluate(
     }
 
     let direction_name = if direction > 0 { "long" } else { "short" };
+    let (strategy_name, entry_reason, range_source) = if stable_range_experiment {
+        (
+            "sideways-stable-range-experiment",
+            "stable-range-boundary-repeat",
+            "stable-episode",
+        )
+    } else {
+        (
+            "sideways",
+            "movement-window-boundary",
+            "rolling-movement-window",
+        )
+    };
     let note = format!(
-        "strategy=sideways entry=movement-window-boundary direction={} movement_start_ms={} entry={:.8} window_low={:.8} window_high={:.8} target_source=opposite-window-boundary target={:.8} stop_source=one-average-movement-outside-entry-boundary stop={:.8}",
+        "strategy={} entry={} direction={} movement_start_ms={} entry={:.8} range_source={} window_low={:.8} window_high={:.8} target_source=opposite-window-boundary target={:.8} stop_source=one-average-movement-outside-entry-boundary stop={:.8}",
+        strategy_name,
+        entry_reason,
         direction_name,
         movement_start_ms,
         entry_price,
+        range_source,
         window.low,
         window.high,
         take_profit,
@@ -86,7 +106,7 @@ pub fn evaluate(
         entry_price,
         take_profit: Some(take_profit),
         stop_loss,
-        reason: "movement-window-boundary",
+        reason: entry_reason,
         note,
         entry_type: Some(EntryType::Limit),
     })

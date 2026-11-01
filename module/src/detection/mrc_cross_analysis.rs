@@ -60,6 +60,8 @@ pub struct MrcCrossAnalysis {
     pub predicted_direction: i8,
     pub trade_direction: i8,
     pub pattern_kind: Option<MrcPatternKind>,
+    pub pattern_direction: i8,
+    pub pattern_sequence: Vec<u8>,
     pub transition: Option<MrcTransitionKind>,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
@@ -439,6 +441,8 @@ pub fn build_with_context(
         predicted_direction: 0,
         trade_direction: 0,
         pattern_kind: None,
+        pattern_direction: 0,
+        pattern_sequence: Vec::new(),
         transition: None,
         pattern_steps: 0,
         pattern_elapsed_ms: 0,
@@ -635,6 +639,8 @@ pub fn build_with_context(
     analysis.predicted_direction = predicted_direction;
     analysis.trade_direction = trade_direction;
     analysis.pattern_kind = Some(prediction.pattern_kind);
+    analysis.pattern_direction = prediction.pattern_direction;
+    analysis.pattern_sequence = prediction.pattern_sequence.clone();
     analysis.transition = prediction.transition;
     if prediction.transition == Some(MrcTransitionKind::Reversal) {
         if prediction.failed_break_line.is_some() {

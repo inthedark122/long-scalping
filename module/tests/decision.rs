@@ -280,6 +280,8 @@ fn action_input(name: &str, values: HashMap<String, serde_json::Value>) -> Modul
         auto_max_amount: 100.0,
         leverage: 5,
         indicators: BTreeMap::new(),
+        internal_indicators: BTreeMap::new(),
+        klines: BTreeMap::new(),
         positions: ModulePositions {
             long: None,
             short: None,

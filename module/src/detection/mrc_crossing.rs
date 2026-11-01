@@ -9,7 +9,7 @@ use crate::detection::mrc_pattern_classification::{
 use crate::detection::mrc_prediction::{self, MrcLinePlan};
 use crate::detection::mrc_stair_entry;
 use crate::detection::mrc_touch::{MrcTouchSignal, MrcTouchState};
-use crate::detection::mrc_touch_learning::MrcTouchLearningSignal;
+use crate::detection::mrc_touch_learning::{MrcTouchLearningSignal, MrcTouchLearningState};
 use crate::detection::vlines::MrcCrossEvent;
 use crate::market_data::MrcHistorySample;
 use crate::model::{
@@ -158,6 +158,7 @@ pub struct MrcPrediction {
     pub pattern_direction: i8,
     pub pattern_steps: u32,
     pub pattern_elapsed_ms: u64,
+    pub pattern_sequence: Vec<u8>,
     pub stair_sequence: Vec<u8>,
     pub stair_price_move_pct: f64,
     pub stair_favorable_move_pct: f64,
@@ -822,6 +823,7 @@ fn predict_for_pattern(
         pattern_direction,
         pattern_steps: pattern.steps,
         pattern_elapsed_ms: pattern.elapsed_ms,
+        pattern_sequence: pattern.line_sequence.clone(),
         stair_sequence: pattern.sequence.clone(),
         stair_price_move_pct: pattern.price_move_pct,
         stair_favorable_move_pct: pattern.favorable_move_pct,
@@ -1751,7 +1753,7 @@ pub fn seed_from_history(
     history: &[MrcHistorySample],
     now_ms: u64,
 ) {
-    seed_from_history_impl(state, vlines, crossing, history, now_ms, None);
+    seed_from_history_impl(state, vlines, crossing, history, now_ms, None, None);
 }
 
 /// Seed the discrete crossing model and the incremental touch analyzer from
@@ -1766,7 +1768,29 @@ pub fn seed_from_history_with_touch(
     now_ms: u64,
     touch: &mut MrcTouchState,
 ) {
-    seed_from_history_impl(state, vlines, crossing, history, now_ms, Some(touch));
+    seed_from_history_impl(state, vlines, crossing, history, now_ms, Some(touch), None);
+}
+
+/// Replay historical MRC crossings and touches with their contemporaneous
+/// five-minute context so startup can rebuild the market-derived route state.
+pub fn seed_from_history_with_touch_learning(
+    state: &mut MrcCrossingModel,
+    vlines: &mut [crate::state::VLineState; 9],
+    crossing: &mut MrcCrossingState,
+    history: &[MrcHistorySample],
+    now_ms: u64,
+    touch: &mut MrcTouchState,
+    touch_learning: &mut MrcTouchLearningState,
+) {
+    seed_from_history_impl(
+        state,
+        vlines,
+        crossing,
+        history,
+        now_ms,
+        Some(touch),
+        Some(touch_learning),
+    );
 }
 
 fn seed_from_history_impl(
@@ -1776,6 +1800,7 @@ fn seed_from_history_impl(
     history: &[MrcHistorySample],
     now_ms: u64,
     mut touch: Option<&mut MrcTouchState>,
+    mut touch_learning: Option<&mut MrcTouchLearningState>,
 ) {
     const HISTORY_LIMIT: usize = 10_080;
     if history.is_empty() {
@@ -1794,13 +1819,30 @@ fn seed_from_history_impl(
         let events = crate::detection::vlines::update_with_events(
             vlines,
             crossing,
-            sample.lines,
-            sample.close,
+            sample.mrc.lines(),
+            sample.candle.close,
             (index + 1) as u64,
             now,
         );
         if let Some(touch) = touch.as_deref_mut() {
-            touch.update(sample.lines, sample.close, now);
+            touch.update(sample.mrc.lines(), sample.candle.close, now);
+        }
+        if let Some(touch_learning) = touch_learning.as_deref_mut() {
+            let touched_lines = events
+                .iter()
+                .map(|event| event.line_idx)
+                .collect::<Vec<_>>();
+            let slow_mrc = sample.context_mrc.unwrap_or_default();
+            let slow_slope =
+                crate::detection::mrc::analyze(&slow_mrc, sample.candle.close).slope_sign;
+            touch_learning.update_with_events(
+                sample.mrc.lines(),
+                sample.candle.close,
+                now,
+                slow_mrc.lines(),
+                slow_slope,
+                &touched_lines,
+            );
         }
         for event in events {
             append_history_event(state, &event);

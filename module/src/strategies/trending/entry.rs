@@ -183,7 +183,7 @@ fn build_setup(
 ) -> Option<Setup> {
     let target = target_line(analysis, lines, entry_price, direction);
     let (entry_line, _) = nearest_line_to_price(lines, entry_price)?;
-    let (stop_line, stop_loss) = next_adverse_line(lines, entry_line, entry_price, direction)?;
+    let (stop_line, stop_loss) = outer_band_stop(lines, entry_price, direction)?;
     Some(Setup {
         direction: if direction > 0 {
             Direction::Long
@@ -228,16 +228,11 @@ fn nearest_line_to_price(lines: [f64; 9], price: f64) -> Option<(u8, f64)> {
         .map(|(line, price)| (line as u8, price))
 }
 
-fn next_adverse_line(
-    lines: [f64; 9],
-    entry_line: u8,
-    entry_price: f64,
-    direction: i8,
-) -> Option<(u8, f64)> {
+fn outer_band_stop(lines: [f64; 9], entry_price: f64, direction: i8) -> Option<(u8, f64)> {
     let stop_line = if direction > 0 {
-        entry_line.checked_sub(1)?
+        0
     } else {
-        entry_line.checked_add(1)?
+        (lines.len() - 1) as u8
     };
     let stop_price = line_price(lines, stop_line)?;
     let is_adverse = if direction > 0 {

@@ -58,6 +58,17 @@ pub fn render(
             )
         })
         .unwrap_or_else(|| "na".to_string());
+    let stable_sideways_range = state
+        .strategy_runtime
+        .stable_sideways_range_bounds()
+        .map(|(low, high)| {
+            format!(
+                "low={} high={}",
+                fmt_price_tick(low, tick_size),
+                fmt_price_tick(high, tick_size)
+            )
+        })
+        .unwrap_or_else(|| "inactive".to_string());
     let active_strategy = if state.position.side == PositionState::Flat {
         "none"
     } else {
@@ -66,7 +77,17 @@ pub fn render(
     let mut parts = vec![
         format!("t={}", state.ticks),
         format!(
-            "strategies=[trending,sideways] routed={} active={}",
+            "strategy-mode={}",
+            if state.cfg.sideways_nonstop {
+                "sideways-stable-range-experiment"
+            } else if state.cfg.sideways_only {
+                "sideways-only"
+            } else {
+                "mixed"
+            }
+        ),
+        format!(
+            "strategies=[trending,sideways,sideways-stable-range-experiment] routed={} active={}",
             routed_strategy.as_str(),
             active_strategy
         ),
@@ -155,6 +176,7 @@ pub fn render(
                 .unwrap_or_else(|| "na".to_string()),
         ),
         format!("movement-window=[{movement_window}]"),
+        format!("stable-sideways-range=[{stable_sideways_range}]"),
         format!(
             "market-activity=ntp_5s:{} tdt:{}",
             ntp_5s,

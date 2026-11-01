@@ -448,6 +448,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "input_source": INPUT_SOURCE_DESCRIPTION,
                 "cache": {"1m": minute_cache.to_string()},
                 "history_loaded": {"1m": minute_count},
+                "candles_1m": &minute,
                 "simulation_counts": {
                     "entries": report.trade_summary.trades + if report.open_trade.is_some() { 1 } else { 0 },
                     "completed_positions": report.trade_summary.trades,

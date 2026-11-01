@@ -162,6 +162,9 @@ pub struct MrcPatternSignal {
     /// The line path supporting a staircase decision. Other pattern kinds
     /// leave this empty.
     pub sequence: Vec<u8>,
+    /// The class-specific line path used to compare this observation with
+    /// another observation of the same pattern kind.
+    pub line_sequence: Vec<u8>,
     /// Direction-adjusted net price movement from the beginning of the
     /// staircase to the current event, in percent.
     pub price_move_pct: f64,
@@ -338,6 +341,7 @@ fn fast_break_return(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         steps: 1,
         elapsed_ms,
         sequence: Vec::new(),
+        line_sequence: vec![source.line, crossed.line, returned.line],
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,
@@ -561,6 +565,7 @@ fn staircase_for_direction(
         failed_break_direction: 0,
         steps: trend_indices.len() as u32,
         elapsed_ms: current.now_ms.saturating_sub(history[start_index].now_ms),
+        line_sequence: sequence.clone(),
         sequence,
         price_move_pct,
         favorable_move_pct,
@@ -650,6 +655,7 @@ fn staircase_transitions(history: &[MrcHistoryEvent]) -> Vec<MrcPatternSignal> {
                     .unwrap_or_default(),
                 steps: stair.steps,
                 elapsed_ms: current.now_ms.saturating_sub(previous.now_ms),
+                line_sequence: stair.line_sequence.clone(),
                 sequence: stair.sequence,
                 price_move_pct: stair.price_move_pct,
                 favorable_move_pct: stair.favorable_move_pct,
@@ -736,6 +742,7 @@ fn cycle(history: &[MrcHistoryEvent]) -> Option<MrcPatternSignal> {
         steps: (visits.len() - 1) as u32,
         elapsed_ms: last.now_ms.saturating_sub(first.now_ms),
         sequence: Vec::new(),
+        line_sequence: indices.iter().map(|index| history[*index].line).collect(),
         price_move_pct: 0.0,
         favorable_move_pct: 0.0,
         adverse_move_pct: 0.0,

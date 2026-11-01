@@ -3,7 +3,7 @@ use crate::detection::decision::{DecisionComponents, DecisionState};
 use crate::detection::mrc_cross_analysis::MrcCrossAnalysis;
 use crate::detection::mrc_direction_prediction::MrcDirectionPrediction;
 use crate::detection::mrc_pattern_classification::{
-    MrcPatternKind, StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
+    StaircaseLifecycle, StaircaseTransition, MRC_PATTERN_COUNT,
 };
 use crate::detection::mrc_prediction::MrcPredictionContext;
 use crate::detection::mrc_touch::MrcTouchState;
@@ -836,14 +836,11 @@ impl Default for EngineState {
     }
 }
 
+/// Execution continuity only; market-derived state is rebuilt from klines on Init.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedState {
     #[serde(default)]
-    ticks: u64,
-    #[serde(default)]
     bar_1m: u64,
-    #[serde(default)]
-    last_market_decision_time_ms: u64,
     #[serde(default)]
     cfg: Config,
     #[serde(default)]
@@ -869,34 +866,12 @@ struct PersistedState {
     #[serde(default)]
     exit_memory: ExitMemory,
     #[serde(default)]
-    pattern_performance: Vec<PatternPerformance>,
-    #[serde(default)]
-    active_pattern: Option<u8>,
-    #[serde(default)]
-    active_pattern_score: f64,
-    #[serde(default)]
-    decision_state: DecisionState,
-    #[serde(default)]
-    trade_direction_lock: Option<i8>,
-    #[serde(default)]
-    mrc_touch_learning: MrcTouchLearningState,
-    #[serde(default)]
     exit_progress: ExitProgress,
-    #[serde(default)]
-    candle_uptrend_seen: bool,
-    #[serde(default)]
-    candle_downtrend_seen: bool,
-    #[serde(default)]
-    candle_trend_direction: i8,
-    #[serde(default)]
-    candle_trend_last_closed_ms: u64,
 }
 
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
     serde_json::to_value(PersistedState {
-        ticks: state.ticks,
         bar_1m: state.bar_1m,
-        last_market_decision_time_ms: state.last_market_decision_time_ms,
         cfg: state.cfg.clone(),
         cfg_loaded: state.cfg_loaded,
         trade_budget: state.trade_budget,
@@ -909,17 +884,7 @@ pub fn save(state: &EngineState) -> Option<serde_json::Value> {
         pending_entry_plan: state.pending_entry_plan,
         take_profit_allocation: state.take_profit_allocation,
         exit_memory: state.exit_memory,
-        pattern_performance: state.mrc_crossing_model.pattern_performance.to_vec(),
-        active_pattern: state.mrc_crossing_model.active_pattern,
-        active_pattern_score: state.mrc_crossing_model.active_pattern_score,
-        decision_state: state.mrc_crossing_model.decision_state.clone(),
-        trade_direction_lock: state.mrc_crossing_model.trade_direction_lock,
-        mrc_touch_learning: state.mrc_touch_learning.clone(),
         exit_progress: state.exit_progress,
-        candle_uptrend_seen: state.candle_uptrend_seen,
-        candle_downtrend_seen: state.candle_downtrend_seen,
-        candle_trend_direction: state.candle_trend_direction,
-        candle_trend_last_closed_ms: state.candle_trend_last_closed_ms,
     })
     .ok()
 }
@@ -932,9 +897,7 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
         return false;
     };
 
-    state.ticks = persisted.ticks;
     state.bar_1m = persisted.bar_1m;
-    state.last_market_decision_time_ms = persisted.last_market_decision_time_ms;
     state.cfg = persisted.cfg;
     state.cfg.decision_components = DecisionComponents::from_names(&state.cfg.decision_components)
         .0
@@ -952,34 +915,13 @@ pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bo
     state.pending_entry_plan = persisted.pending_entry_plan;
     state.take_profit_allocation = persisted.take_profit_allocation;
     state.exit_memory = persisted.exit_memory;
-    state.mrc_crossing_model.pattern_performance =
-        [PatternPerformance::default(); MRC_PATTERN_COUNT];
-    for (slot, performance) in persisted
-        .pattern_performance
-        .into_iter()
-        .enumerate()
-        .take(MRC_PATTERN_COUNT)
-    {
-        state.mrc_crossing_model.pattern_performance[slot] = performance;
-    }
-    state.mrc_crossing_model.active_pattern = persisted
-        .active_pattern
-        .filter(|index| MrcPatternKind::ALL.get(*index as usize).is_some());
-    state.mrc_crossing_model.active_pattern_score = persisted.active_pattern_score;
     state.mrc_crossing_model.decision_components =
         DecisionComponents::from_names(&state.cfg.decision_components).0;
-    state.mrc_crossing_model.decision_state = persisted.decision_state;
-    state.mrc_crossing_model.trade_direction_lock = persisted.trade_direction_lock;
-    state.mrc_touch_learning = persisted.mrc_touch_learning;
     state.exit_progress = persisted.exit_progress;
-    state.candle_uptrend_seen = persisted.candle_uptrend_seen;
-    state.candle_downtrend_seen = persisted.candle_downtrend_seen;
-    state.candle_trend_direction = persisted.candle_trend_direction;
-    state.candle_trend_last_closed_ms = persisted.candle_trend_last_closed_ms;
-    state
-        .mrc_crossing_model
-        .decision_state
-        .reconfigure(state.mrc_crossing_model.decision_components);
+    state.mrc_crossing_model.decision_state = DecisionState::default();
+    state.mrc_crossing_model.active_pattern = None;
+    state.mrc_crossing_model.active_pattern_score = 0.0;
+    state.mrc_crossing_model.trade_direction_lock = None;
     true
 }
 

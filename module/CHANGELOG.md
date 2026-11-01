@@ -2,6 +2,25 @@
 
 # Unreleased
 
+Use the MRC outer band as the structural stop for Trending positions: down_big
+for longs and up_big for shorts. Keep losing stops at that boundary until an
+MRC trailing level is beyond entry. A Sideways route may update the target,
+but it preserves and continues managing the Trending stop.
+
+Local CAP three-day backtest on module build revision 7 completed with
+self-calculated net PnL 157.524 versus 34.685 for revision 4 on the same
+window. Losing stop exits fell from 58 to 8; the worst single-position loss
+increased from 36.487 to 66.213. See `docs/mrc-outer-band-stop.md`.
+
+Rebuild market-derived state on each initialization from 200 MRC warmup bars
+and an eight-hour one-minute replay. Persist execution continuity separately.
+
+# 1.0.131
+
+Add a Sideways-only start option for isolated backtests. In this mode, entry
+routing evaluates the Movement Cascade range directly and never falls back to
+Trending; the default mixed routing is unchanged.
+
 # 1.0.130
 
 Add explicit Trending and Sideways strategy routing. Sideways trades enter at

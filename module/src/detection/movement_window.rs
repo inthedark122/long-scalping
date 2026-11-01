@@ -31,6 +31,43 @@ pub struct MovementWindow {
     pub price_location: PriceLocation,
 }
 
+impl MovementWindow {
+    pub fn from_bounds(
+        low: f64,
+        high: f64,
+        average_movement_size: f64,
+        price: f64,
+    ) -> Option<Self> {
+        if !price.is_finite()
+            || price <= 0.0
+            || !low.is_finite()
+            || low <= 0.0
+            || !high.is_finite()
+            || high <= low
+        {
+            return None;
+        }
+
+        let price_location = if price > high {
+            PriceLocation::Above
+        } else if price < low {
+            PriceLocation::Below
+        } else {
+            PriceLocation::Inside
+        };
+
+        Some(Self {
+            movements: 0,
+            low,
+            high,
+            average_movement_size,
+            width_pct: (high - low) / price * 100.0,
+            direction_changes: 0,
+            price_location,
+        })
+    }
+}
+
 pub fn detect(state: &CascadeState, price: f64) -> Option<MovementWindow> {
     if !price.is_finite() || price <= 0.0 {
         return None;

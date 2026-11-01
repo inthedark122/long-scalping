@@ -11,4 +11,5 @@ pub mod mrc_prediction;
 pub mod mrc_stair_entry;
 pub mod mrc_touch;
 pub mod mrc_touch_learning;
+pub mod stable_range;
 pub mod vlines;
