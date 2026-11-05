@@ -81,6 +81,7 @@ pub fn evaluate(
     mrc: MrcBands,
     candle: Candle,
     market_price: f64,
+    trend_only: bool,
 ) -> Decision {
     let Some(lines) = valid_lines(mrc) else {
         return Decision::Wait("invalid-mrc-lines");
@@ -89,15 +90,20 @@ pub fn evaluate(
         return Decision::Wait("invalid-market-price");
     }
 
-    if let Some((direction, reason)) = reversal_setup(analysis, mrc, market_price) {
-        if let Some(setup) = build_setup(analysis, lines, market_price, direction, reason) {
-            return Decision::Enter(setup);
+    if !trend_only {
+        if let Some((direction, reason)) = reversal_setup(analysis, mrc, market_price) {
+            if let Some(setup) = build_setup(analysis, lines, market_price, direction, reason) {
+                return Decision::Enter(setup);
+            }
         }
     }
 
     let trend_direction = detected_trend_direction
         .filter(|direction| matches!(direction, 1 | -1))
         .or_else(|| analysis.and_then(pattern_trend_direction));
+    if !trend_only && trend_direction == Some(1) {
+        return Decision::Wait("mrc-positive-trend-entry-disabled");
+    }
     let candle_direction = strong_candle_direction(candle);
     let direction = trend_direction.filter(|direction| Some(*direction) == candle_direction);
     let Some(direction) = direction else {

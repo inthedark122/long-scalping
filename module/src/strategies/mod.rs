@@ -107,6 +107,13 @@ impl EntryDecision {
             Self::Enter(plan) => plan.strategy,
         }
     }
+
+    pub fn direction(&self) -> Option<Direction> {
+        match self {
+            Self::Wait { .. } => None,
+            Self::Enter(plan) => Some(plan.direction),
+        }
+    }
 }
 
 pub fn evaluate_entry(
@@ -124,10 +131,18 @@ pub fn evaluate_entry(
     cascade_movement_start_ms: u64,
     cascade_direction: i8,
     sideways_order_pending: bool,
+    trend_only: bool,
     sideways_only: bool,
     sideways_nonstop: bool,
 ) -> EntryDecision {
-    if sideways_nonstop {
+    if trend_only && detected_pattern == Some(PatternKind::MeanRange) {
+        return EntryDecision::Wait {
+            strategy: StrategyKind::Trending,
+            reason: "trend-only-rejects-mean-range",
+        };
+    }
+
+    if !trend_only && sideways_nonstop {
         let Some(window) = stable_sideways_range else {
             return EntryDecision::Wait {
                 strategy: StrategyKind::Sideways,
@@ -147,7 +162,7 @@ pub fn evaluate_entry(
         );
     }
 
-    if sideways_only || detected_pattern == Some(PatternKind::MeanRange) {
+    if !trend_only && (sideways_only || detected_pattern == Some(PatternKind::MeanRange)) {
         let Some(window) = movement_window else {
             return EntryDecision::Wait {
                 strategy: StrategyKind::Sideways,
@@ -179,6 +194,7 @@ pub fn evaluate_entry(
         mrc,
         candle,
         market_price,
+        trend_only,
     ))
 }
 

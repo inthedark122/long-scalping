@@ -88,6 +88,17 @@
           ]
         },
         {
+          "code": "trend_only",
+          "name": "Trend-only entries",
+          "description": "Ignore range and reversal entries; enter only when the MRC trend direction and candle confirmation agree.",
+          "default": 1,
+          "variant": "Select",
+          "options": [
+            { "label": "Off", "value": 0 },
+            { "label": "On", "value": 1 }
+          ]
+        },
+        {
           "code": "entry_type",
           "name": "Entry order",
           "description": "Market opens immediately. Limit uses the strategy solution or two ticks beyond market when already crossed, then expires after the next candle if it is not filled. Configured minimum TP and SL distances apply to the exit; a new signal is evaluated after the cancellation is confirmed.",

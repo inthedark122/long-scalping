@@ -88,6 +88,8 @@ pub struct Config {
     pub sideways_only: bool,
     #[serde(default)]
     pub sideways_nonstop: bool,
+    #[serde(default)]
+    pub trend_only: bool,
     #[serde(default = "default_required_samples")]
     pub required_samples: u32,
     #[serde(default = "default_decision_components")]
@@ -131,6 +133,7 @@ impl Default for Config {
             entry_type: EntryType::default(),
             sideways_only: false,
             sideways_nonstop: false,
+            trend_only: false,
             required_samples: default_required_samples(),
             decision_components: default_decision_components(),
         }

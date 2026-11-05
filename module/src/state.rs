@@ -780,6 +780,8 @@ pub struct EngineState {
     pub last_error: Option<String>,
     /// Latest ta-rs calculation held only in process memory; omitted by `save`.
     pub last_snapshot: Option<IndicatorSnapshot>,
+    /// Last minute bucket reported to the owning strategy workflow.
+    pub last_workflow_report_minute: Option<u64>,
 }
 
 impl Default for EngineState {
@@ -830,6 +832,7 @@ impl Default for EngineState {
             exit_memory: ExitMemory::default(),
             last_exit_event: String::new(),
             pending_exit_context: None,
+            last_workflow_report_minute: None,
             last_error: None,
             last_snapshot: None,
         }

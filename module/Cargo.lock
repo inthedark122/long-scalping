@@ -10,7 +10,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "long-scalping"
-version = "1.0.131"
+version = "1.0.134"
 dependencies = [
  "lte_strategy_bridge",
  "serde",
@@ -21,7 +21,7 @@ dependencies = [
 [[package]]
 name = "lte_strategy_bridge"
 version = "1.0.0-alpha.1"
-source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=fb86bc45643ef72831191cf2c8f42050cd776e06#fb86bc45643ef72831191cf2c8f42050cd776e06"
+source = "git+https://github.com/LivTorgEx/lte_strategy_bridge.git?rev=db65bd7b8882d964b2f9fb9246f5070fada0b54f#db65bd7b8882d964b2f9fb9246f5070fada0b54f"
 dependencies = [
  "serde",
  "serde_json",

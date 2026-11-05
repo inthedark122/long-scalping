@@ -1,6 +1,6 @@
 [package]
 name = "long-scalping"
-version = "1.0.131"
+version = "1.0.134"
 edition = "2021"
 
 [features]
@@ -24,7 +24,7 @@ required-features = ["mrc-research", "native-tools"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Pinned to the ABI with protection values on NewPosition events.
+# Pinned to the ABI with protection values and strategy workflow reports.
 # Bump this rev (and `cargo update -p lte_strategy_bridge`) when fetching a new ABI.
-lte_strategy_bridge = { git = "https://github.com/LivTorgEx/lte_strategy_bridge.git", rev = "fb86bc45643ef72831191cf2c8f42050cd776e06" }
+lte_strategy_bridge = { git = "https://github.com/LivTorgEx/lte_strategy_bridge.git", rev = "db65bd7b8882d964b2f9fb9246f5070fada0b54f" }
 ta = { path = "ta-rs" }

@@ -1,5 +1,16 @@
 # Changelog
 
+# 1.0.134
+
+Publish compact strategy state and capacity inputs to the owning workflow once
+per minute through the bridge's `bot.runtime.report` event.
+
+# 1.0.133
+
+Add a trend-only entry mode for workflow-controlled scalping. It rejects
+mean-range and reversal entries and requires the MRC trend direction to match
+the confirming candle and the start signal's allowed direction.
+
 # Unreleased
 
 Use the MRC outer band as the structural stop for Trending positions: down_big

@@ -282,6 +282,7 @@ fn handle_signal(
         state.pending_strategy = None;
         state.strategy_runtime.reset();
         if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
+        state.cfg.trend_only = false;
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
         if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64()) {
@@ -324,6 +325,13 @@ fn handle_signal(
             state.cfg.sideways_nonstop = sideways_nonstop >= 0.5;
         }
         if let Some(required_samples) = values
+        if let Some(trend_only) = values
+            .get("trend_only")
+            .and_then(|value| value.as_f64())
+            .filter(|value| value.is_finite())
+        {
+            state.cfg.trend_only = trend_only >= 0.5;
+        }
             .get("required_samples")
             .and_then(|value| value.as_f64())
             .filter(|value| value.is_finite())
@@ -356,7 +364,9 @@ fn handle_signal(
             debug: format!(
                 "start direction={:?} strategy_mode={} strategies=[trending,sideways] cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
                 state.allowed_direction,
-                if state.cfg.sideways_nonstop {
+                if state.cfg.trend_only {
+                    "trend-only"
+                } else if state.cfg.sideways_nonstop {
                     "sideways-stable-range-experiment"
                 } else if state.cfg.sideways_only {
                     "sideways-only"
@@ -969,10 +979,12 @@ fn process_realtime(
         state.pending_strategy == Some(StrategyKind::Sideways) && state.pending_entry_bar.is_some(),
         state.cfg.sideways_only,
         state.cfg.sideways_nonstop,
+        state.cfg.trend_only,
     );
     let routed_strategy = entry_decision.strategy();
     let mut output = ModuleOutput::default();
     let entry_status;
+    let entry_plan_direction = entry_decision.direction();
     let mut exit_status = "no-position".to_string();
     let constraint;
 
@@ -1094,7 +1106,39 @@ fn process_realtime(
         input.price,
         market_decision.ntp_5s,
         market_decision.tdt,
+        entry_plan_direction,
     );
     output.debug = debug;
     output
 }
+    let report_minute = market_decision.time.max(0) as u64 / 60_000;
+    if state.last_workflow_report_minute != Some(report_minute) {
+        state.last_workflow_report_minute = Some(report_minute);
+        output.workflow_report = Some(serde_json::json!({
+            "strategy": "structural_scalping",
+            "symbol": input.symbol,
+            "trend_only": state.cfg.trend_only,
+            "allowed_direction": match state.allowed_direction {
+                Direction::Long => "long",
+                Direction::Short => "short",
+                Direction::Both => "both",
+            },
+            "mrc_1m_slope_direction": snapshot.tf1m.mrc_signal.slope_sign,
+            "position_side": match state.position.side {
+                crate::model::PositionState::Long => "long",
+                crate::model::PositionState::Short => "short",
+                crate::model::PositionState::Flat => "flat",
+            },
+            "entry_status": entry_status,
+            "entry_plan_direction": match entry_plan_direction {
+                Some(Direction::Long) => "long",
+                Some(Direction::Short) => "short",
+                Some(Direction::Both) => "both",
+                None => "none",
+            },
+            "exit_status": exit_status,
+            "max_amount": input.max_amount,
+            "auto_max_amount": input.auto_max_amount,
+            "configured_leverage": input.leverage,
+        }));
+    }

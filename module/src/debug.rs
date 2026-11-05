@@ -4,6 +4,7 @@ use crate::format::{fmt_duration_ms, fmt_price_tick};
 use crate::model::{IndicatorSnapshot, PositionState};
 use crate::state::EngineState;
 use crate::strategies::StrategyKind;
+use lte_strategy_bridge::abi::Direction;
 
 pub fn render(
     state: &EngineState,
@@ -14,6 +15,7 @@ pub fn render(
     routed_strategy: StrategyKind,
     constraint: Option<&str>,
     tick_size: f64,
+    entry_plan_direction: Option<Direction>,
     market_price: f64,
     ntp_5s: i64,
     tdt: Option<i64>,
@@ -78,7 +80,9 @@ pub fn render(
         format!("t={}", state.ticks),
         format!(
             "strategy-mode={}",
-            if state.cfg.sideways_nonstop {
+            if state.cfg.trend_only {
+                "trend-only"
+            } else if state.cfg.sideways_nonstop {
                 "sideways-stable-range-experiment"
             } else if state.cfg.sideways_only {
                 "sideways-only"
@@ -93,6 +97,12 @@ pub fn render(
         ),
         format!(
             "p={}",
+        format!(
+            "entry-mode={} entry-plan-direction={} allowed-direction={}",
+            if state.cfg.trend_only { "trend-only" } else { "configured" },
+            direction_label(entry_plan_direction),
+            direction_label(Some(state.allowed_direction))
+        ),
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
         ),
         format!(
@@ -269,6 +279,15 @@ pub fn render(
 fn format_take_profit(state: &EngineState, tick_size: f64) -> String {
     let price = state.position.take_profit;
     if !price.is_finite() || price <= 0.0 {
+fn direction_label(direction: Option<Direction>) -> &'static str {
+    match direction {
+        Some(Direction::Long) => "long",
+        Some(Direction::Short) => "short",
+        Some(Direction::Both) => "both",
+        None => "none",
+    }
+}
+
         return "none".to_string();
     }
 
