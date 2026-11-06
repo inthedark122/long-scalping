@@ -1,17 +1,6 @@
 # Changelog
 
-# 1.0.134
-
-Publish compact strategy state and capacity inputs to the owning workflow once
-per minute through the bridge's `bot.runtime.report` event.
-
-# 1.0.133
-
-Add a trend-only entry mode for workflow-controlled scalping. It rejects
-mean-range and reversal entries and requires the MRC trend direction to match
-the confirming candle and the start signal's allowed direction.
-
-# Unreleased
+# 1.0.135
 
 Use the MRC outer band as the structural stop for Trending positions: down_big
 for longs and up_big for shorts. Keep losing stops at that boundary until an
@@ -25,6 +14,32 @@ increased from 36.487 to 66.213. See `docs/mrc-outer-band-stop.md`.
 
 Rebuild market-derived state on each initialization from 200 MRC warmup bars
 and an eight-hour one-minute replay. Persist execution continuity separately.
+
+Consume the module-state restore opportunity once after Requirements, even when
+Init has no saved state, so later events cannot replace the live kline cache
+with a state-deserialized empty cache. Report received kline counts and zero or
+invalid `qty_buy` and `qty_sell` counts in Init debug output, and surface state
+deserialization errors.
+
+# 1.0.134
+
+Publish compact strategy state and capacity inputs to the owning workflow once
+per minute through the bridge's `bot.runtime.report` event.
+
+# 1.0.133
+
+Add a trend-only entry mode for workflow-controlled scalping. It rejects
+mean-range and reversal entries and requires the MRC trend direction to match
+the confirming candle and the start signal's allowed direction.
+
+# 1.0.132
+
+Wait for persisted host state after an initial state-less `Init`, and unwrap
+the `structural_scalping` module alias before deserializing `EngineState`.
+
+Use serde skip attributes for market-derived runtime state, including MRC
+touch learning, and rebuild it from klines during initialization. Preserve the
+configured start direction across state restoration.
 
 # 1.0.131
 

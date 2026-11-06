@@ -162,6 +162,9 @@ fn init_loads_requested_history_replays_eight_hours_and_emits_no_orders() {
         "{}",
         output.debug
     );
+    assert!(output.debug.contains(
+        "input-klines=[60:rows=680 qty_buy_zero=0 qty_sell_zero=0 qty_buy_invalid=0 qty_sell_invalid=0 300:rows=200 qty_buy_zero=0 qty_sell_zero=0 qty_buy_invalid=0 qty_sell_invalid=0]"
+    ));
     assert!(state.last_error.is_none(), "{:?}", state.last_error);
     assert!(state.last_snapshot.is_some());
     assert!(state.mrc_crossing_model.seeded_from_history);

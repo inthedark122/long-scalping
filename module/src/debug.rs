@@ -6,6 +6,8 @@ use crate::state::EngineState;
 use crate::strategies::StrategyKind;
 use lte_strategy_bridge::abi::Direction;
 
+pub(crate) mod ntps;
+
 pub fn render(
     state: &EngineState,
     snapshot: &IndicatorSnapshot,
@@ -13,9 +15,9 @@ pub fn render(
     entry_status: &str,
     exit_status: &str,
     routed_strategy: StrategyKind,
+    entry_plan_direction: Option<Direction>,
     constraint: Option<&str>,
     tick_size: f64,
-    entry_plan_direction: Option<Direction>,
     market_price: f64,
     ntp_5s: i64,
     tdt: Option<i64>,
@@ -96,13 +98,13 @@ pub fn render(
             active_strategy
         ),
         format!(
-            "p={}",
-        format!(
             "entry-mode={} entry-plan-direction={} allowed-direction={}",
             if state.cfg.trend_only { "trend-only" } else { "configured" },
             direction_label(entry_plan_direction),
             direction_label(Some(state.allowed_direction))
         ),
+        format!(
+            "p={}",
             fmt_price_tick(snapshot.tf1m.candle.close, tick_size)
         ),
         format!(
@@ -188,10 +190,11 @@ pub fn render(
         format!("movement-window=[{movement_window}]"),
         format!("stable-sideways-range=[{stable_sideways_range}]"),
         format!(
-            "market-activity=ntp_5s:{} tdt:{}",
+            "market-activity=ntp_5s:{} tdt:{} ntps_5s_stats=[{}]",
             ntp_5s,
             tdt.map(|value| value.to_string())
-                .unwrap_or_else(|| "na".to_string())
+                .unwrap_or_else(|| "na".to_string()),
+            state.ntps_5s_stats.summary()
         ),
         format!("volume=[{}]", state.volume_gain.summary()),
         format!("mrc_risk=[{mrc_risk}]"),
@@ -276,9 +279,6 @@ pub fn render(
     parts.join(" ")
 }
 
-fn format_take_profit(state: &EngineState, tick_size: f64) -> String {
-    let price = state.position.take_profit;
-    if !price.is_finite() || price <= 0.0 {
 fn direction_label(direction: Option<Direction>) -> &'static str {
     match direction {
         Some(Direction::Long) => "long",
@@ -288,6 +288,9 @@ fn direction_label(direction: Option<Direction>) -> &'static str {
     }
 }
 
+fn format_take_profit(state: &EngineState, tick_size: f64) -> String {
+    let price = state.position.take_profit;
+    if !price.is_finite() || price <= 0.0 {
         return "none".to_string();
     }
 

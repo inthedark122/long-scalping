@@ -29,6 +29,7 @@ fn long_entry_uses_down_big_as_structural_stop() {
             close: 103.0,
         },
         101.0,
+        true,
     );
 
     let entry::Decision::Enter(setup) = decision else {
@@ -51,6 +52,7 @@ fn short_entry_uses_up_big_as_structural_stop() {
             close: 97.0,
         },
         99.0,
+        false,
     );
 
     let entry::Decision::Enter(setup) = decision else {

@@ -44,6 +44,7 @@ fn refresh_last_snapshot(state: &mut EngineState, snapshot: &crate::model::Indic
 
 fn reset_market_analysis_state(state: &mut EngineState) {
     state.ticks = 0;
+    state.ntps_5s_stats.reset();
     state.mrc_crossing_model = Default::default();
     state.mrc_crossing_model.decision_components =
         decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
@@ -281,8 +282,8 @@ fn handle_signal(
         state.pending_entry_bar = None;
         state.pending_strategy = None;
         state.strategy_runtime.reset();
-        if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
         state.cfg.trend_only = false;
+        if let Some(cap_init) = values.get("cap_init").and_then(|v| v.as_f64()) {
             state.cfg.cap_init = cap_init.clamp(0.0, 100.0);
         }
         if let Some(trading_amount) = values.get("trading_amount").and_then(|v| v.as_f64()) {
@@ -324,7 +325,6 @@ fn handle_signal(
         {
             state.cfg.sideways_nonstop = sideways_nonstop >= 0.5;
         }
-        if let Some(required_samples) = values
         if let Some(trend_only) = values
             .get("trend_only")
             .and_then(|value| value.as_f64())
@@ -332,6 +332,7 @@ fn handle_signal(
         {
             state.cfg.trend_only = trend_only >= 0.5;
         }
+        if let Some(required_samples) = values
             .get("required_samples")
             .and_then(|value| value.as_f64())
             .filter(|value| value.is_finite())
@@ -381,6 +382,7 @@ fn handle_signal(
                 state.cfg.required_samples(),
                 state.cfg.decision_components.join(",")
             ),
+            cancel_orders: entry_order_marks(),
             ..Default::default()
         }
     } else {
@@ -717,6 +719,15 @@ fn refresh_klines(
     is_init: bool,
     new_1m_bar: bool,
 ) -> ModuleOutput {
+    let init_input_diagnostics = if is_init {
+        format!(
+            " {}",
+            market_data::render_kline_input_diagnostics(&input.klines)
+        )
+    } else {
+        String::new()
+    };
+
     if new_1m_bar {
         state.bar_1m = state.bar_1m.saturating_add(1);
     }
@@ -743,11 +754,12 @@ fn refresh_klines(
     };
     if let Err(error) = calculation {
         let error = format!(
-            "event={} {} {} {}",
+            "event={} {} {} {}{}",
             if is_init { "Init" } else { "KlineUpdate" },
             timeframes_context(timeframes),
             error,
-            market_data::render_kline_history_inventory(&state.klines)
+            market_data::render_kline_history_inventory(&state.klines),
+            init_input_diagnostics
         );
         state.last_error = Some(error.clone());
         return ModuleOutput {
@@ -761,11 +773,12 @@ fn refresh_klines(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let error = format!(
-                    "event={} {} {} {}",
+                    "event={} {} {} {}{}",
                     if is_init { "Init" } else { "KlineUpdate" },
                     timeframes_context(timeframes),
                     error,
-                    market_data::render_kline_history_inventory(&state.klines)
+                    market_data::render_kline_history_inventory(&state.klines),
+                    init_input_diagnostics
                 );
                 state.last_error = Some(error.clone());
                 return ModuleOutput {
@@ -775,6 +788,7 @@ fn refresh_klines(
             }
         };
     if let Err(error) = market_data::validate_indicator_snapshot(&snapshot) {
+        let error = format!("{error}{init_input_diagnostics}");
         state.last_error = Some(error.clone());
         return ModuleOutput {
             debug: error,
@@ -807,8 +821,9 @@ fn refresh_klines(
     ModuleOutput {
         debug: if is_init {
             format!(
-                "event=Init ta-rs snapshot ready {}",
-                market_data::render_kline_history_inventory(&state.klines)
+                "event=Init ta-rs snapshot ready {}{}",
+                market_data::render_kline_history_inventory(&state.klines),
+                init_input_diagnostics
             )
         } else {
             String::new()
@@ -977,14 +992,14 @@ fn process_realtime(
         state.cascade.movement_start_ms,
         state.cascade_signal.dir,
         state.pending_strategy == Some(StrategyKind::Sideways) && state.pending_entry_bar.is_some(),
+        state.cfg.trend_only,
         state.cfg.sideways_only,
         state.cfg.sideways_nonstop,
-        state.cfg.trend_only,
     );
     let routed_strategy = entry_decision.strategy();
+    let entry_plan_direction = entry_decision.direction();
     let mut output = ModuleOutput::default();
     let entry_status;
-    let entry_plan_direction = entry_decision.direction();
     let mut exit_status = "no-position".to_string();
     let constraint;
 
@@ -1094,6 +1109,9 @@ fn process_realtime(
         market_decision.time.max(0) as u64,
         input.symbol_info.price_tick_size,
     );
+    state
+        .ntps_5s_stats
+        .observe(market_decision.time, market_decision.ntp_5s);
     let debug = debug::render(
         state,
         &snapshot,
@@ -1101,16 +1119,14 @@ fn process_realtime(
         &entry_status,
         &exit_status,
         routed_strategy,
+        entry_plan_direction,
         constraint.as_deref(),
         input.symbol_info.price_tick_size,
         input.price,
         market_decision.ntp_5s,
         market_decision.tdt,
-        entry_plan_direction,
     );
     output.debug = debug;
-    output
-}
     let report_minute = market_decision.time.max(0) as u64 / 60_000;
     if state.last_workflow_report_minute != Some(report_minute) {
         state.last_workflow_report_minute = Some(report_minute);
@@ -1142,3 +1158,5 @@ fn process_realtime(
             "configured_leverage": input.leverage,
         }));
     }
+    output
+}

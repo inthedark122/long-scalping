@@ -74,6 +74,28 @@ fn assert_lines_close(actual: [f64; 9], expected: [f64; 9]) {
 }
 
 #[test]
+fn kline_input_diagnostics_counts_zero_buy_and_sell_quantities() {
+    let mut first = candle(0, i64::from(TF_1M) * 1_000);
+    first.qty_buy = 0.0;
+    first.qty_sell = 0.0;
+    let mut second = candle(1, i64::from(TF_1M) * 1_000);
+    second.qty_buy = 2.0;
+    second.qty_sell = 0.0;
+    let mut five_minute = candle(0, i64::from(TF_5M) * 1_000);
+    five_minute.qty_buy = 0.0;
+    five_minute.qty_sell = 3.0;
+    let klines =
+        ModuleKlineSnapshot::from([(TF_1M, vec![first, second]), (TF_5M, vec![five_minute])]);
+
+    let diagnostics = long_scalping::market_data::render_kline_input_diagnostics(&klines);
+
+    assert_eq!(
+        diagnostics,
+        "input-klines=[60:rows=2 qty_buy_zero=1 qty_sell_zero=2 qty_buy_invalid=0 qty_sell_invalid=0 300:rows=1 qty_buy_zero=1 qty_sell_zero=0 qty_buy_invalid=0 qty_sell_invalid=0]"
+    );
+}
+
+#[test]
 fn mrc_uses_the_same_ta_rs_filter_across_kline_updates_and_revisions() {
     let mut one_minute = (0..1_400)
         .map(|index| candle(index, i64::from(TF_1M) * 1_000))

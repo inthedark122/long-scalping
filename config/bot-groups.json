@@ -17,12 +17,12 @@
           "direction": "BOTH",
           "max_open_amount": 1000,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.118",
+          "module_version": "1.0.135",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-            "module_version": "1.0.118"
+            "module_version": "1.0.135"
             }
           }
         }
@@ -30,7 +30,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.118 signed short-position reconciliation release. STAIRS_UP and STAIRS_DOWN are the only primary patterns. Signed exchange quantities are normalized when positions attach, so short fills consume the pending entry intent and retain the position exit context. Entry intents are persisted before submission and re-emitted until the host confirms the resulting position or reports cancellation/expiry; exchange-confirmed positions create a durable position context with one reduce-only TP and virtual SL. Order status does not stand in for position confirmation, and future market direction never erases the open position exit plan. Missing indicators preserve the last valid plan, and TP repricing is idempotent. SugInfo processing is event-driven and may arrive at variable activity intervals. Direction BOTH may switch sides; LONG and SHORT restrict entries. The position is cleared only after confirmed flat.",
+          "description": "Start the 1.0.135 state-restore diagnostics release. The module preserves the initialized kline cache across later events and reports received kline counts plus zero or invalid qty_buy and qty_sell counts in Init debug output. STAIRS_UP and STAIRS_DOWN remain the only primary patterns. Direction BOTH may switch sides; LONG and SHORT restrict entries.",
           "name": "Start",
           "params": [
             {
@@ -126,12 +126,12 @@
           "direction": "BOTH",
           "max_open_amount": 500,
           "module_id": "f7747f13-f0bc-443d-88f2-a205dcfc61b5",
-          "module_version": "1.0.118",
+          "module_version": "1.0.135",
           "name": "DynamicModule",
           "on_actions": [],
           "professional": {
             "dynamic_module": {
-            "module_version": "1.0.118"
+            "module_version": "1.0.135"
             }
           }
         }
@@ -139,7 +139,7 @@
       "signal_actions": [
         {
           "code": "start",
-          "description": "Start the 1.0.118 signed short-position reconciliation release. STAIRS_UP and STAIRS_DOWN are the only primary patterns. Signed exchange quantities are normalized when positions attach, so short fills consume the pending entry intent and retain the position exit context. Entry intents are persisted before submission and re-emitted until the host confirms the resulting position or reports cancellation/expiry; exchange-confirmed positions create a durable position context with one reduce-only TP and virtual SL. Order status does not stand in for position confirmation, and future market direction never erases the open position exit plan. Missing indicators preserve the last valid plan, and TP repricing is idempotent. SugInfo processing is event-driven and may arrive at variable activity intervals. Direction BOTH may switch sides; LONG and SHORT restrict entries. The position is cleared only after confirmed flat.",
+          "description": "Start the 1.0.135 state-restore diagnostics release. The module preserves the initialized kline cache across later events and reports received kline counts plus zero or invalid qty_buy and qty_sell counts in Init debug output. STAIRS_UP and STAIRS_DOWN remain the only primary patterns. Direction BOTH may switch sides; LONG and SHORT restrict entries.",
           "name": "Start",
           "params": [
             {

@@ -439,6 +439,27 @@ pub fn render_kline_history_inventory(history: &KlineHistory) -> String {
     )
 }
 
+pub fn render_kline_input_diagnostics(klines: &ModuleKlineSnapshot) -> String {
+    let timeframe = |timeframe: i32| {
+        let rows = klines
+            .get(&timeframe)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let buy_zero = rows.iter().filter(|row| row.qty_buy == 0.0).count();
+        let sell_zero = rows.iter().filter(|row| row.qty_sell == 0.0).count();
+        let buy_invalid = rows.iter().filter(|row| !row.qty_buy.is_finite()).count();
+        let sell_invalid = rows.iter().filter(|row| !row.qty_sell.is_finite()).count();
+        format!(
+            "{timeframe}:rows={} qty_buy_zero={buy_zero} qty_sell_zero={sell_zero} qty_buy_invalid={buy_invalid} qty_sell_invalid={sell_invalid}",
+            rows.len()
+        )
+    };
+    format!(
+        "input-klines=[{}]",
+        [timeframe(TF_1M), timeframe(TF_5M)].join(" ")
+    )
+}
+
 pub fn validate_indicator_snapshot(snapshot: &IndicatorSnapshot) -> Result<(), String> {
     let mut problems = Vec::new();
 

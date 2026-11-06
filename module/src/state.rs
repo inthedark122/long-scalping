@@ -702,37 +702,52 @@ impl Default for MrcCrossingState {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct EngineState {
+    #[serde(skip)]
     pub ticks: u64,
     pub bar_1m: u64,
     /// Timestamp of the latest public market-decision event.
+    #[serde(skip)]
     pub last_market_decision_time_ms: u64,
     pub cfg: Config,
     pub cfg_loaded: bool,
     /// Direction preference received by the start signal. Entry guard only.
     pub allowed_direction: Direction,
     /// Last 1m bar for which the active-position TP was recalculated.
+    #[serde(skip)]
     pub last_active_tp_recalc_bar: Option<u64>,
     /// Latest same-side staircase analysis retained for the open position's
     /// exit controller. It is intentionally not replaced by an opposite-side
     /// market analysis.
+    #[serde(skip)]
     pub active_mrc_analysis: Option<MrcCrossAnalysis>,
     /// Latest same-side non-indicator/cascade context paired with the active
     /// position analysis.
+    #[serde(skip)]
     pub active_mrc_context: MrcPredictionContext,
     /// Latest selected market analysis, regardless of the held position side.
     /// This context is used for future entries and transitions.
+    #[serde(skip)]
     pub market_mrc_analysis: Option<MrcCrossAnalysis>,
     /// Latest market context paired with `market_mrc_analysis`.
+    #[serde(skip)]
     pub market_mrc_context: MrcPredictionContext,
-    /// Raw kline cache and ta-rs indicators are runtime-only. `save` does not
-    /// serialize this cache; the host resends the requested history on Init.
+    /// Raw kline cache is resent by the host on Init.
+    #[serde(skip, default = "empty_kline_history")]
     pub klines: KlineHistory,
     /// Recursive ta-rs MRC filters advance on KlineUpdate and are not saved.
+    #[serde(skip)]
     pub mrc_calculation: crate::market_data::MrcCalculation,
+    #[serde(with = "position_runtime_serde")]
     pub position: PositionRuntime,
     /// Sideways movement already traded, preventing duplicate entries in that
     /// cascade movement after an exit.
+    #[serde(
+        rename = "last_sideways_movement_start_ms",
+        with = "strategy_runtime_serde"
+    )]
     pub strategy_runtime: crate::strategies::StrategyRuntime,
     /// Exit context owned by the active position.
     pub position_context: PositionContext,
@@ -744,44 +759,122 @@ pub struct EngineState {
     pub pending_entry_plan: Option<PositionPlanSnapshot>,
     pub take_profit_allocation: TakeProfitAllocation,
     pub trade_budget: f64,
+    #[serde(skip)]
     pub vlines: [VLineState; 9],
+    #[serde(skip)]
     pub mrc_crossing: MrcCrossingState,
     /// Time-decayed per-line touch pressure used as context for stairs.
+    #[serde(skip)]
     pub mrc_touch: MrcTouchState,
     /// Continuous direction prediction derived from the current MRC touch
     /// state and the selected learned route.
+    #[serde(skip)]
     pub mrc_direction_prediction: MrcDirectionPrediction,
-    /// Persistent empirical outcomes of exact MRC-line touch episodes.
+    /// Rebuilt from replayed klines during Init; never persisted.
+    #[serde(skip)]
     pub mrc_touch_learning: MrcTouchLearningState,
+    #[serde(skip)]
     pub mrc_crossing_model: MrcCrossingModel,
+    #[serde(skip)]
     pub cascade: CascadeState,
+    #[serde(skip)]
     pub cascade_signal: CascadeSignal,
+    #[serde(skip)]
     pub selected_cascade_trade_state: CascadeTradeState,
     /// Latest staircase extreme/protected-swing information used by exits.
+    #[serde(skip)]
     pub staircase_progress: StaircaseProgress,
     /// One-way exit state. Cascade contributes timing/activity context only.
     pub exit_progress: ExitProgress,
     pub pending_entry_bar: Option<u64>,
+    #[serde(skip)]
     pub candle_uptrend_seen: bool,
+    #[serde(skip)]
     pub candle_downtrend_seen: bool,
+    #[serde(skip)]
     pub candle_trend_direction: i8,
+    #[serde(skip)]
     pub candle_trend_last_closed_ms: u64,
+    #[serde(skip)]
     pub volume_gain: VolumeGainTracker,
+    #[serde(skip)]
     pub direction_source: String,
+    #[serde(skip)]
     pub direction_reason: String,
+    #[serde(skip)]
     pub tp_reprice_history: TpRepriceHistory,
+    #[serde(skip)]
     pub mrc_risk: MrcRiskManager,
+    /// Runtime-only NTPS sample summary for the current Bangkok calendar day.
+    #[serde(skip)]
+    pub(crate) ntps_5s_stats: crate::debug::ntps::NtpsDailyStats,
     pub exit_memory: ExitMemory,
     /// Last meaningful exit lifecycle event, kept in the runtime debug line.
+    #[serde(skip)]
     pub last_exit_event: String,
     /// One-shot context explaining why the in-memory position runtime was
     /// rebuilt before the next exit evaluation.
+    #[serde(skip)]
     pub pending_exit_context: Option<String>,
+    #[serde(skip)]
     pub last_error: Option<String>,
-    /// Latest ta-rs calculation held only in process memory; omitted by `save`.
+    /// Latest ta-rs calculation held only in process memory.
+    #[serde(skip)]
     pub last_snapshot: Option<IndicatorSnapshot>,
     /// Last minute bucket reported to the owning strategy workflow.
     pub last_workflow_report_minute: Option<u64>,
+}
+
+fn empty_kline_history() -> KlineHistory {
+    KlineHistory::new(&crate::market_data::kline_requirements())
+}
+
+mod position_runtime_serde {
+    use super::PositionRuntime;
+    use crate::model::PositionState;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &PositionRuntime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.side.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PositionRuntime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let side = PositionState::deserialize(deserializer)?;
+        Ok(PositionRuntime {
+            side,
+            ..PositionRuntime::default()
+        })
+    }
+}
+
+mod strategy_runtime_serde {
+    use crate::strategies::StrategyRuntime;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &StrategyRuntime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value
+            .last_sideways_movement_start_ms()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<StrategyRuntime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let movement_start_ms = Option::<u64>::deserialize(deserializer)?;
+        let mut runtime = StrategyRuntime::default();
+        runtime.restore_last_sideways_movement_start_ms(movement_start_ms);
+        Ok(runtime)
+    }
 }
 
 impl Default for EngineState {
@@ -829,103 +922,51 @@ impl Default for EngineState {
             direction_reason: "na".to_string(),
             tp_reprice_history: TpRepriceHistory::default(),
             mrc_risk: MrcRiskManager::default(),
+            ntps_5s_stats: crate::debug::ntps::NtpsDailyStats::default(),
             exit_memory: ExitMemory::default(),
             last_exit_event: String::new(),
             pending_exit_context: None,
-            last_workflow_report_minute: None,
             last_error: None,
             last_snapshot: None,
+            last_workflow_report_minute: None,
         }
     }
 }
 
-/// Execution continuity only; market-derived state is rebuilt from klines on Init.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PersistedState {
-    #[serde(default)]
-    bar_1m: u64,
-    #[serde(default)]
-    cfg: Config,
-    #[serde(default)]
-    cfg_loaded: bool,
-    #[serde(default)]
-    trade_budget: f64,
-    #[serde(default)]
-    position: PositionState,
-    #[serde(default)]
-    position_context: PositionContext,
-    #[serde(default)]
-    pending_entry_reason: Option<EntryReason>,
-    #[serde(default)]
-    pending_strategy: Option<StrategyKind>,
-    #[serde(default)]
-    pending_entry_bar: Option<u64>,
-    #[serde(default)]
-    last_sideways_movement_start_ms: Option<u64>,
-    #[serde(default)]
-    pending_entry_plan: Option<PositionPlanSnapshot>,
-    #[serde(default)]
-    take_profit_allocation: TakeProfitAllocation,
-    #[serde(default)]
-    exit_memory: ExitMemory,
-    #[serde(default)]
-    exit_progress: ExitProgress,
-}
-
 pub fn save(state: &EngineState) -> Option<serde_json::Value> {
-    serde_json::to_value(PersistedState {
-        bar_1m: state.bar_1m,
-        cfg: state.cfg.clone(),
-        cfg_loaded: state.cfg_loaded,
-        trade_budget: state.trade_budget,
-        position: state.position.side,
-        position_context: state.position_context.clone(),
-        pending_entry_reason: state.pending_entry_reason.clone(),
-        pending_strategy: state.pending_strategy,
-        pending_entry_bar: state.pending_entry_bar,
-        last_sideways_movement_start_ms: state.strategy_runtime.last_sideways_movement_start_ms(),
-        pending_entry_plan: state.pending_entry_plan,
-        take_profit_allocation: state.take_profit_allocation,
-        exit_memory: state.exit_memory,
-        exit_progress: state.exit_progress,
-    })
-    .ok()
+    serde_json::to_value(state).ok()
 }
 
 pub fn restore(state: &mut EngineState, value: Option<&serde_json::Value>) -> bool {
-    let Some(value) = value else {
-        return false;
-    };
-    let Ok(persisted) = serde_json::from_value::<PersistedState>(value.clone()) else {
-        return false;
-    };
+    restore_with_error(state, value).unwrap_or(false)
+}
 
-    state.bar_1m = persisted.bar_1m;
-    state.cfg = persisted.cfg;
-    state.cfg.decision_components = DecisionComponents::from_names(&state.cfg.decision_components)
-        .0
-        .names();
-    state.cfg_loaded = persisted.cfg_loaded;
-    state.trade_budget = persisted.trade_budget;
-    state.position.side = persisted.position;
-    state.position_context = persisted.position_context;
-    state.pending_entry_reason = persisted.pending_entry_reason;
-    state.pending_strategy = persisted.pending_strategy;
-    state.pending_entry_bar = persisted.pending_entry_bar;
-    state
-        .strategy_runtime
-        .restore_last_sideways_movement_start_ms(persisted.last_sideways_movement_start_ms);
-    state.pending_entry_plan = persisted.pending_entry_plan;
-    state.take_profit_allocation = persisted.take_profit_allocation;
-    state.exit_memory = persisted.exit_memory;
-    state.mrc_crossing_model.decision_components =
-        DecisionComponents::from_names(&state.cfg.decision_components).0;
-    state.exit_progress = persisted.exit_progress;
-    state.mrc_crossing_model.decision_state = DecisionState::default();
-    state.mrc_crossing_model.active_pattern = None;
-    state.mrc_crossing_model.active_pattern_score = 0.0;
-    state.mrc_crossing_model.trade_direction_lock = None;
-    true
+pub fn restore_with_error(
+    state: &mut EngineState,
+    value: Option<&serde_json::Value>,
+) -> Result<bool, String> {
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let mut restored = serde_json::from_value::<EngineState>(value.clone())
+        .map_err(|error| format!("state-deserialize error={error}"))?;
+
+    restored.cfg.decision_components =
+        DecisionComponents::from_names(&restored.cfg.decision_components)
+            .0
+            .names();
+    restored.mrc_crossing_model.decision_components =
+        DecisionComponents::from_names(&restored.cfg.decision_components).0;
+    restored.mrc_crossing_model.decision_state = DecisionState::default();
+    restored.mrc_crossing_model.active_pattern = None;
+    restored.mrc_crossing_model.active_pattern_score = 0.0;
+    restored.mrc_crossing_model.trade_direction_lock = match restored.allowed_direction {
+        Direction::Long => Some(1),
+        Direction::Short => Some(-1),
+        Direction::Both => None,
+    };
+    *state = restored;
+    Ok(true)
 }
 
 pub fn sync_position_state(

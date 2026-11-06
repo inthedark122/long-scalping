@@ -138,22 +138,25 @@ pub fn size_entry(
 }
 
 pub fn apply_close_pnl(input: &ModuleInput, state: &mut EngineState, pnl: f64) {
-    let cap_budget = cap_budget(input, state);
+    if !pnl.is_finite() {
+        return;
+    }
+
     let max_notional = max_trade_notional(input);
-    let leverage = (input.leverage as f64).max(1.0);
-    let seed = seed_budget(input, state);
-
-    if state.trade_budget <= 0.0 && seed > 0.0 {
-        state.trade_budget = seed;
+    let trading_ratio = state.cfg.trading_ratio();
+    let seed_budget = seed_budget(input, state);
+    let seed_amount = (seed_budget * trading_ratio).min(max_notional);
+    if max_notional <= 0.0 || trading_ratio <= 0.0 || seed_amount <= 0.0 {
+        return;
     }
 
-    if pnl > 0.0 {
-        if state.trade_budget < cap_budget {
-            state.trade_budget = (state.trade_budget * 2.0).min(cap_budget);
-        } else {
-            state.trade_budget = (state.trade_budget + pnl * leverage).min(max_notional);
-        }
-    } else if pnl < 0.0 {
-        state.trade_budget = (state.trade_budget + pnl).max(0.0);
+    if state.trade_budget <= 0.0 {
+        state.trade_budget = seed_budget;
     }
+
+    let current_amount = (state.trade_budget * trading_ratio).min(max_notional);
+    let min_amount = (seed_amount * 0.5).min(max_notional);
+    let max_amount = (seed_amount * 2.0).min(max_notional);
+    let next_amount = (current_amount + pnl).clamp(min_amount, max_amount);
+    state.trade_budget = next_amount / trading_ratio;
 }
