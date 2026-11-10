@@ -49,8 +49,9 @@ pub fn as_entry_decision(decision: Decision) -> EntryDecision {
                 .collect::<Vec<_>>()
                 .join(",");
             let note = format!(
-                "strategy=trending entry={} signal_price={:.8} entry_line={}@{:.8} entry_line_source=nearest-to-signal-price mrc_lines=[{}] target_line={} target_source={} target={} stop_line={} stop={:.8}",
+                "strategy=trending entry={} direction={:?} signal_price={:.8} entry_line={}@{:.8} entry_line_source=nearest-to-signal-price mrc_lines=[{}] target_line={} target_source={} target={} stop_line={} stop={:.8}",
                 setup.reason,
+                setup.direction,
                 setup.entry_price,
                 crate::detection::mrc_crossing::LINE_LABELS[setup.entry_line as usize],
                 setup.mrc_lines[setup.entry_line as usize],
@@ -82,6 +83,7 @@ pub fn evaluate(
     candle: Candle,
     market_price: f64,
     trend_only: bool,
+    allowed_direction: Direction,
 ) -> Decision {
     let Some(lines) = valid_lines(mrc) else {
         return Decision::Wait("invalid-mrc-lines");
@@ -98,9 +100,7 @@ pub fn evaluate(
         }
     }
 
-    let trend_direction = detected_trend_direction
-        .filter(|direction| matches!(direction, 1 | -1))
-        .or_else(|| analysis.and_then(pattern_trend_direction));
+    let trend_direction = trend_direction(analysis, detected_trend_direction);
     if !trend_only && trend_direction == Some(1) {
         return Decision::Wait("mrc-positive-trend-entry-disabled");
     }
@@ -109,6 +109,13 @@ pub fn evaluate(
     let Some(direction) = direction else {
         return Decision::Wait("no-confirmed-mrc-trend-entry");
     };
+    if trend_only
+        && allowed_direction != Direction::Both
+        && ((allowed_direction == Direction::Long && direction < 0)
+            || (allowed_direction == Direction::Short && direction > 0))
+    {
+        return Decision::Wait("trend-direction-not-allowed");
+    }
     let reason = if direction > 0 {
         "uptrend-confirmation"
     } else {
@@ -117,6 +124,15 @@ pub fn evaluate(
     build_setup(analysis, lines, market_price, direction, reason)
         .map(Decision::Enter)
         .unwrap_or(Decision::Wait("mrc-exit-line-unavailable"))
+}
+
+pub fn trend_direction(
+    analysis: Option<&MrcCrossAnalysis>,
+    detected_trend_direction: Option<i8>,
+) -> Option<i8> {
+    detected_trend_direction
+        .filter(|direction| matches!(direction, 1 | -1))
+        .or_else(|| analysis.and_then(pattern_trend_direction))
 }
 
 fn pattern_trend_direction(analysis: &MrcCrossAnalysis) -> Option<i8> {

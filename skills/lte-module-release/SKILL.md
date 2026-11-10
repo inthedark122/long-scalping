@@ -1,6 +1,6 @@
 ---
 name: lte-module-release
-description: Create a new LTE module version, build and deploy it, optionally update configured bot groups, and commit only the release changes. Use when the user asks to make a new version, deploy a module to LTE, refresh configured bot groups, or record the release in git.
+description: Create a new LTE module version, build and deploy its WASM artifact, optionally update configured bot groups, and commit only the release changes. Use when the user asks to make a new version, deploy a module to LTE, refresh configured bot groups, or record the release in git.
 ---
 
 # LTE Module Release
@@ -10,9 +10,10 @@ Use this skill for the full release cycle of the module in this repo.
 ## Scope
 
 - Bump the module version.
-- Build and deploy the module through LTE MCP.
+- Build and deploy the module's WASM artifact through LTE MCP.
 - Optionally update bot groups described by the tracked project configuration.
 - Commit only the release-related files.
+- Never upload Rust source archives or submit server-side source builds.
 
 Do not touch unrelated dirty files.
 
@@ -41,20 +42,21 @@ The project configuration is `config/bot-groups.json`.
    - `strategy.json`
    - `module/CHANGELOG.md`
    - `config/bot-groups.json` when its configured module versions or release descriptions change
-3. Validate the module locally with `cargo check --bin module_entry --locked` from `module/`.
-4. Package the `module/` crate as a `.tar.gz`, upload it with LTE MCP, submit the build, and poll until the build is `Success`.
-   - Exclude non-release files such as `target/`, `tmp/`, caches, and other unrelated workspace artifacts when creating the archive.
-5. If `config/bot-groups.json` exists, validate and read it. Update only configured groups. Patch both:
+3. Validate the module locally from the repository root with `cargo check --manifest-path module/Cargo.toml --locked --bin module_entry`.
+4. Build the WASM artifact from the repository root with `cargo build --manifest-path module/Cargo.toml --locked --bin module_entry --target wasm32-wasip1 --release`. Use Cargo's default target directory; never set `CARGO_TARGET_DIR` or pass `--target-dir`.
+5. Upload `module/target/wasm32-wasip1/release/module_entry.wasm` with `get_module_wasm_upload_url`, publish it with `submit_module_wasm`, and poll until the build is `Success`.
+6. If `config/bot-groups.json` exists, validate and read it. Update only configured groups. Patch both:
    - `strategy.module_version`
    - `strategy.professional.dynamic_module.module_version`
    Also refresh the configured `start` action description when enabled and it includes an older version.
    If the configuration is absent or has no entries, skip this step completely; do not create bot groups.
-6. Commit only the release changes with a clear release message, typically:
+7. Commit only the release changes with a clear release message, typically:
    - `chore(release): bump module to vX.Y.Z`
 
 ## Guardrails
 
 - Never assume the deploy succeeded until LTE build status is `Success`.
+- Never upload source archives or call `submit_module_build`; publish WASM revisions only.
 - Never rewrite unrelated files.
 - If the project configuration is absent, do not inspect or create bot groups.
 - If configured bot groups do not exist, skip them unless their entry explicitly opts into creation with complete settings.

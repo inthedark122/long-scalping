@@ -82,7 +82,9 @@ pub fn render(
         format!("t={}", state.ticks),
         format!(
             "strategy-mode={}",
-            if state.cfg.trend_only {
+            if state.cfg.trend_only && state.allowed_direction == Direction::Long {
+                "pumping-long-only"
+            } else if state.cfg.trend_only {
                 "trend-only"
             } else if state.cfg.sideways_nonstop {
                 "sideways-stable-range-experiment"
@@ -99,7 +101,13 @@ pub fn render(
         ),
         format!(
             "entry-mode={} entry-plan-direction={} allowed-direction={}",
-            if state.cfg.trend_only { "trend-only" } else { "configured" },
+            if state.cfg.trend_only && state.allowed_direction == Direction::Long {
+                "pumping-long-only"
+            } else if state.cfg.trend_only {
+                "trend-only"
+            } else {
+                "configured"
+            },
             direction_label(entry_plan_direction),
             direction_label(Some(state.allowed_direction))
         ),

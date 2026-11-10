@@ -134,6 +134,7 @@ pub fn evaluate_entry(
     trend_only: bool,
     sideways_only: bool,
     sideways_nonstop: bool,
+    allowed_direction: Direction,
 ) -> EntryDecision {
     if trend_only && detected_pattern == Some(PatternKind::MeanRange) {
         return EntryDecision::Wait {
@@ -195,6 +196,7 @@ pub fn evaluate_entry(
         candle,
         market_price,
         trend_only,
+        allowed_direction,
     ))
 }
 

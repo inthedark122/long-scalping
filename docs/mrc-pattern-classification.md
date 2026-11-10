@@ -269,11 +269,42 @@ Movement success is not trade win rate. A movement can reach a favorable price
 but still produce a losing trade because of entry fill, stop placement, fees,
 or the order of intrabar barriers.
 
+## Class-specific line sequence for historical matching
+
+Each `MrcPatternSignal` exports `line_sequence`, copied to the crossing
+prediction and research event as `pattern_sequence`. Values are MRC line
+indices from 0 (`down_big`) to 8 (`up_big`). The sequence is a matching key
+within one class; it does not replace the classifier's label, candidate score,
+or trade outcome.
+
+The sequence follows the class's structure:
+
+- staircases use the line path supporting the staircase classification;
+- `FAST_BREAK_RETURN` uses source, crossed, and returned-to-source lines;
+- cycle classes use the alternating lower/upper extreme visits;
+- a staircase `REVERSAL` transition retains the underlying staircase
+  sequence, because it is a transition on that pattern rather than a new class.
+
+The real-kline research matcher first requires the same `pattern_kind` and
+`pattern_direction`, then ranks earlier events by normalized dynamic-time-
+warping distance between these line-index sequences. Ties use sequence-length
+difference, elapsed-duration difference, then recency. The displayed top-five
+examples have non-overlapping pattern-plus-outcome windows, and their full
+four-hour outcomes end before the query pattern begins. This makes the chart's
+best-match selection reproducible from the classifier output while keeping
+its small-sample direction vote explicitly descriptive. The matcher and chart
+are research-only; adding `line_sequence` does not change classification or
+trading behavior.
+
 The research exporter groups virtual predictions by the stable classification
-name. The detailed crossing sequence remains diagnostic data and is not used
-as a rare, exact pattern key.
+name. The full crossing-event history remains diagnostic data. `pattern_sequence`
+is the shorter, class-specific MRC path used for approximate DTW matching; the
+matcher does not require an exact sequence equality.
 
 The external history format is documented in
 [`data/mrc-pattern-history/README.md`](../data/mrc-pattern-history/README.md).
 The Rust vocabulary is in
 [`mrc_pattern_classification.rs`](../module/src/detection/mrc_pattern_classification.rs).
+
+For a real-kline best-match comparison and the broader research questions,
+see the [MRC movement pattern-match solution](mrc-movement-heatmap-pattern-solution.md).

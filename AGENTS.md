@@ -2,13 +2,26 @@
 
 ## Workspace and temporary files
 
-- Use the repository-local `tmp/` directory at `/home/dev/strategies/long-scalping/tmp/` for temporary files, caches, reports, generated HTML, command output, and build artifacts.
-- Never use the system `/tmp`, `module/tmp`, or another module-local temporary directory for these files.
+- Use the repository-local `tmp/` directory at `/home/dev/strategies/long-scalping/tmp/` for temporary files, caches, reports, generated HTML, and command output.
+- Use Cargo's default target directory for build artifacts. Do not set `CARGO_TARGET_DIR` or pass `--target-dir`.
+- For LTE module releases, build and upload WASM only. Use the `wasm32-wasip1` artifact with LTE's WASM upload and submit tools. Never upload Rust source archives or submit server-side source builds.
+- Never use the system `/tmp`, `module/tmp`, or another module-local temporary directory for temporary files.
 - Run repository commands from `/home/dev/strategies/long-scalping` unless a command explicitly requires another working directory.
 - Run module binaries from the repository root using `--manifest-path module/Cargo.toml`; do not `cd` into `module/` for the standard workflow.
 
 ## Code organization and implementation scope
 
+- Follow the user's explicit request exactly. Do not replace the requested
+  behavior with a workaround, shortcut, blanket wait/block, disable switch, or
+  another behavior of your own choosing.
+- Do not guess, infer extra requirements, or broaden the scope. When a detail
+  needed to implement the request is unclear, inspect the repository and
+  conversation for an answer; if it remains unclear, ask before changing that
+  behavior.
+- Treat user corrections as authoritative. Do not repeat an approach the user
+  has rejected or reinterpret a correction to justify it.
+- When the user asks for an explanation, explain the current behavior without
+  changing code or documents unless they also ask for a change.
 - Organize implementation by domain and feature. Keep each feature's types,
   rules, and helpers in its own focused module or module directory instead of
   expanding broad files such as `engine.rs` with feature logic. For example,

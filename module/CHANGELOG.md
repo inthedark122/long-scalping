@@ -1,5 +1,13 @@
 # Changelog
 
+# 1.0.136
+
+Keep trend-only entry decisions aligned with the Start signal's allowed side.
+For the workflow's Long scalpers, do not create short entry plans. Publish
+whether the long trading window has been seen or is still active, and request
+worker release only after that window ends with no open position or pending
+entry.
+
 # 1.0.135
 
 Use the MRC outer band as the structural stop for Trending positions: down_big

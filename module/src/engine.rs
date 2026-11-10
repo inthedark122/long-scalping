@@ -272,9 +272,10 @@ fn handle_signal(
 ) -> ModuleOutput {
     if code == "start" {
         state.allowed_direction = *direction;
+        state.long_trading_window_seen = false;
         // A directional start is an explicit reservation. Direction::Both
         // intentionally remains free to switch sides.
-        state.mrc_crossing_model.trade_direction_lock = direction_sign(*direction);
+        state.mrc_crossing_model.trade_direction_lock = direction_sign(state.allowed_direction);
         state.trade_budget = 0.0;
         state.mrc_crossing_model.current_entry = None;
         state.pending_entry_reason = None;
@@ -354,7 +355,7 @@ fn handle_signal(
                 decision::DecisionComponents::from_names(&state.cfg.decision_components).0;
         }
         reset_market_analysis_state(state);
-        state.mrc_crossing_model.trade_direction_lock = direction_sign(*direction);
+        state.mrc_crossing_model.trade_direction_lock = direction_sign(state.allowed_direction);
         state.exit_progress.reset();
         let now_ms = state.last_market_decision_time_ms;
         if now_ms > 0 {
@@ -365,7 +366,9 @@ fn handle_signal(
             debug: format!(
                 "start direction={:?} strategy_mode={} strategies=[trending,sideways] cap_init={:.2}% trading_amount={:.2}% min_tp_percent={:.2}% min_sl_percent={:.2}% risk_target_percent={:.2}% required_samples={} decision_components=[{}]",
                 state.allowed_direction,
-                if state.cfg.trend_only {
+                if state.cfg.trend_only && state.allowed_direction == Direction::Long {
+                    "pumping-long-only"
+                } else if state.cfg.trend_only {
                     "trend-only"
                 } else if state.cfg.sideways_nonstop {
                     "sideways-stable-range-experiment"
@@ -961,6 +964,14 @@ fn process_realtime(
         .decision_state
         .primary
         .map(|primary| primary.direction);
+    let strategy_trend_direction =
+        strategies::trending::entry::trend_direction(selected_analysis, detected_trend_direction);
+    let long_trading_window_active = state.cfg.trend_only
+        && state.allowed_direction == Direction::Long
+        && strategy_trend_direction == Some(1);
+    if long_trading_window_active {
+        state.long_trading_window_seen = true;
+    }
     let selected_forecast = mrc_observation
         .selected_candidate_index
         .and_then(|index| mrc_observation.candidates.get(index))
@@ -995,6 +1006,7 @@ fn process_realtime(
         state.cfg.trend_only,
         state.cfg.sideways_only,
         state.cfg.sideways_nonstop,
+        state.allowed_direction,
     );
     let routed_strategy = entry_decision.strategy();
     let entry_plan_direction = entry_decision.direction();
@@ -1130,10 +1142,24 @@ fn process_realtime(
     let report_minute = market_decision.time.max(0) as u64 / 60_000;
     if state.last_workflow_report_minute != Some(report_minute) {
         state.last_workflow_report_minute = Some(report_minute);
+        let has_pending_entry = state.pending_entry_bar.is_some()
+            || state.pending_entry_plan.is_some()
+            || state.pending_strategy.is_some();
+        let release_requested = state.cfg.trend_only
+            && state.allowed_direction == Direction::Long
+            && state.long_trading_window_seen
+            && strategy_trend_direction != Some(1)
+            && state.position.side == crate::model::PositionState::Flat
+            && !has_pending_entry
+            && entry_plan_direction.is_none();
         output.workflow_report = Some(serde_json::json!({
             "strategy": "structural_scalping",
             "symbol": input.symbol,
             "trend_only": state.cfg.trend_only,
+            "long_trading_window_seen": state.long_trading_window_seen,
+            "long_trading_window_active": long_trading_window_active,
+            "release_requested": release_requested,
+            "release_reason": if release_requested { Some("long-trend-window-finished") } else { None },
             "allowed_direction": match state.allowed_direction {
                 Direction::Long => "long",
                 Direction::Short => "short",

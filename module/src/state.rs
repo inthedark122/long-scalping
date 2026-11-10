@@ -715,6 +715,9 @@ pub struct EngineState {
     pub cfg_loaded: bool,
     /// Direction preference received by the start signal. Entry guard only.
     pub allowed_direction: Direction,
+    /// Set after this long-only trend bot has seen an eligible long trend.
+    /// A later loss of that trend can release the worker slot when flat.
+    pub long_trading_window_seen: bool,
     /// Last 1m bar for which the active-position TP was recalculated.
     #[serde(skip)]
     pub last_active_tp_recalc_bar: Option<u64>,
@@ -886,6 +889,7 @@ impl Default for EngineState {
             cfg: Config::default(),
             cfg_loaded: false,
             allowed_direction: Direction::Both,
+            long_trading_window_seen: false,
             last_active_tp_recalc_bar: None,
             active_mrc_analysis: None,
             active_mrc_context: MrcPredictionContext::default(),

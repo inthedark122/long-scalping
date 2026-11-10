@@ -134,7 +134,18 @@ reselects the best remaining candidate or enters the stall policy.
 
 ## 5. Stop-loss calculation
 
-SL is calculated separately from TP using the current 1m MRC structure:
+For Trending strategy positions, the structural stop starts at the outermost
+adverse MRC band: `down_big` for longs and `up_big` for shorts. Interior MRC
+pullbacks do not tighten a losing stop. A trailing MRC level can tighten the
+stop only after it is beyond the filled entry, and later updates must preserve
+that profitable stop. A Sideways route may update the target, but it retains
+the Trending stop and continues running MRC stop management.
+
+This policy treats an intrabar touch through the outer band as a break. It does
+not wait for a candle close to confirm the break.
+
+Sideways-only entries retain their range-based stop. For Trending setups, the
+outer-band stop replaces the adjacent-line calculation:
 
 1. start from the MRC line that generated the setup;
 2. walk to the first valid adverse line beyond the filled entry;

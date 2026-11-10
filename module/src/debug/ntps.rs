@@ -25,9 +25,7 @@ impl NtpsDailyStats {
             return;
         }
 
-        let local_day = time_ms
-            .saturating_add(BANGKOK_OFFSET_MS)
-            .div_euclid(DAY_MS);
+        let local_day = time_ms.saturating_add(BANGKOK_OFFSET_MS).div_euclid(DAY_MS);
         if self.local_day != Some(local_day) {
             self.reset();
             self.local_day = Some(local_day);

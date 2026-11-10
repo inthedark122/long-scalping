@@ -1,7 +1,7 @@
 {
   "module_id": "551497fd-19ce-4cae-aedb-ce67a4bae727",
   "name": "Structural scalping",
-  "version": "1.0.135",
+  "version": "1.0.136",
   "runtime": "wasm",
   "target": "wasm32-wasip1",
   "artifact": {
