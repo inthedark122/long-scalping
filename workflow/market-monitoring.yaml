@@ -1,0 +1,235 @@
+# Monitor-only projection of the active NTP MRC Activity Monitor — Pre-release v6.
+workflow:
+  name: NTP MRC Activity Monitor — Pre-release v6
+  key: ntp_mrc_activity_monitor_stable_v6
+  status: active
+  strategy_version_id: 127
+
+trigger:
+  kind: manual_signal
+  action_code: ntp_mrc_activity_monitor.start
+  entry_node: initialize_cooldowns
+  parameters:
+    min_mrc_distance_pct:
+      default: 5
+      minimum: 0
+
+schedule:
+  node: scheduler
+  cron: "0 * * * * *"
+  timezone: Asia/Bangkok
+  meaning: Every minute at second 0.
+
+nodes:
+  - key: initialize_cooldowns
+    name: Initialize monitor state
+    type: program
+    code_language: platform-workflow
+    code: |
+      fn main():
+          let minimum = object.get($.arguments, "min_mrc_distance_pct")
+          if minimum != null:
+              if minimum < 0:
+                  return Err("min_mrc_distance_pct cannot be negative")
+          else:
+              minimum = 5
+          let result = object.create()
+          result.cooldowns = object.create()
+          result.min_mrc_distance_pct = minimum
+          return result
+    outputs:
+      - run_context.cooldowns
+      - run_context.min_mrc_distance_pct
+
+  - key: scheduler
+    name: Scan every minute
+    type: scheduler
+    cron: "0 * * * * *"
+    timezone: Asia/Bangkok
+
+  - key: prepare_screener
+    name: Build top-10 NTP request
+    type: program
+    code_language: platform-workflow
+    code: |
+      fn main():
+          let request = object.create()
+          request.page = 1
+          request.page_size = 10
+          let sort = object.create()
+          sort.direction = "desc"
+          let target = object.create()
+          target.type = "Ntp5s"
+          sort.target = target
+          request.sort = sort
+          return request
+
+  - key: top_ntp
+    name: Fetch top 10 NTP activity
+    type: market_data
+    operation: screener_query
+    outputs:
+      - matches[].symbol_key
+      - matches[].ntp_5s
+
+  - key: fork_ntp_candidates
+    name: Check each top token
+    type: fork
+    source_path: matches
+    iteration: each screener match
+
+  - key: prepare_mrc_history
+    name: Build 31-candle MRC request
+    type: program
+    code_language: platform-workflow
+    code: |
+      fn main():
+          let query = object.create()
+          query = object.set(query, "page", 1)
+          query = object.set(query, "page_size", 31)
+          query = object.set(query, "timeframe", 60)
+          let mrc = object.set(object.set(object.create(), "name", "mrc"), "parameters", array.new(200))
+          let mean_request = object.set(mrc, "output", "MeanLine")
+          let upper_request = object.set(mrc, "output", "UpBig")
+          let lower_request = object.set(mrc, "output", "DownBig")
+          query = object.set(query, "indicators", array.new(mean_request, upper_request, lower_request))
+          query = object.set(query, "symbol_key", $.arguments.symbol_key)
+          query = object.set(query, "ntp_5s", $.arguments.ntp_5s)
+          return query
+    output_mapping:
+      - source: symbol_key
+        target: cursor_context.symbol_key
+      - source: ntp_5s
+        target: cursor_context.ntp_5s
+
+  - key: mrc_history
+    name: Fetch 31 one-minute MRC values
+    type: market_data
+    operation: indicators_query
+
+  - key: classify_and_alert
+    name: Classify MRC trend and alert
+    type: program
+    code_language: platform-workflow
+    code: |
+      fn main():
+          let rows = $.arguments.data
+          let count = 0
+          let newest_middle = 0
+          let oldest_middle = 0
+          let newest_up = 0
+          let newest_down = 0
+          for row in rows:
+              let values = row.indicators.0.values
+              let middle = values.MeanLine
+              if count == 0:
+                  newest_middle = middle
+                  newest_up = values.UpBig
+                  newest_down = values.DownBig
+              oldest_middle = middle
+              count = count + 1
+          if count < 31:
+              return Err("Need 31 one-minute MRC records to calculate 30 slope intervals")
+          if newest_middle <= 0:
+              return Err("MRC MeanLine must be positive")
+          let slope = (newest_middle - oldest_middle) / 30
+          let outer_width_pct = (newest_up - newest_down) / newest_middle * 100
+          let direction = "flat"
+          if slope > 0:
+              direction = "up"
+          else:
+              if slope < 0:
+                  direction = "down"
+          let cooldowns = object.get($.run_context, "cooldowns")
+          if cooldowns == null:
+              cooldowns = $.run_context
+          let cooldown_key = str.concat("last_alert:", $.cursor_context.symbol_key)
+          let now_ms = datetime.now()
+          let last_alert_ms = object.get(cooldowns, cooldown_key)
+          let minimum_mrc_distance_pct = number.from(object.get($.run_context, "min_mrc_distance_pct"))
+          if minimum_mrc_distance_pct == null:
+              minimum_mrc_distance_pct = 5
+          let candidate = null
+          if outer_width_pct >= minimum_mrc_distance_pct:
+              if slope > 0:
+                  candidate = object.clone($.cursor_context)
+                  candidate.mrc_slope = slope
+                  candidate.mrc_outer_width_pct = outer_width_pct
+          let should_alert = false
+          if candidate != null:
+              should_alert = true
+              if last_alert_ms != null:
+                  let elapsed_ms = now_ms - last_alert_ms
+                  if elapsed_ms < 900000:
+                      should_alert = false
+          if should_alert:
+              let message = str.concat("NTP5S activity=", str.to_text($.cursor_context.ntp_5s), " symbol=", $.cursor_context.symbol_key, " MRC 30-bar direction=", direction, " slope=", str.to_text(slope), " outer width=", str.to_text(outer_width_pct), "%")
+              let alert_result = alert.info(message)
+          let result = $.arguments
+          result.alerted = should_alert
+          result.cooldown_key = cooldown_key
+          result.alert_at_ms = now_ms
+          result.outer_width_pct = outer_width_pct
+          result.candidate = candidate
+          return result
+
+  - key: join_ntp_candidates
+    name: Wait for all MRC checks
+    type: join
+    fork_node_key: fork_ntp_candidates
+    wait_for_all: true
+
+  - key: persist_alert_cooldowns
+    name: Persist alert cooldowns
+    type: program
+    code_language: platform-workflow
+    code: |
+      fn main():
+          let cooldowns = object.get($.run_context, "cooldowns")
+          if cooldowns == null:
+              cooldowns = $.run_context
+          for result in $.arguments.branch_results.ntp_candidate:
+              if result.alerted == true:
+                  cooldowns = object.set(cooldowns, result.cooldown_key, result.alert_at_ms)
+          let output = $.arguments
+          output.cooldowns = cooldowns
+          return output
+    output_mapping:
+      - source: cooldowns
+        target: run_context.cooldowns
+
+  - key: complete
+    name: Complete scan
+    type: complete
+
+connections:
+  - from: initialize_cooldowns
+    to: scheduler
+    trigger: success
+  - from: scheduler
+    to: prepare_screener
+    trigger: scheduled_tick
+  - from: prepare_screener
+    to: top_ntp
+    trigger: success
+  - from: top_ntp
+    to: fork_ntp_candidates
+    trigger: success
+  - from: fork_ntp_candidates
+    to: prepare_mrc_history
+    trigger: candidate
+  - from: prepare_mrc_history
+    to: mrc_history
+    trigger: success
+  - from: mrc_history
+    to: classify_and_alert
+    trigger: success
+  - from: classify_and_alert
+    to: join_ntp_candidates
+    trigger: candidate_complete
+  - from: join_ntp_candidates
+    to: persist_alert_cooldowns
+    trigger: all_candidates_complete
+  - from: persist_alert_cooldowns
+    to: complete
+    trigger: success
